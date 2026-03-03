@@ -6,6 +6,7 @@ build-backend = "setuptools.backends.legacy:build"
 name = "dockup"
 version = "0.1.0"
 description = "DockUP — A modern web-based molecular docking interface"
+readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "DockUP Contributors" }]

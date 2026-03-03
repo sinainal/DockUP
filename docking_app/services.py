@@ -37,8 +37,7 @@ from .state import (
 def _save_uploads(files: list[UploadFile], out_dir: Path) -> list[str]:
     saved = []
     for f in files:
-        safe_name = Path(f.filename).name
-        out_path = out_dir / safe_name
+        out_path = out_dir / f.filename
         out_path.write_bytes(f.file.read())
         saved.append(str(out_path))
     return saved
@@ -551,10 +550,7 @@ def _scan_results(root_path: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    selection_map = payload.get("selection_map")
-    if selection_map is None:
-        selection_map = STATE.get("selection_map", {})
-    
+    selection_map = payload.get("selection_map") or STATE.get("selection_map", {})
     grid_data = payload.get("grid_data", {})
     padding = payload.get("padding", 0.0)
     run_count = payload.get("run_count", 10)
@@ -685,9 +681,7 @@ def _start_run(
             except StopIteration:
                 pass  # Can't fix, will fail later with a clear error
     out_root_path.mkdir(parents=True, exist_ok=True)
-    # Save manifest into the run meta directory
-    from .manifest import RUN_META_DIR_NAME
-    run_meta_dir = out_root_path / RUN_META_DIR_NAME
+    run_meta_dir = out_root_path / "_run_meta"
     run_meta_dir.mkdir(parents=True, exist_ok=True)
     batch_stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int((time.time() % 1) * 1000):03d}"
     batch_log_path = run_meta_dir / f"batch_{batch_stamp}.log"

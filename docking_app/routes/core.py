@@ -44,7 +44,6 @@ from ..services import (
     _summarize_receptors,
 )
 from ..sessions import (
-    RUN_SESSION_DIR,
     load_run_sessions,
     register_run_session,
     save_run_sessions,
@@ -56,6 +55,7 @@ router = APIRouter()
 _templates: Jinja2Templates | None = None
 LIGAND_DIR_RESOLVED = LIGAND_DIR.resolve()
 LIGAND_TIMESTAMP_SUFFIX_RE = re.compile(r"_(\d{8}_\d{6})(?:_\d+)?$", re.IGNORECASE)
+RUN_SESSION_DIR = DOCK_DIR / "_run_sessions"
 
 from ..manifest import config_to_manifest_values, append_docking_config_args
 

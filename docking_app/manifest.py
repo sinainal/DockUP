@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Regex for run directory names
 RUN_DIR_NAME_RE = re.compile(r"^run(?P<run_id>\d+)$", re.IGNORECASE)
-RUN_META_DIR_NAME = "_run_meta"
+RUN_META_DIR_NAME = ".docking_meta"
 
 
 # ---------------------------------------------------------------------------

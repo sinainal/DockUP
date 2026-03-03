@@ -8,8 +8,6 @@ import sys
 import argparse
 import os
 
-REQUEST_TIMEOUT = 5
-
 def extract_raw_text_pdbsum(pdb_id, ligand_name=None):
     """
     PDBsum web sitesinden bir proteinin ligand verilerini web scraping ile çeker.
@@ -513,3 +511,4 @@ if __name__ == "__main__":
         os._exit(0)
     except Exception:
         sys.exit(0)
+REQUEST_TIMEOUT = 5

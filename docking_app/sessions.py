@@ -25,7 +25,7 @@ from .state import RUN_STATE, STATE
 
 logger = logging.getLogger(__name__)
 
-RUN_SESSION_DIR = DOCK_DIR / "_run_sessions"
+RUN_SESSION_DIR = DOCK_DIR / ".sessions"
 RUN_SESSION_INDEX = RUN_SESSION_DIR / "index.json"
 
 
