@@ -1,0 +1,19 @@
+# DockUP — Docking pipeline dependencies
+# Installed by setup.sh (required for actual docking)
+
+# Receptor protonation
+pdb2pqr>=3.6
+
+# Ligand preparation (AutoDock Tools replacement)
+meeko>=0.5
+scipy>=1.10.0
+gemmi>=0.6.2
+
+# AutoDock-Vina Python bindings
+vina>=1.2.5
+
+# 3D ligand conversion (SMILES → SDF)
+rdkit>=2023.9
+
+# OpenBabel (used by PLIP for interaction analysis)
+openbabel-wheel>=3.1.1

@@ -1,0 +1,10 @@
+# DockUP — Optional dependencies
+# PyMOL: only needed for PSE scene generation after docking.
+# Docking works WITHOUT PyMOL — scenes just won't be saved.
+#
+# Recommended installation (most reliable):
+#   conda install -c conda-forge pymol-open-source
+#
+# Alternative (pip, Linux/macOS):
+#   pip install pymol-open-source
+pymol-open-source>=3.0

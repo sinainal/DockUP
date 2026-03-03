@@ -1,0 +1,225 @@
+"""Shared utility functions used across the docking_app package.
+
+Consolidates previously duplicated helpers from routes.py and services.py.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import time
+from pathlib import Path
+from typing import Any
+
+from .config import BASE, DATA_DIR, DOCK_DIR, WORKSPACE_DIR
+from .state import DOCKING_CONFIG_DEFAULTS
+
+logger = logging.getLogger(__name__)
+
+# Resolved path constants for safety checks
+BASE_RESOLVED = BASE.resolve()
+DATA_DIR_RESOLVED = DATA_DIR.resolve()
+DOCK_DIR_RESOLVED = DOCK_DIR.resolve()
+WORKSPACE_RESOLVED = WORKSPACE_DIR.resolve()
+
+
+# ---------------------------------------------------------------------------
+# Type coercion helpers
+# ---------------------------------------------------------------------------
+
+def boolish(value: Any, default: bool) -> bool:
+    """Convert a value to bool, accepting common truthy/falsy strings."""
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
+def to_optional_int(
+    value: Any,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int | None:
+    """Parse *value* to int, clamping to [minimum, maximum]. Returns None on empty/invalid."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        val = int(float(text))
+    except (TypeError, ValueError):
+        return None
+    if minimum is not None:
+        val = max(minimum, val)
+    if maximum is not None:
+        val = min(maximum, val)
+    return val
+
+
+def to_optional_float(
+    value: Any,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float | None:
+    """Parse *value* to float, clamping to [minimum, maximum]. Returns None on empty/invalid."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        val = float(text)
+    except (TypeError, ValueError):
+        return None
+    if minimum is not None:
+        val = max(minimum, val)
+    if maximum is not None:
+        val = min(maximum, val)
+    return val
+
+
+# ---------------------------------------------------------------------------
+# Docking configuration normalisation
+# ---------------------------------------------------------------------------
+
+def normalize_docking_config(raw: Any) -> dict[str, Any]:
+    """Normalise a raw docking configuration dict into a well-typed dict."""
+    source = raw if isinstance(raw, dict) else {}
+    defaults = dict(DOCKING_CONFIG_DEFAULTS)
+    cfg: dict[str, Any] = {
+        "pdb2pqr_ph": defaults["pdb2pqr_ph"],
+        "pdb2pqr_ff": str(source.get("pdb2pqr_ff", defaults["pdb2pqr_ff"]) or defaults["pdb2pqr_ff"]).strip() or defaults["pdb2pqr_ff"],
+        "pdb2pqr_ffout": str(source.get("pdb2pqr_ffout", defaults["pdb2pqr_ffout"]) or defaults["pdb2pqr_ffout"]).strip() or defaults["pdb2pqr_ffout"],
+        "pdb2pqr_nodebump": boolish(source.get("pdb2pqr_nodebump", defaults["pdb2pqr_nodebump"]), defaults["pdb2pqr_nodebump"]),
+        "pdb2pqr_keep_chain": boolish(source.get("pdb2pqr_keep_chain", defaults["pdb2pqr_keep_chain"]), defaults["pdb2pqr_keep_chain"]),
+        "mkrec_allow_bad_res": boolish(source.get("mkrec_allow_bad_res", defaults["mkrec_allow_bad_res"]), defaults["mkrec_allow_bad_res"]),
+        "mkrec_default_altloc": str(source.get("mkrec_default_altloc", defaults["mkrec_default_altloc"]) or defaults["mkrec_default_altloc"]).strip() or defaults["mkrec_default_altloc"],
+        "vina_exhaustiveness": defaults["vina_exhaustiveness"],
+        "vina_num_modes": None,
+        "vina_energy_range": None,
+        "vina_cpu": None,
+        "vina_seed": None,
+    }
+    ph_val = to_optional_float(source.get("pdb2pqr_ph"), 0.0, 14.0)
+    if ph_val is not None:
+        cfg["pdb2pqr_ph"] = ph_val
+    ex_val = to_optional_int(source.get("vina_exhaustiveness"), 1, 512)
+    if ex_val is not None:
+        cfg["vina_exhaustiveness"] = ex_val
+    cfg["vina_num_modes"] = to_optional_int(source.get("vina_num_modes"), 1, 200)
+    cfg["vina_energy_range"] = to_optional_float(source.get("vina_energy_range"), 0.0, 1000.0)
+    cfg["vina_cpu"] = to_optional_int(source.get("vina_cpu"), 1, 512)
+    cfg["vina_seed"] = to_optional_int(source.get("vina_seed"), 0, None)
+    return cfg
+
+
+# ---------------------------------------------------------------------------
+# Manifest value helpers
+# ---------------------------------------------------------------------------
+
+def restore_manifest_value(raw: Any) -> str:
+    """Restore a manifest value, converting the ``__EMPTY__`` sentinel to ``""``."""
+    value = str(raw or "").strip()
+    return "" if value == "__EMPTY__" else value
+
+
+# ---------------------------------------------------------------------------
+# Path / display helpers
+# ---------------------------------------------------------------------------
+
+def to_display_path(path: Path) -> str:
+    """Convert an absolute *path* to a user-friendly relative string."""
+    resolved = path.resolve()
+    try:
+        rel_to_data = resolved.relative_to(DATA_DIR_RESOLVED)
+        rel_str = str(rel_to_data).replace("\\", "/")
+        return "data" if rel_str in {"", "."} else f"data/{rel_str}"
+    except ValueError:
+        pass
+    try:
+        rel_to_base = resolved.relative_to(BASE_RESOLVED)
+        rel_str = str(rel_to_base).replace("\\", "/")
+        return "." if rel_str in {"", "."} else rel_str
+    except ValueError:
+        return str(resolved).replace("\\", "/")
+
+
+def relative_to_base(path: Path) -> str | None:
+    """Return a display-path only if *path* is inside BASE or WORKSPACE; otherwise ``None``."""
+    resolved = path.resolve()
+    if (
+        resolved != BASE_RESOLVED and BASE_RESOLVED not in resolved.parents
+        and resolved != WORKSPACE_RESOLVED and WORKSPACE_RESOLVED not in resolved.parents
+    ):
+        return None
+    return to_display_path(resolved)
+
+
+def resolve_dock_directory(
+    path_text: str,
+    *,
+    default: Path,
+    allow_create: bool,
+) -> Path:
+    """Resolve a user-provided path so that it stays inside DOCK_DIR."""
+    from fastapi import HTTPException
+
+    raw = str(path_text or "").strip()
+    if not raw:
+        return default.resolve()
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        # Try WORKSPACE_DIR first (data/dock lives there), then BASE
+        ws = (WORKSPACE_DIR / candidate).resolve()
+        if ws.exists() and ws.is_dir():
+            candidate = ws
+        else:
+            candidate = (BASE / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+    if candidate != DOCK_DIR_RESOLVED and DOCK_DIR_RESOLVED not in candidate.parents:
+        raise HTTPException(status_code=400, detail="Path must be inside data/dock.")
+    if candidate.exists():
+        if not candidate.is_dir():
+            raise HTTPException(status_code=400, detail="Path is not a directory.")
+    else:
+        if not allow_create:
+            raise HTTPException(status_code=400, detail="Path not found.")
+        candidate.mkdir(parents=True, exist_ok=True)
+    return candidate
+
+
+# ---------------------------------------------------------------------------
+# File-system helpers
+# ---------------------------------------------------------------------------
+
+def safe_mtime(path: Path) -> float:
+    """Return file mtime or ``0.0`` on any OS error."""
+    try:
+        return float(path.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
+def read_json(path: Path, default: Any) -> Any:
+    """Read JSON from *path*, returning *default* on any failure."""
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("read_json failed for %s: %s", path, exc)
+        return default
+
+
+def write_json(path: Path, payload: Any) -> None:
+    """Atomically write *payload* as JSON to *path*."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def timestamp_token() -> str:
+    """Return a compact timestamp suitable for file-name suffixes."""
+    return time.strftime("%Y%m%d_%H%M%S")

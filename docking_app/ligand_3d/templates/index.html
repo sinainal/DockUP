@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ request.scope.root_path }}/static/styles.css?v=10">
+  <script src="https://unpkg.com/ngl@2.0.0-dev.39/dist/ngl.js"></script>
+</head>
+<body data-root-path="{{ request.scope.root_path }}">
+  <div class="page">
+    <header class="topbar">
+      <div>
+        <div class="brand">Ligand 3D Prototype</div>
+        <div class="subtitle">Manual search (ChEMBL + PubChem), select candidates, generate 1-10 oligomer SDF files</div>
+      </div>
+      <div class="chip">Prototype</div>
+    </header>
+
+    <main class="builder-layout">
+      <section class="card panel-search">
+        <h2>1) Input Source</h2>
+        <div class="tab-strip" role="tablist" aria-label="Ligand input tabs">
+          <button id="tabBtnSearch" class="tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="tabSearchPanel">Database Search</button>
+          <button id="tabBtnCustom" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tabCustomPanel">Custom SMILES</button>
+        </div>
+
+        <div id="tabSearchPanel" class="tab-panel active" role="tabpanel" aria-labelledby="tabBtnSearch">
+          <div class="row">
+            <input id="searchInput" type="text" placeholder="Type ligand name, CID, CHEMBL ID...">
+            <input id="searchLimit" type="number" min="1" max="25" step="1" value="5">
+            <button id="searchBtn" class="primary" type="button">Search</button>
+          </div>
+          <div class="row compact">
+            <label class="inline">
+              <input id="searchSourceChembl" type="checkbox" checked>
+              ChEMBL
+            </label>
+            <label class="inline">
+              <input id="searchSourcePubchem" type="checkbox" checked>
+              PubChem
+            </label>
+          </div>
+          <div id="searchMeta" class="helper">Manual mode: click Search. Default limit is 5.</div>
+          <div id="searchResults" class="table-wrap"></div>
+        </div>
+
+        <div id="tabCustomPanel" class="tab-panel" role="tabpanel" aria-labelledby="tabBtnCustom">
+          <div class="row">
+            <input id="customNameInput" type="text" placeholder="Ligand name (e.g. Ethylene terephthalate)">
+          </div>
+          <div class="row">
+            <input id="customSmilesInput" type="text" placeholder="Custom SMILES (required)">
+            <button id="addCustomBtn" class="primary" type="button">Add To Queue</button>
+          </div>
+          <div id="customMeta" class="helper">Enter your exact SMILES manually. This bypasses database lookup.</div>
+        </div>
+      </section>
+
+      <section class="card panel-queue">
+        <h2>2) Added Structures and Oligomer Convert</h2>
+        <div class="helper">
+          Add ile secilen yapilar bu panele gelir. Oligomer araligi sec ve tum yapilar icin tek seferde uret.
+        </div>
+        <div class="row range-row">
+          <label class="inline range-label">
+            Oligomer Range
+            <select id="rangeStart">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+              <option value="7">7</option>
+              <option value="8">8</option>
+              <option value="9">9</option>
+              <option value="10">10</option>
+            </select>
+            to
+            <select id="rangeEnd">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3" selected>3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+              <option value="7">7</option>
+              <option value="8">8</option>
+              <option value="9">9</option>
+              <option value="10">10</option>
+            </select>
+          </label>
+        </div>
+        <div id="builderQueue" class="table-wrap"></div>
+        <div class="row">
+          <button id="generateOligomersBtn" class="primary" type="button">Generate Oligomer SDFs</button>
+          <button id="addToLigandsBtn" class="secondary" type="button">Add Selected To Docking Ligands</button>
+        </div>
+        <div id="dockingDbMeta" class="helper">Docking DB: loading...</div>
+        <div id="builderStatus" class="helper">No build yet.</div>
+      </section>
+
+      <section class="card panel-generated">
+        <h2>3) Generated Files and Preview</h2>
+        <div class="helper">Olusan dosyalari burada gorebilir, preview, download ve delete yapabilirsin.</div>
+        <div class="row generated-selection-row">
+          <div id="generatedSelectionMeta" class="helper">0 selected</div>
+          <button id="clearGeneratedSelectionBtn" class="secondary" type="button">Clear Selected</button>
+        </div>
+        <div id="generatedFiles" class="table-wrap"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="previewModal" class="preview-modal" aria-hidden="true">
+    <div class="preview-dialog">
+      <div class="preview-header">
+        <div id="previewTitle" class="preview-title">3D Preview</div>
+        <button id="closePreviewBtn" class="secondary" type="button">Close</button>
+      </div>
+      <div id="previewViewport" class="preview-viewport"></div>
+    </div>
+  </div>
+
+  <script src="{{ request.scope.root_path }}/static/app.js?v=10"></script>
+</body>
+</html>

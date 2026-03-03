@@ -1,0 +1,35 @@
+# Python cache / tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local virtualenv + setup state
+.venv/
+.env
+.setup_done
+.setup.log
+
+# Runtime/generated docking data (do not version)
+docking_app/workspace/data/
+docking_app/workspace/plip-2.4.0/build/
+docking_app/workspace/plip-2.4.0/plip.egg-info/
+docking_app/workspace/plip-2.4.0/*.egg-info/
+
+# Generated ligand/output artifacts
+docking_app/ligand_3d/generated/
+scripts/data/
+data/
+
+# Session/run/report outputs
+**/_run_meta/
+**/_run_sessions/
+**/.sessions/
+**/report_outputs/
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store

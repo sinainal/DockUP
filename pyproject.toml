@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "dockup"
+version = "0.1.0"
+description = "DockUP — A modern web-based molecular docking interface"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "DockUP Contributors" }]
+
+# ── Core web server (always required) ──────────────────────────────────────
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "pydantic>=2.0",
+    "python-multipart>=0.0.9",
+    "watchfiles>=0.21",
+    "requests>=2.31",
+    "lxml>=5.0",
+    "beautifulsoup4>=4.12",
+    "numpy>=1.26,<3",
+    "jinja2>=3.1",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+# ── Docking pipeline tools ──────────────────────────────────────────────────
+docking = [
+    "pdb2pqr>=3.6",
+    "meeko>=0.5",
+    "scipy>=1.10.0",
+    "gemmi>=0.6.2",
+    "vina>=1.2.5",
+    "rdkit>=2023.9",
+    "openbabel-wheel>=3.1.1",
+]
+
+# ── Optional: PyMOL scene generation (PSE files) ───────────────────────────
+# Install via: pip install pymol-open-source
+# Or preferably: conda install -c conda-forge pymol-open-source
+pymol = [
+    "pymol-open-source>=3.0; sys_platform == 'linux'",
+]
+
+# ── Development / testing ──────────────────────────────────────────────────
+dev = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.0",
+    "httpx>=0.27",
+]
+
+# ── Everything except pymol (for CI) ──────────────────────────────────────
+all = [
+    "dockup[docking,dev]",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["docking_app*"]
+exclude = ["tests*", "documents*"]
+
+[tool.setuptools.package-data]
+"docking_app" = [
+    "templates/**/*",
+    "static/**/*",
+    "workspace/plip-2.4.0/**/*",
+]

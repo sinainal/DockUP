@@ -1,0 +1,16 @@
+Metadata-Version: 1.1
+Name: plip
+Version: 2.4.0
+Summary: PLIP - Fully automated protein-ligand interaction profiler
+Home-page: https://github.com/pharmai/plip
+Author: PharmAI GmbH
+Author-email: hello@pharm.ai
+License: GPLv2
+Description: UNKNOWN
+Platform: UNKNOWN
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Intended Audience :: Science/Research
+Classifier: Natural Language :: English
+Classifier: License :: OSI Approved :: GNU General Public License v2 (GPLv2)
+Classifier: Programming Language :: Python :: 3.6
+Classifier: Topic :: Scientific/Engineering :: Bio-Informatics
