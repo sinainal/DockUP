@@ -550,7 +550,12 @@ def _scan_results(root_path: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    selection_map = payload.get("selection_map") or STATE.get("selection_map", {})
+    # Respect an explicit empty selection_map from payload.
+    if "selection_map" in payload:
+        raw_selection = payload.get("selection_map")
+        selection_map = raw_selection if isinstance(raw_selection, dict) else {}
+    else:
+        selection_map = STATE.get("selection_map", {})
     grid_data = payload.get("grid_data", {})
     padding = payload.get("padding", 0.0)
     run_count = payload.get("run_count", 10)
@@ -680,6 +685,7 @@ def _start_run(
                 out_root_path = (WORKSPACE_DIR / rel).resolve()
             except StopIteration:
                 pass  # Can't fix, will fail later with a clear error
+    out_root_path = out_root_path.resolve()
     out_root_path.mkdir(parents=True, exist_ok=True)
     run_meta_dir = out_root_path / "_run_meta"
     run_meta_dir.mkdir(parents=True, exist_ok=True)
@@ -755,7 +761,7 @@ def _start_run(
         f"MANIFEST=\"{manifest_path}\"",
         f"RUNS=\"{runs}\"",
         f"TOTAL_RUNS=\"{total_runs}\"",
-        f"OUT_ROOT=\"{out_root}\"",
+        f"OUT_ROOT=\"{out_root_path}\"",
         "ts() { date '+%Y-%m-%d %H:%M:%S'; }",
         "is_empty() { [[ -z \"$1\" || \"$1\" == \"__EMPTY__\" ]]; }",
         "job_total=$(grep -vE '^\\s*$|^#' \"$MANIFEST\" | wc -l | awk '{print $1}')",
@@ -836,7 +842,7 @@ def _start_run(
     RUN_STATE["returncode"] = None
     RUN_STATE["log_lines"] = []
     RUN_STATE["command"] = initial_command or " ".join(cmd)
-    RUN_STATE["out_root"] = str(out_root)
+    RUN_STATE["out_root"] = str(out_root_path)
     RUN_STATE["start_time"] = time.time()
     RUN_STATE["total_runs"] = total_runs
     RUN_STATE["completed_runs"] = 0

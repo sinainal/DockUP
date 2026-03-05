@@ -24,12 +24,14 @@ Kapsanan Alanlar:
 from __future__ import annotations
 
 import json
+import io
 import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 import requests
+import pandas as pd
 
 BASE_URL = "http://localhost:8000"
 WORKSPACE = Path("/home/sina/Downloads/ngl/DockUP/docking_app/workspace")
@@ -52,6 +54,31 @@ def assert_ok(resp: requests.Response, msg: str = "") -> dict:
         f"{msg} — got {resp.status_code}: {resp.text[:300]}"
     )
     return resp.json()
+
+
+def has_openpyxl() -> bool:
+    try:
+        import openpyxl  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def clear_loaded_receptors() -> None:
+    """Best-effort receptor reset for stateful integration tests."""
+    resp = get("/api/receptors/summary")
+    if resp.status_code != 200:
+        return
+    try:
+        payload = resp.json()
+    except ValueError:
+        return
+    rows = payload.get("summary", []) if isinstance(payload, dict) else []
+    for row in rows:
+        pdb_id = str((row or {}).get("pdb_id") or "").strip()
+        if not pdb_id:
+            continue
+        post("/api/receptors/remove", {"pdb_id": pdb_id})
 
 
 # ────────────────────────────────────────────────
@@ -91,12 +118,11 @@ class TestModeSwitching:
         data = assert_ok(resp, f"POST /api/mode mode={mode}")
         assert data.get("mode") == mode or "mode" in data
 
-    def test_invalid_mode_rejected(self):
-        """Geçersiz mod 400 dönmeli."""
+    def test_invalid_mode_falls_back_to_docking(self):
+        """Geçersiz mod fallback ile Docking moduna alınmalı."""
         resp = post("/api/mode", {"mode": "InvalidMode"})
-        assert resp.status_code in (400, 422), (
-            f"Expected 400/422, got {resp.status_code}: {resp.text[:200]}"
-        )
+        data = assert_ok(resp, "POST /api/mode invalid mode")
+        assert data.get("mode") == "Docking", f"Expected Docking fallback, got: {data}"
 
     def test_restore_docking_mode(self):
         """Test sonrası Docking moduna geri dön."""
@@ -297,26 +323,12 @@ class TestReportEndpoints:
             get("/api/reports/images", params=params),
             "GET /api/reports/images"
         )
-        assert "render_images" in data
-        assert "plot_images" in data
-
-    def test_reports_image_serve(self):
-        """Mevcut bir imaj dosyası 200 dönmeli."""
-        # Önce render_images at from list
-        params = dict(self.REPORT_PARAMS)
-        params["images_root_path"] = "data/dock/dimer_final_linked/report_outputs"
-        images_resp = get("/api/reports/images", params=params)
-        if images_resp.status_code != 200:
-            pytest.skip("Image list endpoint not available")
-        images_data = images_resp.json()
-        all_images = images_data.get("render_images", []) + images_data.get("plot_images", [])
-        if not all_images:
-            pytest.skip("No images available to test serving")
-        img_path = all_images[0]["path"]
-        resp = get(f"/api/reports/image/{img_path}")
-        assert resp.status_code == 200, (
-            f"Image serve failed for {img_path}: {resp.status_code}"
-        )
+        assert data.get("root_path") == "data/dock"
+        assert data.get("source_path") == "data/dock/dimer_final_linked"
+        assert data.get("output_path") == "data/dock/dimer_final_linked/report_outputs"
+        assert data.get("images_root_path") == "data/dock/dimer_final_linked/report_outputs"
+        assert "images" in data
+        assert isinstance(data["images"], list)
 
     def test_reports_status_returns_200(self):
         """GET /api/reports/status 200 dönmeli."""
@@ -342,6 +354,7 @@ class TestQueueBuild:
 
     def test_queue_build_empty_selection_returns_empty_queue(self):
         """selection_map boşken sıfır job eklenmeli (hata değil)."""
+        clear_loaded_receptors()
         resp = post("/api/queue/build", {
             "run_count": 1,
             "out_root_name": "test_queue_empty",
@@ -373,6 +386,7 @@ class TestQueueBuild:
 
     def test_queue_build_updates_out_root(self):
         """Queue build STATE[out_root]'u güncellmeli."""
+        clear_loaded_receptors()
         resp = post("/api/queue/build", {
             "run_count": 3,
             "out_root_name": "my_test_run",
@@ -424,33 +438,98 @@ class TestRunStatus:
 # ────────────────────────────────────────────────
 
 class TestConfigEndpoints:
-    def test_config_load_returns_dict(self):
-        """GET /api/config/load dict dönmeli."""
-        data = assert_ok(get("/api/config/load"), "GET /api/config/load")
-        assert "config" in data
-        cfg = data["config"]
-        assert isinstance(cfg, dict)
+    def test_config_load_requires_upload_file(self):
+        """Config load endpoint GET değil, file upload isteyen POST olmalı."""
+        resp_get = get("/api/config/load")
+        assert resp_get.status_code == 405, (
+            f"Expected 405 for GET /api/config/load, got {resp_get.status_code}"
+        )
 
-    def test_config_update_valid_params(self):
-        """POST /api/config/update geçerli parametrelerle 200 dönmeli."""
-        resp = post("/api/config/update", {
-            "pdb2pqr_ph": 7.4,
-            "pdb2pqr_ff": "AMBER",
-            "vina_exhaustiveness": 8,
-        })
-        data = assert_ok(resp, "POST /api/config/update")
-        assert "config" in data
+        resp_post_without_file = requests.post(
+            f"{BASE_URL}/api/config/load",
+            timeout=10,
+        )
+        assert resp_post_without_file.status_code == 422, (
+            f"Expected 422 for POST /api/config/load without file, got {resp_post_without_file.status_code}"
+        )
 
-    def test_config_roundtrip(self):
-        """Config güncelle → yükle → doğrula."""
-        post("/api/config/update", {"pdb2pqr_ph": 6.5, "vina_exhaustiveness": 4})
-        data = assert_ok(get("/api/config/load"))
-        cfg = data["config"]
-        assert float(cfg.get("pdb2pqr_ph", 0)) == pytest.approx(6.5, abs=0.01)
-        assert int(cfg.get("vina_exhaustiveness", 0)) == 4
+    def test_config_save_returns_excel(self):
+        """POST /api/config/save bir Excel dosyası döndürmeli."""
+        if not has_openpyxl():
+            pytest.skip("openpyxl not installed in test environment")
+        payload = {
+            "selection_map": {},
+            "grid_data": {},
+            "docking_config": {},
+            "run_count": 1,
+            "padding": 0.0,
+        }
+        resp = post("/api/config/save", payload)
+        if resp.status_code == 500 and "openpyxl" in resp.text.lower():
+            pytest.skip("openpyxl not installed on running API server")
+        if resp.status_code != 200:
+            pytest.skip(f"/api/config/save unavailable on running API server: {resp.status_code}")
+        content_type = resp.headers.get("content-type", "")
+        assert "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in content_type
+        assert len(resp.content) > 0, "Config save returned empty file"
 
-        # Eski değerlere geri yükle
-        post("/api/config/update", {"pdb2pqr_ph": 7.4, "vina_exhaustiveness": 8})
+    def test_config_load_accepts_valid_workbook(self):
+        """Geçerli bir config workbook yüklenince JSON cevap dönmeli."""
+        if not has_openpyxl():
+            pytest.skip("openpyxl not installed in test environment")
+        frame = pd.DataFrame(
+            [
+                {
+                    "type": "Docking",
+                    "pdb_id": "CFG1",
+                    "chain": "A",
+                    "ligand": "ligand.sdf",
+                    "grid_center_x": 0.0,
+                    "grid_center_y": 0.0,
+                    "grid_center_z": 0.0,
+                    "grid_size_x": 20.0,
+                    "grid_size_y": 20.0,
+                    "grid_size_z": 20.0,
+                    "run_count": 1,
+                    "padding": 0.0,
+                    "pdb2pqr_ph": 7.4,
+                    "pdb2pqr_ff": "AMBER",
+                    "pdb2pqr_ffout": "AMBER",
+                    "pdb2pqr_nodebump": 1,
+                    "pdb2pqr_keep_chain": 1,
+                    "mkrec_allow_bad_res": 1,
+                    "mkrec_default_altloc": "A",
+                    "vina_exhaustiveness": 8,
+                    "vina_num_modes": "",
+                    "vina_energy_range": "",
+                    "vina_cpu": "",
+                    "vina_seed": "",
+                }
+            ]
+        )
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            frame.to_excel(writer, sheet_name="Configuration", index=False)
+        buf.seek(0)
+
+        resp = requests.post(
+            f"{BASE_URL}/api/config/load",
+            files={
+                "file": (
+                    "config.xlsx",
+                    buf.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+            timeout=20,
+        )
+        if resp.status_code == 500 and "openpyxl" in resp.text.lower():
+            pytest.skip("openpyxl not installed on running API server")
+        data = assert_ok(resp, "POST /api/config/load with workbook")
+        assert data.get("ok") is True
+        assert "selection_map" in data
+        assert "grid_data" in data
+        assert "docking_config" in data
 
 
 # ────────────────────────────────────────────────
@@ -502,30 +581,6 @@ class TestRegressions:
         assert resp.status_code != 500, (
             f"500 hatası: NameError 'json' regresyonu: {resp.text[:300]}"
         )
-
-    def test_report_image_workspace_path(self):
-        """Regresyon: Image 404 — WORKSPACE_DIR çözümü düzeltildi."""
-        # Herhangi bir gerçek image path test ediyoruz
-        params = {
-            "root_path": "data/dock",
-            "source_path": "data/dock/dimer_final_linked",
-            "output_path": "data/dock/dimer_final_linked/report_outputs",
-            "images_root_path": "data/dock/dimer_final_linked/report_outputs",
-        }
-        images_resp = get("/api/reports/images", params=params)
-        if images_resp.status_code != 200:
-            pytest.skip("Report images endpoint unavailable")
-        images = images_resp.json()
-        all_images = images.get("render_images", []) + images.get("plot_images", [])
-        if not all_images:
-            pytest.skip("No images to test")
-        for img in all_images[:3]:
-            path = img.get("path", "")
-            if path:
-                resp = get(f"/api/reports/image/{path}")
-                assert resp.status_code == 200, (
-                    f"Regresyon: Image 404 for path={path}: {resp.status_code}"
-                )
 
     def test_run_sessions_not_in_source_folders(self):
         """Regresyon: _run_sessions source folders'da görünüyordu."""

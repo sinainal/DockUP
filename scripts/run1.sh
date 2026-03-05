@@ -13,6 +13,8 @@ fi
 # Determine the best Python to use
 DOCKUP_PYTHON="${DOCKUP_PYTHON:-python3}"
 DOCKUP_PYMOL_PYTHON="${DOCKUP_PYMOL_PYTHON:-$DOCKUP_PYTHON}"
+export DOCKUP_PYTHON
+export DOCKUP_PYMOL_PYTHON
 
 # Inputs
 PDB=$1

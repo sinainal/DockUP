@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .config import BASE, DOCK_DIR
+from .config import BASE, DOCK_DIR, WORKSPACE_DIR
 from .helpers import (
     normalize_docking_config,
     read_json,
@@ -325,7 +325,18 @@ def persist_root_run_meta(
     source_session_id: str = "",
 ) -> dict[str, Any]:
     """Persist a run-metadata entry (latest + history) under the output root."""
-    out_root_abs = Path(out_root).expanduser().resolve()
+    out_root_path = Path(out_root).expanduser()
+    if not out_root_path.is_absolute():
+        ws_candidate = (WORKSPACE_DIR / out_root_path).resolve()
+        if str(out_root).startswith("data/") or str(out_root).startswith("data\\"):
+            out_root_path = ws_candidate
+        elif ws_candidate.parent.exists():
+            out_root_path = ws_candidate
+        else:
+            out_root_path = (BASE / out_root_path).resolve()
+    else:
+        out_root_path = out_root_path.resolve()
+    out_root_abs = out_root_path
     meta_dir = out_root_abs / RUN_META_DIR_NAME
     meta_dir.mkdir(parents=True, exist_ok=True)
 

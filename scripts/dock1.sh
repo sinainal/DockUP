@@ -15,6 +15,10 @@ fi
 # Determine the best Python to use
 DOCKUP_PYTHON="${DOCKUP_PYTHON:-python3}"
 DOCKUP_PYMOL_PYTHON="${DOCKUP_PYMOL_PYTHON:-$DOCKUP_PYTHON}"
+if [ -x "$DOCKUP_PYTHON" ]; then
+  DOCKUP_BIN_DIR=$(dirname "$DOCKUP_PYTHON")
+  export PATH="$DOCKUP_BIN_DIR:$PATH"
+fi
 export PYTHONNOUSERSITE=1
 
 [ $# -ge 3 ] || { echo "Usage: $0 <PDBID> <CHAIN> <LIGAND_RESNAME> [--lig_spec path_to_sdf] [--pdb_file path_to_receptor.pdb] [--grid_pad value|x,y,z] [--grid_file path] [--pdb2pqr_ph value] [--pdb2pqr_ff name] [--pdb2pqr_ffout name] [--pdb2pqr_nodebump 1|0] [--pdb2pqr_keep_chain 1|0] [--mkrec_allow_bad_res 1|0] [--mkrec_default_altloc A] [--vina_exhaustiveness N] [--vina_num_modes N] [--vina_energy_range E] [--vina_cpu N] [--vina_seed N]"; exit 1; }
@@ -168,11 +172,15 @@ if [ -n "${CONDA_PREFIX:-}" ]; then
   fi
 fi
 
-#──────────────── 1. PyMOL – zincir-A + ligand ayır ─────────────────
-"$DOCKUP_PYMOL_PYTHON" - "$PDB" "$CHAIN" "$LIGAND_RESNAME" "${PDB_FILE:-}" <<'PY'
+#──────────────── 1. PyMOL – chain/ligand split (fallback without PyMOL) ─────────────────
+if "$DOCKUP_PYMOL_PYTHON" - "$PDB" "$CHAIN" "$LIGAND_RESNAME" "${PDB_FILE:-}" <<'PY'
 import sys
 from pathlib import Path
-import pymol2
+
+try:
+    import pymol2
+except ImportError:
+    raise SystemExit(90)
 
 pid = sys.argv[1]
 chain = sys.argv[2]
@@ -192,16 +200,13 @@ with pymol2.PyMOL() as pm:
     else:
         pm.cmd.fetch(pid, name=object_name)
     pm.cmd.remove('solvent')
-    # keep only the requested chain
     if use_chain:
         pm.cmd.remove(f'not chain {chain}')
     pm.cmd.remove('inorganic')
-    # select ligand by residue name (user-provided)
     if use_chain:
         pm.cmd.select('lig', f'resn {lig_resname} and chain {chain}')
     else:
         pm.cmd.select('lig', f'resn {lig_resname}')
-    # fallback to selecting organic if explicit residue not found
     if pm.cmd.count_atoms('lig') == 0:
         if use_chain:
             pm.cmd.select('lig', f'organic and chain {chain}')
@@ -211,6 +216,100 @@ with pymol2.PyMOL() as pm:
     pm.cmd.remove('lig')
     pm.cmd.save(f'{pid}_rec_raw.pdb', 'all')
 PY
+then
+  :
+else
+  pymol_rc=$?
+  if [ "$pymol_rc" -ne 90 ]; then
+    exit "$pymol_rc"
+  fi
+  echo "Warning: pymol2 not available. Falling back to plain PDB parsing." >&2
+  "$DOCKUP_PYTHON" - "$PDB" "$CHAIN" "$LIGAND_RESNAME" "${PDB_FILE:-}" "${LIG_SPEC:-}" <<'PY'
+import sys
+import urllib.request
+from pathlib import Path
+
+pid = sys.argv[1]
+chain = sys.argv[2]
+lig_resname = (sys.argv[3] or "").strip()
+pdb_path = (sys.argv[4] or "").strip()
+lig_spec = (sys.argv[5] or "").strip()
+use_chain = chain.lower() != "all"
+water_res = {"HOH", "WAT", "DOD"}
+
+
+def _load_pdb_text() -> str:
+    if pdb_path:
+        path = Path(pdb_path)
+        if not path.is_file():
+            raise SystemExit(f"Error: provided PDB file not found: {path}")
+        return path.read_text(encoding="utf-8", errors="ignore")
+    url = f"https://files.rcsb.org/download/{pid.upper()}.pdb"
+    with urllib.request.urlopen(url, timeout=30) as resp:
+        return resp.read().decode("utf-8", errors="ignore")
+
+
+pdb_text = _load_pdb_text()
+selected_lines: list[str] = []
+for raw in pdb_text.splitlines():
+    if not (raw.startswith("ATOM") or raw.startswith("HETATM")):
+        continue
+    atom_chain = (raw[21].strip() or "_") if len(raw) > 21 else "_"
+    if use_chain and atom_chain != chain:
+        continue
+    selected_lines.append(raw)
+
+if not selected_lines:
+    raise SystemExit(f"Error: no atoms found for {pid} chain={chain}")
+
+receptor_lines: list[str] = []
+ligand_lines: list[str] = []
+for line in selected_lines:
+    resname = line[17:20].strip() if len(line) >= 20 else ""
+    if resname in water_res:
+        continue
+    if line.startswith("HETATM"):
+        if lig_resname and resname == lig_resname:
+            ligand_lines.append(line)
+        continue
+    receptor_lines.append(line)
+
+if not receptor_lines:
+    raise SystemExit("Error: receptor extraction failed in fallback mode.")
+
+Path(f"{pid}_rec_raw.pdb").write_text("\n".join(receptor_lines) + "\nEND\n", encoding="utf-8")
+print(f"Fallback receptor saved: {pid}_rec_raw.pdb")
+
+if lig_spec:
+    # External ligand spec will be copied by shell code right after this block.
+    raise SystemExit(0)
+
+if not ligand_lines:
+    ligand_lines = [
+        line
+        for line in selected_lines
+        if line.startswith("HETATM")
+        and (line[17:20].strip() if len(line) >= 20 else "") not in water_res
+    ]
+if not ligand_lines:
+    raise SystemExit("Error: cannot extract native ligand without PyMOL and no --lig_spec.")
+
+ligand_pdb = Path(f"{pid}_ligand_from_pdb.pdb")
+ligand_pdb.write_text("\n".join(ligand_lines) + "\nEND\n", encoding="utf-8")
+
+try:
+    from rdkit import Chem
+
+    mol = Chem.MolFromPDBFile(str(ligand_pdb), removeHs=False, sanitize=False)
+    if mol is None:
+        raise RuntimeError("RDKit could not parse extracted ligand PDB block.")
+    Chem.MolToMolFile(mol, f"{pid}_ligand.sdf")
+except Exception as exc:
+    raise SystemExit(f"Error: ligand conversion fallback failed: {exc}")
+
+print(f"Fallback ligand saved: {pid}_ligand.sdf")
+PY
+fi
 # If user provided external ligand spec, copy it to expected filename
 if [ -n "$LIG_SPEC" ]; then
   if [ -f "$LIG_SPEC" ]; then
