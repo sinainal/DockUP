@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import time
 import urllib.error
@@ -31,7 +30,6 @@ TOTAL_TIMEOUT_SECONDS = 20 * 60
 
 WATER_NAMES = {"HOH", "WAT", "DOD"}
 NON_MAIN_LIGAND_HINTS = {"PEG", "OLA", "EDO", "GOL", "SO4"}
-LIGAND_TIMESTAMP_SUFFIX_RE = re.compile(r"_(\d{8}_\d{6})(?:_\d+)?$", re.IGNORECASE)
 
 _CFG = {"base_url": BASE_URL}
 
@@ -240,16 +238,6 @@ def _fetch_ethylene_smiles() -> tuple[str, str]:
     return smiles, source_name
 
 
-def _normalize_ligand_name_for_main_api(filename: str) -> str:
-    src = Path(str(filename or "").strip())
-    suffix = src.suffix.lower() or ".sdf"
-    stem = str(src.stem or "ligand").strip()
-    stem = LIGAND_TIMESTAMP_SUFFIX_RE.sub("", stem).strip("._-")
-    if not stem:
-        stem = "ligand"
-    return f"{stem}{suffix}"
-
-
 def _wait_for_run_end(timeout_sec: int) -> dict[str, Any]:
     deadline = time.time() + timeout_sec
     last_status = ""
@@ -289,6 +277,9 @@ def run_e2e() -> None:
 
     step("Clearing loaded receptors")
     _clear_loaded_receptors()
+
+    step("Clearing dock-ready ligand pool")
+    api("POST", "/api/ligands/active/clear", {})
 
     step("Loading receptor 6CM4")
     load_resp = api("POST", "/api/receptors/load", {"pdb_ids": "6CM4"}, timeout=180)
@@ -362,6 +353,12 @@ def run_e2e() -> None:
     step(f"Generated ligand file: {generated_name}")
 
     step("Adding generated ligand into main docking ligand directory")
+    before_list = api("GET", "/api/ligands/list")
+    before_ligands = {
+        str(item["name"] if isinstance(item, dict) else item).strip()
+        for item in (before_list.get("ligands") or [])
+        if str(item["name"] if isinstance(item, dict) else item).strip()
+    }
     add_resp = api(
         "POST",
         "/ligand-3d/api/ligands/add",
@@ -370,20 +367,31 @@ def run_e2e() -> None:
     copied = list(add_resp.get("copied") or [])
     if not copied:
         raise RuntimeError(f"/ligand-3d/api/ligands/add copied nothing: {add_resp}")
-    ligand_filename = str(copied[0])
-    step(f"Ligand added to docking inventory: {ligand_filename}")
+    ligand_filename = str(copied[0] or "").strip()
 
     lig_list_resp = api("GET", "/api/ligands/list")
-    ligands = [str(item["name"] if isinstance(item, dict) else item) for item in (lig_list_resp.get("ligands") or [])]
+    ligands = {
+        str(item["name"] if isinstance(item, dict) else item).strip()
+        for item in (lig_list_resp.get("ligands") or [])
+        if str(item["name"] if isinstance(item, dict) else item).strip()
+    }
     if ligand_filename not in ligands:
-        normalized = _normalize_ligand_name_for_main_api(ligand_filename)
-        if normalized in ligands:
-            ligand_filename = normalized
+        newly_added = sorted(name for name in ligands if name not in before_ligands)
+        if len(newly_added) == 1:
+            ligand_filename = newly_added[0]
         else:
             raise RuntimeError(
-                f"Added ligand {ligand_filename} not found in /api/ligands/list; "
-                f"normalized candidate={normalized}"
+                f"Cannot resolve added ligand name. copied={copied} newly_added={newly_added}"
             )
+    step(f"Ligand added to docking inventory: {ligand_filename}")
+
+    step("Adding ligand into dock-ready pool")
+    active_resp = api("POST", "/api/ligands/active/add", {"names": [ligand_filename]})
+    active_ligands = [str(item or "").strip() for item in (active_resp.get("active_ligands") or [])]
+    if ligand_filename not in active_ligands:
+        raise RuntimeError(
+            f"Failed to add ligand into dock-ready pool: {ligand_filename} response={active_resp}"
+        )
 
     step("Selecting ethylene ligand for receptor")
     api(

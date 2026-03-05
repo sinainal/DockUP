@@ -425,16 +425,46 @@ def relative_to_base(path: Path) -> str | None:
 
 
 def _default_report_source(report_root: Path) -> Path:
+    report_root = report_root.resolve()
     candidates = [
-        report_root,
-        report_root / "dimer_final",
         report_root / "dimer_final_linked",
+        report_root / "dimer_final",
         report_root / "dimer_full",
+        report_root,
     ]
+
+    for cand in candidates:
+        if not (cand.exists() and cand.is_dir()):
+            continue
+        rows = _collect_receptor_rows(cand)
+        if any(bool(row.get("ready")) for row in rows):
+            return cand.resolve()
+
     for cand in candidates:
         if cand.exists() and cand.is_dir():
             return cand.resolve()
-    return report_root.resolve()
+    return report_root
+
+
+def _find_ready_report_source(report_root: Path, current_source: Path) -> Path:
+    report_root = report_root.resolve()
+    current_source = current_source.resolve()
+    candidates: list[Path] = [current_source, _default_report_source(report_root)]
+    for directory in sorted((p for p in report_root.iterdir() if p.is_dir()), key=lambda p: p.name.lower()):
+        if directory.name.startswith("."):
+            continue
+        candidates.append(directory.resolve())
+    seen: set[Path] = set()
+    for cand in candidates:
+        if cand in seen:
+            continue
+        seen.add(cand)
+        if not cand.exists() or not cand.is_dir():
+            continue
+        rows = _collect_receptor_rows(cand)
+        if any(bool(row.get("ready")) for row in rows):
+            return cand
+    return current_source
 
 
 def _resolve_report_source(report_root: Path, source_path: str) -> Path:
@@ -1681,16 +1711,21 @@ def delete_report_image(payload: dict[str, Any]) -> JSONResponse:
 
 @router.get("/api/reports/image/{path:path}")
 def serve_report_image(path: str):
-    # Try WORKSPACE_DIR first (images live under workspace/data/dock/...)
-    target_path = (WORKSPACE_DIR / path).resolve()
-    if not target_path.exists():
-        target_path = (BASE / path).resolve()
-    if (
-        (target_path != BASE_RESOLVED and BASE_RESOLVED not in target_path.parents)
-        and (target_path != WORKSPACE_RESOLVED and WORKSPACE_RESOLVED not in target_path.parents)
-    ):
+    requested = Path(str(path or "").strip()).expanduser()
+    if not requested.is_absolute():
+        ws_candidate = (WORKSPACE_DIR / requested).resolve()
+        if ws_candidate.exists():
+            target_path = ws_candidate
+        else:
+            target_path = (BASE / requested).resolve()
+    else:
+        target_path = requested.resolve()
+
+    if target_path != DOCK_DIR_RESOLVED and DOCK_DIR_RESOLVED not in target_path.parents:
         raise HTTPException(status_code=404, detail="Image not found")
-    if not target_path.exists():
+    if target_path.suffix.lower() not in REPORT_IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=404, detail="Image not found")
+    if not target_path.exists() or not target_path.is_file():
         raise HTTPException(status_code=404, detail="Image not found")
     return FileResponse(str(target_path))
 
@@ -1722,8 +1757,18 @@ def trigger_graphs(payload: GraphPayload, background_tasks: BackgroundTasks) -> 
     _ = payload.linked_path
     _, _, plot_dir, _ = _report_output_paths(output_root)
     plot_dir.mkdir(parents=True, exist_ok=True)
-    if not _collect_receptor_rows(source_dir):
-        return JSONResponse({"error": "No receptor/ligand/run detected in selected source."}, status_code=400)
+    receptor_rows = _collect_receptor_rows(source_dir)
+    if not any(bool(row.get("ready")) for row in receptor_rows):
+        fallback_source = _find_ready_report_source(report_root, source_dir)
+        if fallback_source != source_dir:
+            source_dir = fallback_source
+            output_root = (source_dir / "report_outputs").resolve()
+            output_root.mkdir(parents=True, exist_ok=True)
+            _, _, plot_dir, _ = _report_output_paths(output_root)
+            plot_dir.mkdir(parents=True, exist_ok=True)
+            receptor_rows = _collect_receptor_rows(source_dir)
+        if not any(bool(row.get("ready")) for row in receptor_rows):
+            return JSONResponse({"error": "No receptor/ligand/run detected in selected source."}, status_code=400)
 
     requested = [script_id for script_id in payload.scripts if script_id in REPORT_PREDEFINED_PLOTS]
     selected = requested or list(REPORT_PREDEFINED_PLOTS.keys())
@@ -1767,7 +1812,8 @@ def trigger_graphs(payload: GraphPayload, background_tasks: BackgroundTasks) -> 
             tail_line = (proc.stdout or "").strip().splitlines()[-1:] or [""]
             expected_file = tmp_out / spec["filename"]
             if proc.returncode != 0 or not expected_file.exists():
-                errors.append(f"{script_id} failed")
+                detail = tail_line[0].strip() if tail_line else ""
+                errors.append(f"{script_id} failed{(': ' + detail) if detail else ''}")
                 logs.append(f"{script_id}: {tail_line[0]}")
             else:
                 stem = Path(spec["filename"]).stem
@@ -1784,7 +1830,13 @@ def trigger_graphs(payload: GraphPayload, background_tasks: BackgroundTasks) -> 
         state["message"] = "Plots generated." if not errors else "Plots completed with errors."
 
     background_tasks.add_task(run_plot_job, REPORT_STATE, selected, source_dir, plot_dir)
-    return JSONResponse({"status": "started"})
+    return JSONResponse(
+        {
+            "status": "started",
+            "source_path": to_display_path(source_dir),
+            "output_path": to_display_path(output_root),
+        }
+    )
 
 
 @router.post("/api/reports/render")
@@ -1817,7 +1869,31 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
     if payload.is_preview and selected:
         selected = selected[:1]
     if not selected:
-        return JSONResponse({"error": "No render-ready receptors found for selected source."}, status_code=400)
+        fallback_source = _find_ready_report_source(report_root, source_dir)
+        if fallback_source != source_dir:
+            source_dir = fallback_source
+            output_root = (source_dir / "report_outputs").resolve()
+            output_root.mkdir(parents=True, exist_ok=True)
+            _, render_dir, _, _ = _report_output_paths(output_root)
+            render_dir.mkdir(parents=True, exist_ok=True)
+            receptor_rows = _collect_receptor_rows(source_dir)
+            receptor_ids, ligand_names = _collect_entities_from_rows(receptor_rows)
+            source_metadata = _load_source_metadata(source_dir, receptor_ids, ligand_names)
+            ligand_order_index = {
+                str(name): idx
+                for idx, name in enumerate(source_metadata.get("ligand_order") or [])
+                if str(name)
+            }
+            receptor_inventory = _collect_receptor_inventory(source_dir)
+            ready_receptors = [row["id"] for row in receptor_rows if row.get("ready")]
+            receptor_index = {row["id"]: row for row in receptor_rows}
+            selected = [item for item in payload.receptors if item in ready_receptors]
+            if not selected:
+                selected = ready_receptors
+            if payload.is_preview and selected:
+                selected = selected[:1]
+        if not selected:
+            return JSONResponse({"error": "No render-ready receptors found for selected source."}, status_code=400)
 
     is_preview_mode = bool(payload.is_preview)
     dpi = int(payload.dpi or 120)

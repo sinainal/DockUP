@@ -55,7 +55,7 @@ echo ""
 # ── Check if already set up ──────────────────────────────────────────────────
 if [ "$FORCE" -eq 0 ] && [ -f "$SETUP_DONE_FILE" ] && [ -f "$VENV_DIR/bin/activate" ]; then
   # Verify the venv Python still works
-  if "$VENV_DIR/bin/python" -c "import fastapi, uvicorn" 2>/dev/null; then
+  if "$VENV_DIR/bin/python" -c "import fastapi, uvicorn, matplotlib, docx" 2>/dev/null; then
     success "DockUP is already set up (use --force to re-install)"
     echo ""
     exit 0

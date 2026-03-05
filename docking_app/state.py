@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import Any
 
-from .config import DOCK_DIR
+from .config import DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR
 
 AMINO_ACIDS = {
     "ALA", "ARG", "ASN", "ASP", "CYS", "GLU", "GLN", "GLY",
@@ -58,6 +59,7 @@ STATE: dict[str, Any] = {
     "selected_receptor": "",
     "selected_ligand": "",
     "selected_chain": "all",
+    "active_ligands": [],
     "grid_file_path": "",
     "queue": [],
     "runs": 1,
@@ -101,11 +103,13 @@ from pathlib import Path as _Path
 
 _WORKSPACE_DIR = DOCK_DIR.parents[1]          # .../workspace
 _STATE_CACHE_PATH = DOCK_DIR / ".state_cache.json"
+_RECEPTOR_DIR_RESOLVED = RECEPTOR_DIR.resolve()
+_LIGAND_DIR_RESOLVED = LIGAND_DIR.resolve()
 
 # Fields to persist (exclude large pdb_text blobs)
 _PERSIST_KEYS = (
     "mode", "selection_map", "selected_receptor", "selected_ligand",
-    "selected_chain", "grid_file_path", "queue", "runs", "grid_pad",
+    "selected_chain", "active_ligands", "grid_file_path", "queue", "runs", "grid_pad",
     "docking_config", "out_root", "out_root_path", "out_root_name",
     "results_root_path",
 )
@@ -113,6 +117,70 @@ _PERSIST_KEYS = (
 _PATH_KEYS = frozenset({
     "out_root", "out_root_path", "results_root_path", "grid_file_path",
 })
+
+
+def _normalize_receptor_id(raw: Any) -> str:
+    return str(raw or "").strip().upper()
+
+
+def _normalize_selection_map(raw_map: Any) -> dict[str, dict[str, str]]:
+    normalized: dict[str, dict[str, str]] = {}
+    if not isinstance(raw_map, dict):
+        return normalized
+    for raw_key, raw_val in raw_map.items():
+        pdb_id = _normalize_receptor_id(raw_key)
+        if not pdb_id:
+            continue
+        source = raw_val if isinstance(raw_val, dict) else {}
+        normalized[pdb_id] = {
+            "chain": str(source.get("chain", "all") or "all"),
+            "ligand_resname": str(source.get("ligand_resname", "") or ""),
+        }
+    return normalized
+
+
+def _normalize_active_ligands(raw_list: Any) -> list[str]:
+    available = {p.name for p in _LIGAND_DIR_RESOLVED.glob("*.sdf") if p.is_file()}
+    out: list[str] = []
+    seen: set[str] = set()
+    values = raw_list if isinstance(raw_list, list) else []
+    for raw in values:
+        name = str(raw or "").strip()
+        if not name or name in seen:
+            continue
+        if name not in available:
+            continue
+        out.append(name)
+        seen.add(name)
+    return out
+
+
+def _normalize_cached_receptor_meta(raw_meta: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if not isinstance(raw_meta, list):
+        return normalized
+    for raw_item in raw_meta:
+        if not isinstance(raw_item, dict):
+            continue
+        entry = dict(raw_item)
+        pdb_id = _normalize_receptor_id(entry.get("pdb_id"))
+        if not pdb_id or pdb_id in seen:
+            continue
+        if pdb_id.startswith("TMP_PROBE"):
+            continue
+        pdb_file = str(entry.get("pdb_file") or "").strip()
+        if pdb_file:
+            resolved = Path(pdb_file).expanduser().resolve()
+            if resolved != _RECEPTOR_DIR_RESOLVED and _RECEPTOR_DIR_RESOLVED not in resolved.parents:
+                continue
+            if not resolved.exists() or not resolved.is_file():
+                continue
+            entry["pdb_file"] = str(resolved)
+        entry["pdb_id"] = pdb_id
+        normalized.append(entry)
+        seen.add(pdb_id)
+    return normalized
 
 
 def _path_is_stale(raw: str) -> bool:
@@ -173,9 +241,31 @@ def load_state_cache() -> None:
             val = _fix_path(val)
         STATE[k] = val
 
-    cached_meta = raw.get("receptor_meta", [])
-    if cached_meta:
-        STATE["receptor_meta"] = cached_meta
+    STATE["selection_map"] = _normalize_selection_map(STATE.get("selection_map", {}))
+    STATE["active_ligands"] = _normalize_active_ligands(raw.get("active_ligands", STATE.get("active_ligands", [])))
+
+    cached_meta = _normalize_cached_receptor_meta(raw.get("receptor_meta", []))
+    STATE["receptor_meta"] = cached_meta
+    known_ids = {item.get("pdb_id", "") for item in cached_meta}
+    if known_ids:
+        STATE["selection_map"] = {
+            pid: STATE["selection_map"].get(pid, {"chain": "all", "ligand_resname": ""})
+            for pid in known_ids
+            if pid
+        }
+    else:
+        STATE["selection_map"] = {}
+    for pdb_id in known_ids:
+        STATE["selection_map"].setdefault(pdb_id, {"chain": "all", "ligand_resname": ""})
+    if STATE["receptor_meta"]:
+        selected = _normalize_receptor_id(STATE.get("selected_receptor", ""))
+        if selected not in known_ids:
+            selected = STATE["receptor_meta"][0]["pdb_id"]
+        STATE["selected_receptor"] = selected
+    else:
+        STATE["selected_receptor"] = ""
+        STATE["selected_ligand"] = ""
+        STATE["selected_chain"] = "all"
 
     # Drop queue if any job has stale paths
     queue = STATE.get("queue", [])
@@ -189,4 +279,3 @@ def load_state_cache() -> None:
 
 # Load cache immediately on import (covers hot-reload scenario)
 load_state_cache()
-

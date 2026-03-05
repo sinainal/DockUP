@@ -11,7 +11,12 @@
     href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap"
     rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css?v=31">
-  <script src="https://unpkg.com/ngl@2.0.0-dev.39/dist/ngl.js"></script>
+  <script src="/static/vendor/ngl.js?v=1"></script>
+  <script>
+    if (typeof window.NGL === "undefined") {
+      document.write('<script src="https://unpkg.com/ngl@2.0.0-dev.39/dist/ngl.js"><\\/script>');
+    }
+  </script>
 </head>
 
 <body>
@@ -50,25 +55,24 @@
             <div class="results-toolbar" style="margin-bottom: 10px; justify-content:flex-start;">
               <button class="primary" id="openLigand3dPopup" type="button">Fetch Ligand</button>
             </div>
-            <div class="selected-ligands-card">
+            <div class="helper" style="margin-bottom:10px;">
+              Ligand secimi ve dock-ready listeye ekleme islemlerini <b>Fetch Ligand</b> popup tablosundan yapin.
+            </div>
+            <div class="selected-ligands-card" style="margin-top:10px;">
               <div class="selected-ligands-header">
                 <div>
-                  <div class="selected-ligands-title">Selected Ligands</div>
-                  <div class="helper">Docking icin kullanilacak aktif ligand havuzu</div>
-                </div>
-                <div class="selected-ligands-actions">
-                  <span class="helper" id="selectedLigandsCount">0 selected</span>
-                  <button class="secondary" id="clearSelectedLigandsBtn" type="button" disabled>Clear Selected</button>
+                  <div class="selected-ligands-title">Dock-ready Ligands</div>
+                  <div class="helper">Queue sadece bu listedeki ligandlari kullanir</div>
                 </div>
               </div>
-              <div class="pill-list" id="ligandList"></div>
+              <div class="pill-list" id="activeLigandList"></div>
             </div>
           </div>
 
           <div class="section" data-mode="dock">
             <div class="section-title">Receptors</div>
             <div class="field">
-              <label class="field-label">PDB IDs (one per line)</label>
+              <label class="field-label">PDB IDs (line or space separated)</label>
               <textarea id="pdbIds" rows="4" placeholder="7X2F&#10;6CM4&#10;3PBL"></textarea>
             </div>
             <div class="field">
@@ -80,6 +84,15 @@
               </div>
             </div>
             <button class="primary" id="loadReceptors">Load receptor info</button>
+            <div class="selected-ligands-card" style="margin-top:10px;">
+              <div class="selected-ligands-header">
+                <div>
+                  <div class="selected-ligands-title">Stored Receptors</div>
+                  <div class="helper">Previously saved receptor PDB files in <code>data/receptor</code></div>
+                </div>
+              </div>
+              <div class="pill-list" id="receptorFileList"></div>
+            </div>
           </div>
 
           <div class="section" data-mode="dock">
@@ -276,9 +289,13 @@
           <div class="section" id="resultsSection" data-mode="results">
             <div class="section-title">Results Analysis</div>
             <div class="field">
+              <label class="field-label">Dock folders</label>
+              <select id="resultsDockFolderSelect"></select>
+            </div>
+            <div class="field">
               <label class="field-label">Results folder</label>
               <div class="results-path-row">
-                <input type="text" id="resultsRootPath" placeholder="data/dock" readonly>
+                <input type="text" id="resultsRootPath" placeholder="data/dock" value="data/dock" readonly>
                 <button class="secondary" id="pickResultsRoot" type="button">Choose</button>
                 <input type="file" id="resultsRootPicker" webkitdirectory directory style="display:none;">
               </div>
@@ -773,7 +790,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=40"></script>
+  <script src="/static/app.js?v=41"></script>
 </body>
 
 </html>

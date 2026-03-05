@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..config import BASE, DOCK_DIR, RECEPTOR_DIR
 from ..helpers import normalize_docking_config, read_json, write_json
-from ..services import _existing_files, _init_selection_map, _load_receptor_meta
+from ..services import _existing_files, _init_selection_map, _load_receptor_meta, _normalize_receptor_id
 from ..state import DOCKING_CONFIG_DEFAULTS, STATE
 
 router = APIRouter()
@@ -33,7 +33,9 @@ def save_config(payload: dict[str, Any]) -> StreamingResponse:
     grid_data = payload.get("grid_data", {})
     
     for r in STATE["receptor_meta"]:
-        pdb_id = r["pdb_id"]
+        pdb_id = _normalize_receptor_id(r.get("pdb_id"))
+        if not pdb_id:
+            continue
         sel = sel_map.get(pdb_id, {})
         grid = grid_data.get(pdb_id, {})
         
@@ -94,8 +96,9 @@ def load_config(file: UploadFile = File(...)) -> JSONResponse:
             
             # 1. Load Receptors
             pdb_ids = df["pdb_id"].dropna().astype(str).unique().tolist()
+            pdb_ids = [_normalize_receptor_id(pid) for pid in pdb_ids if _normalize_receptor_id(pid)]
             if pdb_ids:
-                existing_ids = {r["pdb_id"] for r in STATE["receptor_meta"]}
+                existing_ids = {_normalize_receptor_id(r.get("pdb_id")) for r in STATE["receptor_meta"]}
                 new_ids = [p for p in pdb_ids if p not in existing_ids]
                 
                 if new_ids:
@@ -106,7 +109,9 @@ def load_config(file: UploadFile = File(...)) -> JSONResponse:
 
             # 2. Restore State
             for _, row in df.iterrows():
-                pdb_id = str(row["pdb_id"])
+                pdb_id = _normalize_receptor_id(row.get("pdb_id"))
+                if not pdb_id:
+                    continue
                 
                 # Selection
                 selection_map[pdb_id] = {
@@ -167,4 +172,3 @@ def load_config(file: UploadFile = File(...)) -> JSONResponse:
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
-

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -20,6 +21,7 @@ from fastapi import HTTPException, UploadFile
 from . import state
 from .config import BASE, DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR, WORKSPACE_DIR
 from .helpers import normalize_docking_config
+from .manifest import RUN_META_DIR_NAME
 from .state import (
     AMINO_ACIDS,
     DIST_TAG_PRIORITY,
@@ -34,10 +36,22 @@ from .state import (
 # File upload / list
 # ---------------------------------------------------------------------------
 
+def _sanitize_upload_filename(filename: str) -> str:
+    raw = str(filename or "").strip().replace("\\", "/")
+    name = Path(raw).name.strip()
+    if not name or name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid upload filename.")
+    return name
+
+
 def _save_uploads(files: list[UploadFile], out_dir: Path) -> list[str]:
     saved = []
+    out_dir_resolved = out_dir.resolve()
     for f in files:
-        out_path = out_dir / f.filename
+        safe_name = _sanitize_upload_filename(f.filename)
+        out_path = (out_dir / safe_name).resolve()
+        if out_path != out_dir_resolved and out_dir_resolved not in out_path.parents:
+            raise HTTPException(status_code=400, detail="Invalid upload filename.")
         out_path.write_bytes(f.file.read())
         saved.append(str(out_path))
     return saved
@@ -96,21 +110,55 @@ def _parse_pdb_chains_and_ligands(pdb_text: str) -> tuple[list[str], dict[str, l
 # Receptor metadata
 # ---------------------------------------------------------------------------
 
+def _normalize_receptor_id(raw: Any) -> str:
+    return str(raw or "").strip().upper()
+
+
+def _resolve_receptor_file_for_id(pdb_id: str) -> Path:
+    normalized = _normalize_receptor_id(pdb_id)
+    for cand in _existing_files(RECEPTOR_DIR, (".pdb",)):
+        if _normalize_receptor_id(cand.stem) == normalized:
+            return cand
+    return RECEPTOR_DIR / f"{normalized}.pdb"
+
+
 def _load_receptor_meta(pdb_ids: list[str], pdb_files: list[Path]) -> list[dict[str, Any]]:
     meta: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
     for pdb in pdb_ids:
+        pdb_id = _normalize_receptor_id(pdb)
+        if not pdb_id or pdb_id in seen_ids:
+            continue
         text = _fetch_pdb_text(pdb)
         if text is None:
-            meta.append(
-                {
-                    "pdb_id": pdb,
-                    "pdb_file": "",
-                    "pdb_text": None,
-                    "chains": ["all"],
-                    "ligands_by_chain": {"all": []},
-                    "error": "Fetch failed",
-                }
-            )
+            continue
+        pdb_file = _resolve_receptor_file_for_id(pdb_id)
+        try:
+            if not pdb_file.exists() or pdb_file.read_text(errors="ignore") != text:
+                pdb_file.write_text(text, encoding="utf-8")
+        except OSError:
+            pass
+        chains, ligands_by_chain = _parse_pdb_chains_and_ligands(text)
+        chains = ["all"] + [c for c in chains if c != "all"]
+        if ligands_by_chain:
+            all_ligs = sorted({lig for ligs in ligands_by_chain.values() for lig in ligs})
+            ligands_by_chain = dict(ligands_by_chain)
+            ligands_by_chain["all"] = all_ligs
+        meta.append(
+            {
+                "pdb_id": pdb_id,
+                "pdb_file": str(pdb_file.resolve()),
+                "pdb_text": text,
+                "chains": chains or ["all"],
+                "ligands_by_chain": ligands_by_chain or {"all": []},
+                "error": "",
+            }
+        )
+        seen_ids.add(pdb_id)
+    for f in pdb_files:
+        text = f.read_text(errors="ignore")
+        pdb_id = _normalize_receptor_id(f.stem)
+        if not pdb_id or pdb_id in seen_ids:
             continue
         chains, ligands_by_chain = _parse_pdb_chains_and_ligands(text)
         chains = ["all"] + [c for c in chains if c != "all"]
@@ -120,25 +168,7 @@ def _load_receptor_meta(pdb_ids: list[str], pdb_files: list[Path]) -> list[dict[
             ligands_by_chain["all"] = all_ligs
         meta.append(
             {
-                "pdb_id": pdb,
-                "pdb_file": "",
-                "pdb_text": text,
-                "chains": chains or ["all"],
-                "ligands_by_chain": ligands_by_chain or {"all": []},
-                "error": "",
-            }
-        )
-    for f in pdb_files:
-        text = f.read_text(errors="ignore")
-        chains, ligands_by_chain = _parse_pdb_chains_and_ligands(text)
-        chains = ["all"] + [c for c in chains if c != "all"]
-        if ligands_by_chain:
-            all_ligs = sorted({lig for ligs in ligands_by_chain.values() for lig in ligs})
-            ligands_by_chain = dict(ligands_by_chain)
-            ligands_by_chain["all"] = all_ligs
-        meta.append(
-            {
-                "pdb_id": f.stem,
+                "pdb_id": pdb_id,
                 "pdb_file": str(f),
                 "pdb_text": text,
                 "chains": chains or ["all"],
@@ -146,17 +176,19 @@ def _load_receptor_meta(pdb_ids: list[str], pdb_files: list[Path]) -> list[dict[
                 "error": "",
             }
         )
+        seen_ids.add(pdb_id)
     return meta
 
 
 def _summarize_receptors(meta: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
     for item in meta:
+        pdb_id = _normalize_receptor_id(item.get("pdb_id", ""))
         lig_count = sum(len(v) for v in item.get("ligands_by_chain", {}).values())
         source = "file" if item.get("pdb_file") else "pdb"
         rows.append(
             {
-                "pdb_id": item["pdb_id"],
+                "pdb_id": pdb_id,
                 "chains_str": ", ".join(item.get("chains", [])),
                 "chains": item.get("chains", []),
                 "ligands_by_chain": item.get("ligands_by_chain", {}),
@@ -205,8 +237,11 @@ def _parse_grid_file(path: str) -> dict[str, float] | None:
 
 
 def _get_meta(pdb_id: str) -> dict[str, Any] | None:
+    normalized = _normalize_receptor_id(pdb_id)
+    if not normalized:
+        return None
     for item in STATE["receptor_meta"]:
-        if item["pdb_id"] == pdb_id:
+        if _normalize_receptor_id(item.get("pdb_id")) == normalized:
             return item
     return None
 
@@ -214,7 +249,10 @@ def _get_meta(pdb_id: str) -> dict[str, Any] | None:
 def _init_selection_map(meta: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
     selection: dict[str, dict[str, str]] = {}
     for item in meta:
-        selection[item["pdb_id"]] = {"chain": "all", "ligand_resname": ""}
+        pdb_id = _normalize_receptor_id(item.get("pdb_id"))
+        if not pdb_id:
+            continue
+        selection[pdb_id] = {"chain": "all", "ligand_resname": ""}
     return selection
 
 
@@ -564,7 +602,11 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
         payload.get("docking_config") or STATE.get("docking_config") or {}
     )
 
-    ligands = _existing_files(LIGAND_DIR, (".sdf",))
+    ligand_files = _existing_files(LIGAND_DIR, (".sdf",))
+    ligand_file_map = {lig.name: lig for lig in ligand_files}
+    active_ligands = [str(name or "").strip() for name in STATE.get("active_ligands", [])]
+    active_ligands = [name for name in active_ligands if name in ligand_file_map]
+    active_set = set(active_ligands)
     entries: list[dict[str, Any]] = []
 
     batch_id = int(time.time() * 1000)
@@ -593,12 +635,25 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 target_ligands = [{"name": selected_ligand, "path": ""}]
         else:
             if selected_ligand == "all_set":
-                target_ligands = [{"name": l.name, "path": str(l)} for l in ligands]
+                if not active_ligands:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No dock-ready ligands selected. Use Add Selected in Ligands section.",
+                    )
+                target_ligands = [{"name": name, "path": str(ligand_file_map[name])} for name in active_ligands]
             elif selected_ligand:
-                for lig in ligands:
-                    if lig.name == selected_ligand:
-                        target_ligands = [{"name": lig.name, "path": str(lig)}]
-                        break
+                if selected_ligand not in active_set:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Ligand '{selected_ligand}' is not in dock-ready ligands.",
+                    )
+                lig = ligand_file_map.get(selected_ligand)
+                if lig is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Ligand file not found for '{selected_ligand}'.",
+                    )
+                target_ligands = [{"name": lig.name, "path": str(lig)}]
 
         grid_file_path = DOCK_DIR / f"{pdb_id}_{batch_id}_gridbox.txt"
         grid_file_path.write_text(
@@ -685,9 +740,12 @@ def _start_run(
                 out_root_path = (WORKSPACE_DIR / rel).resolve()
             except StopIteration:
                 pass  # Can't fix, will fail later with a clear error
+    dock_root = DOCK_DIR.resolve()
+    if out_root_path != dock_root and dock_root not in out_root_path.parents:
+        raise HTTPException(status_code=400, detail="out_root must stay inside data/dock.")
     out_root_path = out_root_path.resolve()
     out_root_path.mkdir(parents=True, exist_ok=True)
-    run_meta_dir = out_root_path / "_run_meta"
+    run_meta_dir = out_root_path / RUN_META_DIR_NAME
     run_meta_dir.mkdir(parents=True, exist_ok=True)
     batch_stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int((time.time() % 1) * 1000):03d}"
     batch_log_path = run_meta_dir / f"batch_{batch_stamp}.log"
@@ -757,11 +815,11 @@ def _start_run(
     script_lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
-        f"SCRIPT_DIR=\"{script_dir}\"",
-        f"MANIFEST=\"{manifest_path}\"",
+        f"SCRIPT_DIR={shlex.quote(str(script_dir))}",
+        f"MANIFEST={shlex.quote(str(manifest_path))}",
         f"RUNS=\"{runs}\"",
         f"TOTAL_RUNS=\"{total_runs}\"",
-        f"OUT_ROOT=\"{out_root_path}\"",
+        f"OUT_ROOT={shlex.quote(str(out_root_path))}",
         "ts() { date '+%Y-%m-%d %H:%M:%S'; }",
         "is_empty() { [[ -z \"$1\" || \"$1\" == \"__EMPTY__\" ]]; }",
         "job_total=$(grep -vE '^\\s*$|^#' \"$MANIFEST\" | wc -l | awk '{print $1}')",

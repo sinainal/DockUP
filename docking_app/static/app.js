@@ -3,6 +3,8 @@
 // Simplified and fixed version with better quality
 // =====================================================
 
+const RESULTS_DOCK_ROOT = "data/dock";
+
 const appState = {
   mode: "Docking",
   selectedReceptor: "",
@@ -12,7 +14,8 @@ const appState = {
   queueCount: 0,
   runStatus: "idle",
   selectionMap: {},
-  resultsRootPath: "data/dock",
+  activeLigands: [],
+  resultsRootPath: RESULTS_DOCK_ROOT,
   resultsView: "runs",
   resultsData: { runs: [], averages: [] },
   selectedResultDir: "",
@@ -128,9 +131,7 @@ function initElements() {
   els.ligandSection = document.getElementById("ligandSection");
   els.ligandUpload = document.getElementById("ligandUpload");
   els.ligandUploadName = document.getElementById("ligandUploadName");
-  els.ligandList = document.getElementById("ligandList");
-  els.selectedLigandsCount = document.getElementById("selectedLigandsCount");
-  els.clearSelectedLigandsBtn = document.getElementById("clearSelectedLigandsBtn");
+  els.activeLigandList = document.getElementById("activeLigandList");
   els.openLigand3dPopup = document.getElementById("openLigand3dPopup");
   els.closeLigand3dPopup = document.getElementById("closeLigand3dPopup");
   els.ligand3dModal = document.getElementById("ligand3dModal");
@@ -139,6 +140,7 @@ function initElements() {
   els.receptorUpload = document.getElementById("receptorUpload");
   els.receptorUploadName = document.getElementById("receptorUploadName");
   els.loadReceptors = document.getElementById("loadReceptors");
+  els.receptorFileList = document.getElementById("receptorFileList");
   els.receptorSummary = document.getElementById("receptorSummary");
   els.ligandTable = document.getElementById("ligandTable");
   els.runCount = document.getElementById("runCount");
@@ -150,6 +152,7 @@ function initElements() {
   els.outRootName = document.getElementById("outRootName");
   els.pickOutRoot = document.getElementById("pickOutRoot");
   els.outRootPicker = document.getElementById("outRootPicker");
+  els.resultsDockFolderSelect = document.getElementById("resultsDockFolderSelect");
   els.resultsRootPath = document.getElementById("resultsRootPath");
   els.pickResultsRoot = document.getElementById("pickResultsRoot");
   els.resultsRootPicker = document.getElementById("resultsRootPicker");
@@ -599,6 +602,8 @@ async function loadState() {
     appState.selectedReceptor = data.selected_receptor || "";
     appState.selectedLigand = data.selected_ligand || "";
     appState.selectedChain = data.selected_chain || "all";
+    appState.activeLigands = Array.isArray(data.active_ligands) ? data.active_ligands : [];
+    activeLigands = [...appState.activeLigands];
     appState.gridFilePath = data.grid_file_path || "";
     appState.queueCount = data.queue_count || 0;
     appState.runStatus = data.run_status || "idle";
@@ -614,8 +619,8 @@ async function loadState() {
       els.outRootName.value = data.out_root_name || "";
     }
     if (els.resultsRootPath) {
-      els.resultsRootPath.value = data.results_root_path || "data/dock";
-      appState.resultsRootPath = els.resultsRootPath.value;
+      els.resultsRootPath.value = RESULTS_DOCK_ROOT;
+      appState.resultsRootPath = RESULTS_DOCK_ROOT;
     }
     applyAdvancedDockingConfigToModal(appState.dockingConfig);
     renderDockingConfigSummary();
@@ -700,8 +705,19 @@ function closeLigand3dModal() {
 // NGL Viewer Functions
 // =====================================================
 
+function setViewportMessage(message) {
+  const viewport = document.getElementById("viewport");
+  if (!viewport) return;
+  viewport.innerHTML = `<div class="helper" style="padding:12px;">${message}</div>`;
+}
+
 function initViewer() {
-  if (stage) return;
+  if (stage) return true;
+  if (typeof window.NGL === "undefined" || !window.NGL.Stage) {
+    setViewportMessage("NGL could not be loaded. Please refresh the page.");
+    console.error("NGL is not available on window.");
+    return false;
+  }
 
   stage = new NGL.Stage("viewport", {
     backgroundColor: "white",
@@ -782,6 +798,7 @@ function initViewer() {
     });
     viewerPoseSyncBound = true;
   }
+  return true;
 }
 
 function updateRepresentations() {
@@ -1297,9 +1314,11 @@ function populateLigandTableFromStructure(structure) {
 // =====================================================
 
 async function refreshViewer() {
-  if (!appState.selectedReceptor) return;
-
-  initViewer();
+  if (!appState.selectedReceptor) {
+    setViewportMessage("Load a receptor to start the viewer.");
+    return;
+  }
+  if (!initViewer()) return;
 
   try {
     const data = await fetchJSON(`/api/receptors/${appState.selectedReceptor}`);
@@ -1456,9 +1475,55 @@ function renderInteractionLegend() {
 // Results Analysis
 // =====================================================
 
+function renderResultsDockFolderOptions(selectedPath = "") {
+  if (!els.resultsDockFolderSelect) return;
+  const select = els.resultsDockFolderSelect;
+  select.innerHTML = "";
+  const rows = Array.isArray(resultsDockFolders) ? [...resultsDockFolders] : [];
+  if (!rows.length) {
+    rows.push({ name: "All dock folders", path: RESULTS_DOCK_ROOT });
+  }
+
+  const normalized = String(selectedPath || "").trim();
+  const hasSelected = rows.some((row) => String(row.path || "").trim() === normalized);
+  if (normalized && !hasSelected) {
+    rows.push({ name: normalized, path: normalized });
+  }
+
+  rows.forEach((row) => {
+    const opt = document.createElement("option");
+    opt.value = String(row.path || RESULTS_DOCK_ROOT);
+    opt.textContent = String(row.name || row.path || RESULTS_DOCK_ROOT);
+    select.appendChild(opt);
+  });
+
+  const fallback = normalized || RESULTS_DOCK_ROOT;
+  select.value = fallback;
+  if (!select.value && rows.length) {
+    select.value = String(rows[0].path || RESULTS_DOCK_ROOT);
+  }
+
+  if (els.resultsRootPath) {
+    els.resultsRootPath.value = select.value || RESULTS_DOCK_ROOT;
+  }
+  appState.resultsRootPath = select.value || RESULTS_DOCK_ROOT;
+}
+
+async function refreshResultsDockFolders(selectedPath = "") {
+  try {
+    const data = await fetchJSON("/api/results/dock-folders");
+    resultsDockFolders = Array.isArray(data.folders) ? data.folders : [];
+  } catch (err) {
+    console.error("Failed to load dock folders:", err);
+    resultsDockFolders = [{ name: "All dock folders", path: RESULTS_DOCK_ROOT }];
+  }
+  const desired = String(selectedPath || els.resultsRootPath?.value || appState.resultsRootPath || RESULTS_DOCK_ROOT).trim();
+  renderResultsDockFolderOptions(desired || RESULTS_DOCK_ROOT);
+}
+
 async function scanResults() {
   const prevRoot = normalizePathForCompare(appState.resultsRootPath);
-  const rootPath = els.resultsRootPath?.value || "data/dock";
+  const rootPath = els.resultsRootPath?.value || RESULTS_DOCK_ROOT;
   const data = await fetchJSON("/api/results/scan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1466,6 +1531,11 @@ async function scanResults() {
   });
   const resolvedRoot = data.root_path || rootPath;
   appState.resultsRootPath = resolvedRoot;
+  if (els.resultsRootPath) {
+    els.resultsRootPath.value = resolvedRoot;
+  }
+  renderResultsDockFolderOptions(resolvedRoot);
+  await refreshResultsDockFolders(resolvedRoot);
   appState.resultsData = data || { runs: [], averages: [] };
   appState.selectedResultDir = "";
   currentResultPdbKey = "";
@@ -1790,7 +1860,7 @@ function getPdbResultKey(result) {
 async function loadResultStructure(result, originalReceptorPath) {
   const path = String(result?.complex_path || result?.pose_path || result?.receptor_path || "").trim();
   if (!path) return;
-  initViewer();
+  if (!initViewer()) return;
   const pdbKey = getPdbResultKey(result);
   currentResultPdbKey = pdbKey || "";
   const cachedPose = pdbKey ? resultPoseByPdb.get(pdbKey) : null;
@@ -2163,9 +2233,10 @@ function applyGridbox() {
 
 // Store uploaded ligands globally to populate dropdowns
 let uploadedLigands = [];
-let selectedLigandsForRemoval = new Set();
-let pendingAutoSelectLigands = new Set();
-let ligandListInitialized = false;
+let activeLigands = [];
+let storedReceptorFiles = [];
+let resultsDockFolders = [];
+let ligandInventoryInitialized = false;
 let dockingConfigSnapshot = null;
 
 const UI_STATE_KEY = "docking_app_ui_state_v1";
@@ -2191,7 +2262,6 @@ function saveUIState() {
       resultsView: appState.resultsView,
       selectionMap: appState.selectionMap,
       gridDataPerReceptor,
-      selectedLigands: Array.from(selectedLigandsForRemoval),
       dockingConfig: normalizeDockingConfig(appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
       ui: {
         runCount: String(els.runCount?.value || ""),
@@ -2260,7 +2330,17 @@ async function restoreUIState() {
 
   const savedSelectionMap = toObjectOrEmpty(saved.selectionMap);
   if (Object.keys(savedSelectionMap).length) {
-    appState.selectionMap = savedSelectionMap;
+    const normalizedSelection = {};
+    Object.entries(savedSelectionMap).forEach(([key, val]) => {
+      const pdbId = String(key || "").trim().toUpperCase();
+      if (!pdbId) return;
+      const row = val && typeof val === "object" ? val : {};
+      normalizedSelection[pdbId] = {
+        chain: String(row.chain || "all"),
+        ligand_resname: String(row.ligand_resname || ""),
+      };
+    });
+    appState.selectionMap = normalizedSelection;
   }
 
   const savedGridMap = toObjectOrEmpty(saved.gridDataPerReceptor);
@@ -2269,18 +2349,14 @@ async function restoreUIState() {
   }
   appState.dockingConfig = normalizeDockingConfig(saved.dockingConfig || appState.dockingConfig || DEFAULT_DOCKING_CONFIG);
 
-  if (Array.isArray(saved.selectedLigands)) {
-    selectedLigandsForRemoval = new Set(saved.selectedLigands.map((x) => String(x || "").trim()).filter(Boolean));
-  }
-
   if (els.runCount && ui.runCount !== undefined) els.runCount.value = String(ui.runCount);
   const gridPaddingEl = document.getElementById("gridPadding");
   if (gridPaddingEl && ui.gridPadding !== undefined) gridPaddingEl.value = String(ui.gridPadding);
   if (els.outRootPath && ui.outRootPath !== undefined) els.outRootPath.value = String(ui.outRootPath);
   if (els.outRootName && ui.outRootName !== undefined) els.outRootName.value = String(ui.outRootName);
-  if (els.resultsRootPath && ui.resultsRootPath !== undefined) {
-    els.resultsRootPath.value = String(ui.resultsRootPath);
-    appState.resultsRootPath = String(ui.resultsRootPath || appState.resultsRootPath);
+  if (els.resultsRootPath) {
+    els.resultsRootPath.value = RESULTS_DOCK_ROOT;
+    appState.resultsRootPath = RESULTS_DOCK_ROOT;
   }
   if (els.reportRootPath && ui.reportRootPath !== undefined) els.reportRootPath.value = String(ui.reportRootPath);
   if (els.reportOutputPath && ui.reportOutputPath !== undefined) els.reportOutputPath.value = String(ui.reportOutputPath);
@@ -2301,6 +2377,125 @@ async function restoreUIState() {
   applyAdvancedDockingConfigToModal(appState.dockingConfig);
   renderDockingConfigSummary();
   updateModeUI();
+}
+
+function normalizeReceptorIds(rawText) {
+  const rows = String(rawText || "").split(/[\s,;]+/);
+  const out = [];
+  const seen = new Set();
+  rows.forEach((row) => {
+    const id = String(row || "").trim().toUpperCase();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push(id);
+  });
+  return out;
+}
+
+function mergeReceptorIdsIntoInput(ids) {
+  if (!els.pdbIds) return;
+  const current = normalizeReceptorIds(els.pdbIds.value || "");
+  const seen = new Set(current);
+  (ids || []).forEach((raw) => {
+    const id = String(raw || "").trim().toUpperCase();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    current.push(id);
+  });
+  els.pdbIds.value = current.join("\n");
+}
+
+function renderStoredReceptorFiles(rows) {
+  if (!els.receptorFileList) return;
+  els.receptorFileList.innerHTML = "";
+  if (!Array.isArray(rows) || rows.length === 0) {
+    els.receptorFileList.innerHTML = '<span class="helper">No receptor files found.</span>';
+    return;
+  }
+  rows.forEach((row) => {
+    const pill = document.createElement("div");
+    pill.className = "pill pill-removable";
+    const label = document.createElement("span");
+    label.textContent = row.pdb_id || row.name || "";
+    label.title = row.name || "";
+    const actions = document.createElement("span");
+    actions.style.display = "inline-flex";
+    actions.style.gap = "6px";
+
+    const addBtn = document.createElement("button");
+    addBtn.className = "secondary";
+    addBtn.type = "button";
+    addBtn.style.padding = "2px 8px";
+    addBtn.style.fontSize = "11px";
+    addBtn.textContent = row.loaded ? "Added" : "Add";
+    addBtn.disabled = Boolean(row.loaded);
+    addBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      mergeReceptorIdsIntoInput([row.pdb_id]);
+      if (row.loaded) return;
+      const result = await fetchJSON("/api/receptors/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pdb_ids: row.pdb_id || "" }),
+      });
+      const ignored = Array.isArray(result?.ignored_ids) ? result.ignored_ids : [];
+      if (ignored.length) {
+        alert(`Could not add receptor: ${ignored.join(", ")}`);
+      }
+      await fetchJSON("/api/receptors/select", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pdb_id: row.pdb_id || "" }),
+      });
+      await refreshReceptorSummary();
+      await refreshReceptorFiles();
+      await refreshViewer();
+    });
+
+    const delBtn = document.createElement("button");
+    delBtn.className = "pill-x";
+    delBtn.type = "button";
+    delBtn.title = row.has_file === false ? "No local file to delete" : "Delete receptor file";
+    delBtn.textContent = "×";
+    delBtn.disabled = row.has_file === false;
+    delBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (row.has_file === false) return;
+      if (!confirm(`Delete receptor file ${row.name}?`)) return;
+      await fetchJSON("/api/receptors/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: row.name }),
+      });
+      await refreshReceptorFiles();
+      await refreshReceptorSummary();
+      await refreshViewer();
+    });
+
+    pill.addEventListener("click", () => {
+      mergeReceptorIdsIntoInput([row.pdb_id]);
+      scheduleUIStateSave();
+    });
+
+    actions.appendChild(addBtn);
+    actions.appendChild(delBtn);
+    pill.appendChild(label);
+    pill.appendChild(actions);
+    els.receptorFileList.appendChild(pill);
+  });
+}
+
+async function refreshReceptorFiles() {
+  try {
+    const data = await fetchJSON("/api/receptors/list");
+    storedReceptorFiles = Array.isArray(data.receptors) ? data.receptors : [];
+    renderStoredReceptorFiles(storedReceptorFiles);
+  } catch (err) {
+    console.error("Failed to refresh receptor files:", err);
+    if (els.receptorFileList) {
+      els.receptorFileList.innerHTML = `<span class="helper" style="color:var(--danger)">Failed to list receptor files: ${err.message}</span>`;
+    }
+  }
 }
 
 async function renderReceptorSummary(rows) {
@@ -2392,8 +2587,8 @@ async function renderReceptorSummary(rows) {
         availableLigands = row.ligands_by_chain["all"];
       }
     } else {
-      // Docking mode: Use uploaded ligands
-      availableLigands = uploadedLigands;
+      // Docking mode: Use dock-ready ligands
+      availableLigands = activeLigands;
 
       // Add "All Set" option only for Docking
       const allOpt = document.createElement("option");
@@ -2406,7 +2601,7 @@ async function renderReceptorSummary(rows) {
       ligSelect.appendChild(allOpt);
     }
 
-    availableLigands.forEach(ligName => {
+      availableLigands.forEach(ligName => {
       const opt = document.createElement("option");
       opt.value = ligName;
       opt.textContent = ligName;
@@ -2461,44 +2656,6 @@ async function renderReceptorSummary(rows) {
           // ... (removed focus logic)
       }
       */
-    });
-
-    // Add validation to Chain Select
-    chainSelect.addEventListener("change", async (e) => {
-      const newChain = e.target.value;
-      const currentLigand = ligSelect.value;
-
-      if (appState.mode === "Redocking" && currentLigand && currentLigand !== "") {
-        // Check if ligand exists in new chain
-        let valid = false;
-        if (row.ligands_by_chain && row.ligands_by_chain[newChain]) {
-          if (row.ligands_by_chain[newChain].includes(currentLigand)) {
-            valid = true;
-          }
-        }
-
-        if (!valid) {
-          alert(`Error: Ligand '${currentLigand}' is not present in chain '${newChain}'.`);
-          // Revert chain selection
-          // We need to find the valid chain again
-          let validChain = "all";
-          for (const [chn, ligs] of Object.entries(row.ligands_by_chain)) {
-            if (ligs.includes(currentLigand)) {
-              validChain = chn;
-              break;
-            }
-          }
-          chainSelect.value = validChain;
-          return; // Stop propagation
-        }
-      }
-
-      // Normal update logic (duplicated from above, but we need to handle the event)
-      // ... (rest of the logic is handled by the existing listener, but we need to ensure order)
-      // Actually, we replaced the previous listener with this logic? No, we appended.
-      // Wait, I should merge this validation into the existing listener or replace it.
-      // The previous tool call showed the listener was added. 
-      // I will replace the previous listener block in this edit.
     });
 
     // Delete Button
@@ -2568,9 +2725,13 @@ async function refreshReceptorSummary() {
     // Fetch ligands first to populate dropdowns
     const ligData = await fetchJSON("/api/ligands/list");
     uploadedLigands = ligData.ligands || [];
+    const activeData = await fetchJSON("/api/ligands/active");
+    activeLigands = Array.isArray(activeData.active_ligands) ? activeData.active_ligands : [];
+    appState.activeLigands = [...activeLigands];
 
     const data = await fetchJSON("/api/receptors/summary");
     await renderReceptorSummary(data.summary || []);
+    await refreshReceptorFiles();
   } catch (e) {
     console.error(e);
   }
@@ -2587,6 +2748,7 @@ async function removeReceptor(pdbId) {
     // but we need to update frontend state.
     // Ideally backend returns the new summary.
     await renderReceptorSummary(data.summary || []);
+    await refreshReceptorFiles();
 
     // If we removed the currently selected one, we might need to refresh viewer
     if (appState.selectedReceptor === pdbId) {
@@ -2603,123 +2765,80 @@ async function removeReceptor(pdbId) {
 }
 
 async function refreshLigands() {
-  if (!els.ligandList) return;
   try {
     const prevLigands = new Set(uploadedLigands || []);
     const data = await fetchJSON("/api/ligands/list");
     const ligands = Array.isArray(data.ligands) ? data.ligands : [];
+    const activeData = await fetchJSON("/api/ligands/active");
+    const activeList = Array.isArray(activeData.active_ligands) ? activeData.active_ligands : [];
+
     uploadedLigands = ligands;
+    activeLigands = activeList.filter((name) => ligands.includes(name));
+    appState.activeLigands = [...activeLigands];
+
     const ligandInventoryChanged = prevLigands.size !== ligands.length
       || ligands.some((name) => !prevLigands.has(name));
 
-    if (ligandListInitialized && ligandInventoryChanged) {
+    if (ligandInventoryInitialized && ligandInventoryChanged) {
       // Ligand inventory changed after initial load; drop stale gridboxes.
       resetGridboxState({ clearAllStored: true });
     }
 
-    if (ligandListInitialized) {
-      ligands.forEach((name) => {
-        if (!prevLigands.has(name)) {
-          pendingAutoSelectLigands.add(name);
-        }
-      });
-    }
-    selectedLigandsForRemoval = new Set([
-      ...Array.from(selectedLigandsForRemoval),
-      ...Array.from(pendingAutoSelectLigands),
-    ]);
-    pendingAutoSelectLigands = new Set();
-    selectedLigandsForRemoval = new Set(
-      Array.from(selectedLigandsForRemoval).filter((name) => ligands.includes(name))
-    );
-    els.ligandList.innerHTML = "";
-    if (!ligands.length) {
-      els.ligandList.innerHTML = '<span class="helper">No ligands uploaded.</span>';
-      updateSelectedLigandActions();
-      return;
-    }
-    ligands.forEach((name) => {
-      const pill = document.createElement("div");
-      pill.className = "pill pill-removable pill-selectable";
-      if (selectedLigandsForRemoval.has(name)) {
-        pill.classList.add("active");
+    // Remove stale selection_map ligand choices no longer in dock-ready pool.
+    const activeSet = new Set(activeLigands);
+    Object.keys(appState.selectionMap || {}).forEach((pdbId) => {
+      const row = appState.selectionMap[pdbId] || {};
+      const ligand = String(row.ligand_resname || "");
+      if (!ligand || ligand === "all_set") return;
+      if (!activeSet.has(ligand)) {
+        appState.selectionMap[pdbId].ligand_resname = "";
       }
-      const check = document.createElement("input");
-      check.type = "checkbox";
-      check.className = "pill-checkbox";
-      check.checked = selectedLigandsForRemoval.has(name);
-      const label = document.createElement("span");
-      label.textContent = name;
-      const del = document.createElement("button");
-      del.className = "pill-x";
-      del.type = "button";
-      del.title = "Remove ligand";
-      del.textContent = "×";
-      del.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        if (!confirm(`Remove ligand ${name}?`)) return;
-        try {
-          await fetchJSON("/api/ligands/delete", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name }),
-          });
-          await refreshLigands();
-          await refreshReceptorSummary();
-        } catch (err) {
-          alert(err.message || "Failed to remove ligand.");
-        }
-      });
-      check.addEventListener("click", (e) => e.stopPropagation());
-      check.addEventListener("change", () => {
-        if (check.checked) selectedLigandsForRemoval.add(name);
-        else selectedLigandsForRemoval.delete(name);
-        pill.classList.toggle("active", check.checked);
-        updateSelectedLigandActions();
-        scheduleUIStateSave();
-      });
-      pill.addEventListener("click", (event) => {
-        if (event.target === del) return;
-        check.checked = !check.checked;
-        if (check.checked) selectedLigandsForRemoval.add(name);
-        else selectedLigandsForRemoval.delete(name);
-        pill.classList.toggle("active", check.checked);
-        updateSelectedLigandActions();
-        scheduleUIStateSave();
-      });
-      pill.appendChild(check);
-      pill.appendChild(label);
-      pill.appendChild(del);
-      els.ligandList.appendChild(pill);
     });
-    updateSelectedLigandActions();
+    renderActiveLigands();
     scheduleUIStateSave();
-    ligandListInitialized = true;
+    ligandInventoryInitialized = true;
   } catch (e) {
     console.error(e);
   }
 }
 
-function updateSelectedLigandActions() {
-  const selectedCount = selectedLigandsForRemoval.size;
-  if (els.selectedLigandsCount) {
-    els.selectedLigandsCount.textContent = `${selectedCount} selected`;
+function renderActiveLigands() {
+  if (!els.activeLigandList) return;
+  els.activeLigandList.innerHTML = "";
+  if (!Array.isArray(activeLigands) || activeLigands.length === 0) {
+    els.activeLigandList.innerHTML = '<span class="helper">No dock-ready ligands selected.</span>';
+    return;
   }
-  if (els.clearSelectedLigandsBtn) {
-    els.clearSelectedLigandsBtn.disabled = selectedCount === 0;
-  }
-}
-
-function clearSelectedLigandsLabels() {
-  selectedLigandsForRemoval = new Set();
-  Array.from(document.querySelectorAll(".pill-checkbox")).forEach((box) => {
-    box.checked = false;
+  activeLigands.forEach((name) => {
+    const pill = document.createElement("div");
+    pill.className = "pill pill-removable";
+    const label = document.createElement("span");
+    label.textContent = name;
+    const del = document.createElement("button");
+    del.className = "pill-x";
+    del.type = "button";
+    del.title = "Remove from dock-ready ligands";
+    del.textContent = "×";
+    del.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      try {
+        const res = await fetchJSON("/api/ligands/active/remove", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        activeLigands = Array.isArray(res.active_ligands) ? res.active_ligands : [];
+        appState.activeLigands = [...activeLigands];
+        renderActiveLigands();
+        await refreshReceptorSummary();
+      } catch (err) {
+        alert(err.message || "Failed to remove dock-ready ligand.");
+      }
+    });
+    pill.appendChild(label);
+    pill.appendChild(del);
+    els.activeLigandList.appendChild(pill);
   });
-  Array.from(document.querySelectorAll(".pill-selectable")).forEach((pill) => {
-    pill.classList.remove("active");
-  });
-  updateSelectedLigandActions();
-  scheduleUIStateSave();
 }
 
 async function selectReceptor(pdbId) {
@@ -2923,6 +3042,18 @@ async function continueRecentQueue(itemId, outRootHint = "") {
 async function buildQueue() {
   const runCount = document.getElementById("runCount")?.value || 10;
   const padding = document.getElementById("gridPadding")?.value || 0;
+  const activeSet = new Set(activeLigands || []);
+  const selectionMap = JSON.parse(JSON.stringify(appState.selectionMap || {}));
+  Object.keys(selectionMap).forEach((pdbId) => {
+    const row = selectionMap[pdbId] || {};
+    const lig = String(row.ligand_resname || row.ligand || "").trim();
+    if (!lig || lig === "all_set") return;
+    if (!activeSet.has(lig)) {
+      row.ligand_resname = "";
+      row.ligand = "";
+      selectionMap[pdbId] = row;
+    }
+  });
 
   // We need to send the current state of selections and grids
   // appState.selectionMap contains { pdb_id: { chain, ligand_resname } }
@@ -2932,7 +3063,7 @@ async function buildQueue() {
     run_count: parseInt(runCount),
     padding: parseFloat(padding),
     docking_config: normalizeDockingConfig(appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
-    selection_map: appState.selectionMap || {},
+    selection_map: selectionMap,
     grid_data: gridDataPerReceptor || {},
     mode: appState.mode || "Docking",
     out_root_path: document.getElementById("outRootPath")?.value || "data/dock",
@@ -3193,6 +3324,7 @@ function bindEvents() {
 
       if (goingToResults) {
         try {
+          await refreshResultsDockFolders(els.resultsRootPath?.value || RESULTS_DOCK_ROOT);
           await scanResults();
         } catch (err) {
           console.error(err);
@@ -3240,27 +3372,32 @@ function bindEvents() {
     if (event.origin !== window.location.origin) return;
     const msg = event.data || {};
     if (msg.type !== "docking:ligands-updated") return;
-    const copiedNames = Array.isArray(msg?.payload?.copied) ? msg.payload.copied : [];
-    copiedNames.forEach((name) => {
-      const txt = String(name || "").trim();
-      if (txt) pendingAutoSelectLigands.add(txt);
-    });
+    const copiedNames = Array.isArray(msg?.payload?.copied)
+      ? msg.payload.copied.map((name) => String(name || "").trim()).filter(Boolean)
+      : [];
     try {
+      const beforeSet = new Set(uploadedLigands || []);
       await refreshLigands();
+      const currentSet = new Set(uploadedLigands || []);
+      let toActivate = Array.from(currentSet).filter((name) => !beforeSet.has(name));
+      if (!toActivate.length) {
+        toActivate = copiedNames.filter((name) => currentSet.has(name));
+      }
+      if (toActivate.length) {
+        const res = await fetchJSON("/api/ligands/active/add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ names: toActivate }),
+        });
+        activeLigands = Array.isArray(res.active_ligands) ? res.active_ligands : activeLigands;
+        appState.activeLigands = [...activeLigands];
+        renderActiveLigands();
+      }
       await refreshReceptorSummary();
     } catch (err) {
       console.error("Failed to refresh ligands after popup update:", err);
     }
   });
-  if (els.clearSelectedLigandsBtn) {
-    els.clearSelectedLigandsBtn.addEventListener("click", () => {
-      try {
-        clearSelectedLigandsLabels();
-      } catch (err) {
-        alert(err.message || "Failed to clear selected ligands.");
-      }
-    });
-  }
 
   // Ligand upload
   if (els.ligandUpload) {
@@ -3285,19 +3422,27 @@ function bindEvents() {
       const form = new FormData();
       Array.from(files).forEach((file) => form.append("files", file));
       await fetchJSON("/api/receptors/upload", { method: "POST", body: form });
+      await refreshReceptorFiles();
     });
   }
 
   // Load receptors
   if (els.loadReceptors) {
     els.loadReceptors.addEventListener("click", async () => {
-      await fetchJSON("/api/receptors/load", {
+      const normalizedIds = normalizeReceptorIds(els.pdbIds?.value || "");
+      if (els.pdbIds) {
+        els.pdbIds.value = normalizedIds.join("\n");
+      }
+      const result = await fetchJSON("/api/receptors/store", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pdb_ids: els.pdbIds?.value || "" }),
+        body: JSON.stringify({ pdb_ids: normalizedIds.join("\n") }),
       });
-      await refreshReceptorSummary();
-      await refreshViewer();
+      const ignored = Array.isArray(result?.ignored_ids) ? result.ignored_ids : [];
+      if (ignored.length) {
+        alert(`Ignored invalid/unavailable receptor IDs: ${ignored.join(", ")}`);
+      }
+      await refreshReceptorFiles();
     });
   }
 
@@ -3403,6 +3548,22 @@ function bindEvents() {
     });
   }
 
+  if (els.resultsDockFolderSelect) {
+    els.resultsDockFolderSelect.addEventListener("change", async (event) => {
+      const selected = String(event.target.value || RESULTS_DOCK_ROOT).trim() || RESULTS_DOCK_ROOT;
+      if (els.resultsRootPath) {
+        els.resultsRootPath.value = selected;
+      }
+      appState.resultsRootPath = selected;
+      scheduleUIStateSave();
+      try {
+        await scanResults();
+      } catch (err) {
+        alert(err.message || "Failed to load results.");
+      }
+    });
+  }
+
   if (els.btnRenderPreview) {
     els.btnRenderPreview.addEventListener("click", () => initiateRender(false));
   }
@@ -3457,6 +3618,7 @@ function bindEvents() {
         if (path && els.resultsRootPath) {
           els.resultsRootPath.value = path;
           appState.resultsRootPath = path;
+          renderResultsDockFolderOptions(path);
           scheduleUIStateSave();
           await scanResults();
         }
@@ -3859,6 +4021,7 @@ async function init() {
   await refreshLigands();
   await refreshReceptorSummary();
   await refreshViewer();
+  await refreshResultsDockFolders(RESULTS_DOCK_ROOT);
   if (appState.mode === "Results") {
     try {
       await scanResults();

@@ -11,6 +11,9 @@ export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 if [ ! -f "$ROOT_DIR/.setup_done" ] || [ ! -f "$ROOT_DIR/.venv/bin/activate" ]; then
   echo "=== Running First-time Setup ==="
   bash "$ROOT_DIR/setup.sh"
+elif ! "$ROOT_DIR/.venv/bin/python" -c "import fastapi, uvicorn, matplotlib, docx" 2>/dev/null; then
+  echo "=== Core dependencies missing in venv (matplotlib/docx) — running setup ==="
+  bash "$ROOT_DIR/setup.sh"
 fi
 
 # Ensure .env exists

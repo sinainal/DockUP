@@ -164,6 +164,25 @@ def resolve_dock_directory(
     """Resolve a user-provided path so that it stays inside DOCK_DIR."""
     from fastapi import HTTPException
 
+    def _rebase_to_dock(raw_text: str) -> Path | None:
+        raw_candidate = Path(str(raw_text or "").strip().replace("\\", "/")).expanduser()
+        parts = [part for part in raw_candidate.parts if part not in {"", "."}]
+        if not parts:
+            return None
+        lowered = [part.lower() for part in parts]
+        idx = None
+        for i in range(len(lowered) - 1):
+            if lowered[i] == "data" and lowered[i + 1] == "dock":
+                idx = i
+                break
+        if idx is None:
+            return None
+        tail = [part for part in parts[idx + 2 :] if part not in {"", "."}]
+        if any(part == ".." for part in tail):
+            return None
+        rebased = DOCK_DIR_RESOLVED / Path(*tail) if tail else DOCK_DIR_RESOLVED
+        return rebased.resolve()
+
     raw = str(path_text or "").strip()
     if not raw:
         return default.resolve()
@@ -178,7 +197,11 @@ def resolve_dock_directory(
     else:
         candidate = candidate.resolve()
     if candidate != DOCK_DIR_RESOLVED and DOCK_DIR_RESOLVED not in candidate.parents:
-        raise HTTPException(status_code=400, detail="Path must be inside data/dock.")
+        rebased = _rebase_to_dock(raw)
+        if rebased is not None:
+            candidate = rebased
+        if candidate != DOCK_DIR_RESOLVED and DOCK_DIR_RESOLVED not in candidate.parents:
+            raise HTTPException(status_code=400, detail="Path must be inside data/dock.")
     if candidate.exists():
         if not candidate.is_dir():
             raise HTTPException(status_code=400, detail="Path is not a directory.")

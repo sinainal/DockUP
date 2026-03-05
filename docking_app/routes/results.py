@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from ..config import BASE, DATA_DIR, DOCK_DIR, RECEPTOR_DIR
 from ..config import WORKSPACE_DIR
+from ..helpers import resolve_dock_directory, to_display_path
 from ..services import _parse_plip_report, _parse_results_folder, _scan_results
 from ..state import STATE
 
@@ -19,18 +20,24 @@ DOCK_DIR_RESOLVED = DOCK_DIR.resolve()
 
 @router.post("/api/results/scan")
 def scan_results(payload: dict[str, Any]) -> JSONResponse:
-    root_path = str(payload.get("root_path") or STATE.get("results_root_path") or DOCK_DIR)
-    rp = Path(root_path).expanduser()
-    if not rp.is_absolute():
-        # Try workspace first (data/dock lives under workspace)
-        ws = (WORKSPACE_DIR / rp).resolve()
-        if ws.exists() and ws.is_dir():
-            rp = ws
-        else:
-            rp = (BASE / rp).resolve()
+    root_path = str(payload.get("root_path") or STATE.get("results_root_path") or "data/dock").strip() or "data/dock"
+    rp = resolve_dock_directory(root_path, default=DOCK_DIR_RESOLVED, allow_create=False)
     data = _scan_results(str(rp))
-    STATE["results_root_path"] = data.get("root_path", str(rp))
+    STATE["results_root_path"] = str(rp)
+    data["root_path"] = to_display_path(rp)
     return JSONResponse(data)
+
+
+@router.get("/api/results/dock-folders")
+def results_dock_folders() -> JSONResponse:
+    rows: list[dict[str, str]] = [{"name": "All dock folders", "path": "data/dock"}]
+    for child in sorted(DOCK_DIR_RESOLVED.iterdir(), key=lambda p: p.name.lower()):
+        if not child.is_dir():
+            continue
+        if child.name.startswith(".") or child.name.startswith("_"):
+            continue
+        rows.append({"name": child.name, "path": to_display_path(child)})
+    return JSONResponse({"root_path": "data/dock", "folders": rows})
 
 
 @router.post("/api/results/detail")
@@ -38,7 +45,11 @@ def results_detail(payload: dict[str, Any]) -> JSONResponse:
     result_dir = str(payload.get("result_dir") or "")
     if not result_dir:
         raise HTTPException(status_code=400, detail="Missing result_dir.")
-    root = Path(STATE.get("results_root_path") or DOCK_DIR).expanduser().resolve()
+    root = resolve_dock_directory(
+        str(STATE.get("results_root_path") or "data/dock"),
+        default=DOCK_DIR_RESOLVED,
+        allow_create=False,
+    )
     target = Path(result_dir).expanduser().resolve()
     if root not in target.parents and target != root:
         raise HTTPException(status_code=400, detail="Invalid result_dir.")
@@ -118,7 +129,11 @@ def results_file(path: str) -> FileResponse:
     target = Path(path).expanduser().resolve()
     
     # Allow serving from results root OR receptor directory
-    results_root = Path(STATE.get("results_root_path") or DOCK_DIR).expanduser().resolve()
+    results_root = resolve_dock_directory(
+        str(STATE.get("results_root_path") or "data/dock"),
+        default=DOCK_DIR_RESOLVED,
+        allow_create=False,
+    )
     receptor_root = RECEPTOR_DIR.resolve()
     
     valid_path = False
@@ -272,5 +287,3 @@ def _to_display_path(path: Path) -> str:
         return "." if rel_str in {"", "."} else rel_str
     except ValueError:
         return str(resolved).replace("\\", "/")
-
-

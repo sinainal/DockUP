@@ -17,7 +17,12 @@ from fastapi.templating import Jinja2Templates
 
 from .. import state as runtime_state
 from ..config import BASE, DATA_DIR, DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR
-from ..helpers import normalize_docking_config, relative_to_base, to_display_path
+from ..helpers import (
+    normalize_docking_config,
+    relative_to_base,
+    resolve_dock_directory,
+    to_display_path,
+)
 from ..manifest import (
     build_preview_command,
     normalize_ligand_folder_name,
@@ -38,12 +43,14 @@ from ..services import (
     _init_selection_map,
     _ligand_table,
     _load_receptor_meta,
+    _normalize_receptor_id,
     _parse_grid_file,
     _save_uploads,
     _start_run,
     _summarize_receptors,
 )
 from ..sessions import (
+    RUN_SESSION_DIR,
     load_run_sessions,
     register_run_session,
     save_run_sessions,
@@ -54,8 +61,10 @@ from ..state import DOCKING_CONFIG_DEFAULTS, RUN_LOCK, RUN_STATE, STATE, save_st
 router = APIRouter()
 _templates: Jinja2Templates | None = None
 LIGAND_DIR_RESOLVED = LIGAND_DIR.resolve()
+RECEPTOR_DIR_RESOLVED = RECEPTOR_DIR.resolve()
+DOCK_DIR_RESOLVED = DOCK_DIR.resolve()
 LIGAND_TIMESTAMP_SUFFIX_RE = re.compile(r"_(\d{8}_\d{6})(?:_\d+)?$", re.IGNORECASE)
-RUN_SESSION_DIR = DOCK_DIR / "_run_sessions"
+VALID_RECEPTOR_ID_RE = re.compile(r"^[A-Z0-9]{4}$")
 
 from ..manifest import config_to_manifest_values, append_docking_config_args
 
@@ -88,6 +97,14 @@ def _normalize_ligand_db_filename(filename: str) -> str:
     return f"{stem}{suffix}"
 
 
+def _sanitize_out_root_name(raw_name: str) -> str:
+    normalized = str(raw_name or "").strip().replace("\\", "/")
+    basename = Path(normalized).name.strip()
+    if basename in {"", ".", ".."}:
+        return ""
+    return basename
+
+
 def _cleanup_ligand_dir_names() -> None:
     for path in sorted(LIGAND_DIR.glob("*.sdf"), key=lambda item: item.name.lower()):
         if not path.is_file():
@@ -97,6 +114,167 @@ def _cleanup_ligand_dir_names() -> None:
             continue
         target = _next_available_ligand_path(normalized_name)
         path.rename(target)
+
+
+def _normalize_receptor_state() -> None:
+    raw_meta = STATE.get("receptor_meta", [])
+    raw_selection = STATE.get("selection_map", {})
+    normalized_meta: list[dict[str, Any]] = []
+    normalized_selection: dict[str, dict[str, str]] = {}
+    seen_ids: set[str] = set()
+
+    for item in raw_meta:
+        if not isinstance(item, dict):
+            continue
+        old_id = str(item.get("pdb_id", "")).strip()
+        pdb_id = _normalize_receptor_id(old_id)
+        if not pdb_id or pdb_id in seen_ids:
+            continue
+        if pdb_id.startswith("TMP_PROBE"):
+            continue
+        entry = dict(item)
+        entry["pdb_id"] = pdb_id
+        normalized_meta.append(entry)
+        seen_ids.add(pdb_id)
+
+        source_sel = {}
+        if isinstance(raw_selection, dict):
+            source_sel = raw_selection.get(old_id) or raw_selection.get(pdb_id) or {}
+        if not isinstance(source_sel, dict):
+            source_sel = {}
+        normalized_selection[pdb_id] = {
+            "chain": str(source_sel.get("chain", "all") or "all"),
+            "ligand_resname": str(source_sel.get("ligand_resname", "") or ""),
+        }
+
+    for item in normalized_meta:
+        normalized_selection.setdefault(item["pdb_id"], {"chain": "all", "ligand_resname": ""})
+
+    STATE["receptor_meta"] = normalized_meta
+    STATE["selection_map"] = normalized_selection
+
+    if normalized_meta:
+        selected = _normalize_receptor_id(STATE.get("selected_receptor", ""))
+        if selected not in seen_ids:
+            selected = normalized_meta[0]["pdb_id"]
+        STATE["selected_receptor"] = selected
+    else:
+        STATE["selected_receptor"] = ""
+        STATE["selected_ligand"] = ""
+        STATE["selected_chain"] = "all"
+
+
+def _cleanup_probe_receptor_files() -> None:
+    for path in RECEPTOR_DIR.glob("*.pdb"):
+        pdb_id = _normalize_receptor_id(path.stem)
+        if not pdb_id.startswith("TMP_PROBE"):
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
+def _parse_requested_receptor_ids(raw_text: str) -> tuple[list[str], list[str]]:
+    valid_ids: list[str] = []
+    invalid_ids: list[str] = []
+    seen: set[str] = set()
+    for token in re.split(r"[\s,;]+", str(raw_text or "").strip()):
+        pdb_id = _normalize_receptor_id(token)
+        if not pdb_id or pdb_id in seen:
+            continue
+        seen.add(pdb_id)
+        if not VALID_RECEPTOR_ID_RE.fullmatch(pdb_id):
+            invalid_ids.append(pdb_id)
+            continue
+        valid_ids.append(pdb_id)
+    return valid_ids, invalid_ids
+
+
+def _collect_receptor_rows() -> list[dict[str, Any]]:
+    loaded_ids = {_normalize_receptor_id(item.get("pdb_id")) for item in STATE.get("receptor_meta", [])}
+    rows_by_id: dict[str, dict[str, Any]] = {}
+
+    for f in _existing_files(RECEPTOR_DIR, (".pdb",)):
+        pdb_id = _normalize_receptor_id(f.stem)
+        if not pdb_id or pdb_id.startswith("TMP_PROBE") or pdb_id in rows_by_id:
+            continue
+        rows_by_id[pdb_id] = {
+            "name": f.name,
+            "pdb_id": pdb_id,
+            "loaded": pdb_id in loaded_ids,
+            "has_file": True,
+        }
+
+    for item in STATE.get("receptor_meta", []):
+        pdb_id = _normalize_receptor_id(item.get("pdb_id"))
+        if not pdb_id or pdb_id.startswith("TMP_PROBE") or pdb_id in rows_by_id:
+            continue
+        name = f"{pdb_id}.pdb"
+        has_file = False
+        pdb_file = str(item.get("pdb_file", "")).strip()
+        if pdb_file:
+            try:
+                path = Path(pdb_file).resolve()
+                if path.exists() and path.suffix.lower() == ".pdb":
+                    name = path.name
+                    has_file = True
+            except Exception:
+                has_file = False
+        rows_by_id[pdb_id] = {
+            "name": name,
+            "pdb_id": pdb_id,
+            "loaded": True,
+            "has_file": has_file,
+        }
+
+    return [rows_by_id[k] for k in sorted(rows_by_id.keys())]
+
+
+def _stored_receptor_files_by_id() -> dict[str, Path]:
+    rows: dict[str, Path] = {}
+    for f in _existing_files(RECEPTOR_DIR, (".pdb",)):
+        pdb_id = _normalize_receptor_id(f.stem)
+        if not pdb_id or pdb_id.startswith("TMP_PROBE") or pdb_id in rows:
+            continue
+        rows[pdb_id] = f
+    return rows
+
+
+def _normalize_active_ligands_state() -> list[str]:
+    available = {f.name for f in _existing_files(LIGAND_DIR, (".sdf",))}
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in STATE.get("active_ligands", []):
+        name = str(raw or "").strip()
+        if not name or name in seen:
+            continue
+        if name not in available:
+            continue
+        cleaned.append(name)
+        seen.add(name)
+    STATE["active_ligands"] = cleaned
+    return cleaned
+
+
+def _add_receptors_to_active(requested_ids: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
+    existing_ids = {_normalize_receptor_id(r.get("pdb_id")) for r in STATE["receptor_meta"]}
+    to_add = [rid for rid in requested_ids if rid and rid not in existing_ids]
+    if not to_add:
+        return [], []
+
+    file_map = _stored_receptor_files_by_id()
+    file_meta = [file_map[rid] for rid in to_add if rid in file_map]
+    fetch_ids = [rid for rid in to_add if rid not in file_map]
+
+    meta = _load_receptor_meta(fetch_ids, file_meta)
+    loaded_ids = {_normalize_receptor_id(item.get("pdb_id")) for item in meta}
+    failed = [rid for rid in to_add if rid not in loaded_ids]
+    if meta:
+        STATE["receptor_meta"].extend(meta)
+        STATE["selection_map"].update(_init_selection_map(meta))
+    _normalize_receptor_state()
+    return meta, failed
 
 
 def configure_templates(templates: Jinja2Templates) -> None:
@@ -116,11 +294,19 @@ def index(request: Request) -> HTMLResponse:
 
 @router.get("/api/state")
 def api_state() -> JSONResponse:
+    _normalize_receptor_state()
+    _normalize_active_ligands_state()
+    results_root_raw = str(STATE.get("results_root_path") or DOCK_DIR)
+    try:
+        results_root_display = to_display_path(Path(results_root_raw).expanduser().resolve())
+    except Exception:
+        results_root_display = "data/dock"
     data = {
         "mode": STATE["mode"],
         "selected_receptor": STATE["selected_receptor"],
         "selected_ligand": STATE["selected_ligand"],
         "selected_chain": STATE["selected_chain"],
+        "active_ligands": STATE.get("active_ligands", []),
         "grid_file_path": STATE["grid_file_path"],
         "queue_count": len(STATE["queue"]),
         "runs": STATE["runs"],
@@ -129,7 +315,7 @@ def api_state() -> JSONResponse:
         "out_root": STATE["out_root"],
         "out_root_path": STATE.get("out_root_path", STATE["out_root"]),
         "out_root_name": STATE.get("out_root_name", ""),
-        "results_root_path": STATE.get("results_root_path", str(DOCK_DIR)),
+        "results_root_path": results_root_display,
         "run_status": RUN_STATE["status"],
         "run_out_root": RUN_STATE.get("out_root", ""),
     }
@@ -146,12 +332,15 @@ def api_mode(payload: ModePayload) -> JSONResponse:
 @router.post("/api/ligands/upload")
 def upload_ligands(files: list[UploadFile] = File(...)) -> JSONResponse:
     saved = _save_uploads(files, LIGAND_DIR)
+    _normalize_active_ligands_state()
+    save_state_cache()
     return JSONResponse({"saved": [Path(p).name for p in saved]})
 
 
 @router.get("/api/ligands/list")
 def list_ligands() -> JSONResponse:
     _cleanup_ligand_dir_names()
+    _normalize_active_ligands_state()
     lig_files = _existing_files(LIGAND_DIR, (".sdf",))
     return JSONResponse({"ligands": [f.name for f in lig_files]})
 
@@ -167,8 +356,58 @@ def delete_ligand(payload: dict[str, Any]) -> JSONResponse:
     if not target.exists():
         return JSONResponse({"error": "Ligand not found."}, status_code=404)
     target.unlink()
+    STATE["active_ligands"] = [lig for lig in STATE.get("active_ligands", []) if lig != name]
+    _normalize_active_ligands_state()
+    save_state_cache()
     lig_files = _existing_files(LIGAND_DIR, (".sdf",))
     return JSONResponse({"ligands": [f.name for f in lig_files]})
+
+
+@router.get("/api/ligands/active")
+def list_active_ligands() -> JSONResponse:
+    active = _normalize_active_ligands_state()
+    return JSONResponse({"active_ligands": active})
+
+
+@router.post("/api/ligands/active/add")
+def add_active_ligands(payload: dict[str, Any]) -> JSONResponse:
+    names_raw = payload.get("names", [])
+    names = names_raw if isinstance(names_raw, list) else []
+    _cleanup_ligand_dir_names()
+    available = {f.name for f in _existing_files(LIGAND_DIR, (".sdf",))}
+    current = _normalize_active_ligands_state()
+    seen = set(current)
+    ignored: list[str] = []
+    for raw in names:
+        name = str(raw or "").strip()
+        if not name or name in seen:
+            continue
+        if name not in available:
+            ignored.append(name)
+            continue
+        current.append(name)
+        seen.add(name)
+    STATE["active_ligands"] = current
+    save_state_cache()
+    return JSONResponse({"active_ligands": current, "ignored": ignored})
+
+
+@router.post("/api/ligands/active/remove")
+def remove_active_ligand(payload: dict[str, Any]) -> JSONResponse:
+    name = str(payload.get("name", "")).strip()
+    if not name:
+        return JSONResponse({"error": "Missing ligand name."}, status_code=400)
+    current = _normalize_active_ligands_state()
+    STATE["active_ligands"] = [item for item in current if item != name]
+    save_state_cache()
+    return JSONResponse({"active_ligands": STATE["active_ligands"]})
+
+
+@router.post("/api/ligands/active/clear")
+def clear_active_ligands() -> JSONResponse:
+    STATE["active_ligands"] = []
+    save_state_cache()
+    return JSONResponse({"active_ligands": []})
 
 
 @router.post("/api/receptors/upload")
@@ -177,39 +416,102 @@ def upload_receptors(files: list[UploadFile] = File(...)) -> JSONResponse:
     return JSONResponse({"saved": [Path(p).name for p in saved]})
 
 
-@router.post("/api/receptors/load")
-def load_receptors(payload: LoadReceptorsPayload) -> JSONResponse:
-    pdb_ids = [p.strip() for p in payload.pdb_ids.splitlines() if p.strip()]
-    # Filter out already loaded PDBs
-    existing_ids = {r["pdb_id"] for r in STATE["receptor_meta"]}
-    new_ids = [pid for pid in pdb_ids if pid not in existing_ids]
-    
-    pdb_files = _existing_files(RECEPTOR_DIR, (".pdb",))
-    # Filter out already loaded files (by stem/pdb_id)
-    new_files = [f for f in pdb_files if f.stem not in existing_ids]
+@router.post("/api/receptors/store")
+def store_receptors(payload: LoadReceptorsPayload) -> JSONResponse:
+    _cleanup_probe_receptor_files()
+    _normalize_receptor_state()
 
-    if not new_ids and not new_files:
-         return JSONResponse({"summary": _summarize_receptors(STATE["receptor_meta"])})
+    requested_ids, invalid_ids = _parse_requested_receptor_ids(payload.pdb_ids)
+    file_map = _stored_receptor_files_by_id()
+    already_stored = {rid for rid in requested_ids if rid in file_map}
+    fetch_ids = [rid for rid in requested_ids if rid not in file_map]
+    fetched_meta = _load_receptor_meta(fetch_ids, [])
+    fetched_ids = {_normalize_receptor_id(item.get("pdb_id")) for item in fetched_meta}
+    failed_fetch = [rid for rid in fetch_ids if rid not in fetched_ids]
 
-    meta = _load_receptor_meta(new_ids, new_files)
-    STATE["receptor_meta"].extend(meta)
+    stored_ids = sorted(already_stored | fetched_ids)
+    ignored_ids = sorted(set(invalid_ids + failed_fetch))
+    save_state_cache()
+    return JSONResponse(
+        {
+            "receptors": _collect_receptor_rows(),
+            "stored_ids": stored_ids,
+            "ignored_ids": ignored_ids,
+        }
+    )
 
-    # Init selection map for new items
-    new_selection = _init_selection_map(meta)
-    STATE["selection_map"].update(new_selection)
+
+@router.get("/api/receptors/list")
+def list_receptors() -> JSONResponse:
+    _cleanup_probe_receptor_files()
+    _normalize_receptor_state()
+    receptors = _collect_receptor_rows()
+    return JSONResponse({"receptors": receptors})
+
+
+@router.post("/api/receptors/delete")
+def delete_receptor_file(payload: dict[str, Any]) -> JSONResponse:
+    name = str(payload.get("name", "")).strip()
+    if not name:
+        return JSONResponse({"error": "Missing receptor name."}, status_code=400)
+    target = (RECEPTOR_DIR / name).resolve()
+    if RECEPTOR_DIR_RESOLVED not in target.parents or target.suffix.lower() != ".pdb":
+        return JSONResponse({"error": "Invalid receptor name."}, status_code=400)
+    if not target.exists():
+        return JSONResponse({"error": "Receptor not found."}, status_code=404)
+
+    target.unlink()
+
+    remaining_meta = []
+    for item in STATE.get("receptor_meta", []):
+        pdb_file = str(item.get("pdb_file", "")).strip()
+        if pdb_file:
+            try:
+                if Path(pdb_file).resolve() == target:
+                    continue
+            except Exception:
+                continue
+        remaining_meta.append(item)
+    STATE["receptor_meta"] = remaining_meta
+    _normalize_receptor_state()
+    save_state_cache()
+
+    receptors = _collect_receptor_rows()
+    return JSONResponse({"receptors": receptors})
+
+
+@router.post("/api/receptors/add")
+def add_receptors(payload: LoadReceptorsPayload) -> JSONResponse:
+    _cleanup_probe_receptor_files()
+    _normalize_receptor_state()
+    requested_ids, invalid_ids = _parse_requested_receptor_ids(payload.pdb_ids)
+    _meta, failed_ids = _add_receptors_to_active(requested_ids)
 
     if STATE["receptor_meta"] and not STATE["selected_receptor"]:
         STATE["selected_receptor"] = STATE["receptor_meta"][0]["pdb_id"]
         STATE["selected_ids"] = [STATE["receptor_meta"][0]["pdb_id"]]
 
-    save_state_cache()  # persist so receptor survives hot-reload
-    return JSONResponse({"summary": _summarize_receptors(STATE["receptor_meta"])})
+    save_state_cache()
+    return JSONResponse(
+        {
+            "summary": _summarize_receptors(STATE["receptor_meta"]),
+            "ignored_ids": sorted(set(invalid_ids + failed_ids)),
+        }
+    )
+
+
+@router.post("/api/receptors/load")
+def load_receptors(payload: LoadReceptorsPayload) -> JSONResponse:
+    return add_receptors(payload)
 
 
 @router.post("/api/receptors/remove")
 def remove_receptor(payload: SelectReceptorPayload) -> JSONResponse:
-    pdb_id = payload.pdb_id
-    STATE["receptor_meta"] = [r for r in STATE["receptor_meta"] if r["pdb_id"] != pdb_id]
+    _normalize_receptor_state()
+    pdb_id = _normalize_receptor_id(payload.pdb_id)
+    STATE["receptor_meta"] = [
+        r for r in STATE["receptor_meta"] if _normalize_receptor_id(r.get("pdb_id")) != pdb_id
+    ]
     if pdb_id in STATE["selection_map"]:
         del STATE["selection_map"][pdb_id]
 
@@ -224,28 +526,33 @@ def remove_receptor(payload: SelectReceptorPayload) -> JSONResponse:
 
 @router.get("/api/receptors/summary")
 def receptor_summary() -> JSONResponse:
+    _normalize_receptor_state()
     return JSONResponse({"summary": _summarize_receptors(STATE["receptor_meta"])})
 
 
 @router.post("/api/receptors/select")
 def receptor_select(payload: SelectReceptorPayload) -> JSONResponse:
-    STATE["selected_receptor"] = payload.pdb_id
-    STATE["selected_ids"] = [payload.pdb_id]
-    sel = STATE.get("selection_map", {}).get(payload.pdb_id, {})
+    _normalize_receptor_state()
+    pdb_id = _normalize_receptor_id(payload.pdb_id)
+    STATE["selected_receptor"] = pdb_id
+    STATE["selected_ids"] = [pdb_id]
+    sel = STATE.get("selection_map", {}).get(pdb_id, {})
     STATE["selected_chain"] = sel.get("chain", "all")
     STATE["selected_ligand"] = sel.get("ligand_resname", "")
-    return JSONResponse({"selected_receptor": payload.pdb_id})
+    return JSONResponse({"selected_receptor": pdb_id})
 
 
 @router.get("/api/receptors/{pdb_id}")
 def receptor_detail(pdb_id: str) -> JSONResponse:
-    meta = _get_meta(pdb_id)
+    _normalize_receptor_state()
+    normalized_id = _normalize_receptor_id(pdb_id)
+    meta = _get_meta(normalized_id)
     if not meta:
         return JSONResponse({"error": "not found"}, status_code=404)
     grid_data = _parse_grid_file(STATE.get("grid_file_path", ""))
     return JSONResponse(
         {
-            "pdb_id": meta["pdb_id"],
+            "pdb_id": _normalize_receptor_id(meta.get("pdb_id")),
             "pdb_text": meta.get("pdb_text"),
             "chains": meta.get("chains", []),
             "ligands_by_chain": meta.get("ligands_by_chain", {}),
@@ -259,7 +566,8 @@ def receptor_detail(pdb_id: str) -> JSONResponse:
 
 @router.get("/api/receptors/{pdb_id}/ligands")
 def receptor_ligands(pdb_id: str) -> JSONResponse:
-    meta = _get_meta(pdb_id)
+    _normalize_receptor_state()
+    meta = _get_meta(_normalize_receptor_id(pdb_id))
     if not meta:
         return JSONResponse({"rows": []})
     return JSONResponse({"rows": _ligand_table(meta)})
@@ -267,13 +575,15 @@ def receptor_ligands(pdb_id: str) -> JSONResponse:
 
 @router.post("/api/ligands/select")
 def ligand_select(payload: SelectLigandPayload) -> JSONResponse:
-    if payload.pdb_id not in STATE.get("selection_map", {}):
-        STATE["selection_map"][payload.pdb_id] = {}
-    STATE["selection_map"][payload.pdb_id] = {
+    _normalize_receptor_state()
+    pdb_id = _normalize_receptor_id(payload.pdb_id)
+    if pdb_id not in STATE.get("selection_map", {}):
+        STATE["selection_map"][pdb_id] = {}
+    STATE["selection_map"][pdb_id] = {
         "chain": payload.chain,
         "ligand_resname": payload.ligand,
     }
-    if payload.pdb_id == STATE.get("selected_receptor"):
+    if pdb_id == STATE.get("selected_receptor"):
         STATE["selected_chain"] = payload.chain
         STATE["selected_ligand"] = payload.ligand
     return JSONResponse({"ok": True})
@@ -296,6 +606,7 @@ def grid_info() -> JSONResponse:
 def queue_build(payload: dict[str, Any]) -> JSONResponse:
     # We expect payload to be a dict with keys: run_count, padding, selection_map, grid_data
     # We append new jobs to the existing queue
+    _normalize_receptor_state()
     STATE["docking_config"] = normalize_docking_config(payload.get("docking_config") or STATE.get("docking_config") or {})
     run_count = payload.get("run_count")
     if run_count is not None:
@@ -303,14 +614,23 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
             STATE["runs"] = int(run_count)
         except (TypeError, ValueError):
             pass
-    out_root_path = str(payload.get("out_root_path") or STATE.get("out_root_path") or STATE["out_root"])
-    out_root_name = str(payload.get("out_root_name") or STATE.get("out_root_name") or "")
+    requested_out_root_path = str(
+        payload.get("out_root_path") or STATE.get("out_root_path") or str(DOCK_DIR)
+    )
+    resolved_out_root_path = resolve_dock_directory(
+        requested_out_root_path,
+        default=DOCK_DIR_RESOLVED,
+        allow_create=True,
+    )
+    out_root_name = _sanitize_out_root_name(
+        str(payload.get("out_root_name") or STATE.get("out_root_name") or "")
+    )
     if not out_root_name:
         import datetime
         out_root_name = datetime.datetime.now().strftime("docking_%Y_%m_%d_%H%M%S")
-    STATE["out_root_path"] = out_root_path
+    STATE["out_root_path"] = to_display_path(resolved_out_root_path)
     STATE["out_root_name"] = out_root_name
-    STATE["out_root"] = str(Path(out_root_path) / out_root_name)
+    STATE["out_root"] = str((resolved_out_root_path / out_root_name).resolve())
 
     new_jobs = _build_queue(payload)
     STATE["queue"].extend(new_jobs)
@@ -858,5 +1178,3 @@ def run_status() -> JSONResponse:
             "elapsed_seconds": elapsed,
         }
     )
-
-
