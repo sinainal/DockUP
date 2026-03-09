@@ -158,6 +158,9 @@ def _normalize_receptor_state() -> None:
         if selected not in seen_ids:
             selected = normalized_meta[0]["pdb_id"]
         STATE["selected_receptor"] = selected
+        sel_row = normalized_selection.get(selected, {})
+        STATE["selected_chain"] = str(sel_row.get("chain", "all") or "all")
+        STATE["selected_ligand"] = str(sel_row.get("ligand_resname", "") or "")
     else:
         STATE["selected_receptor"] = ""
         STATE["selected_ligand"] = ""
@@ -586,6 +589,7 @@ def ligand_select(payload: SelectLigandPayload) -> JSONResponse:
     if pdb_id == STATE.get("selected_receptor"):
         STATE["selected_chain"] = payload.chain
         STATE["selected_ligand"] = payload.ligand
+    save_state_cache()
     return JSONResponse({"ok": True})
 
 
@@ -632,8 +636,35 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
     STATE["out_root_name"] = out_root_name
     STATE["out_root"] = str((resolved_out_root_path / out_root_name).resolve())
 
+    if "selection_map" in payload and isinstance(payload.get("selection_map"), dict):
+        incoming = payload.get("selection_map") or {}
+        normalized_incoming: dict[str, dict[str, str]] = {}
+        for raw_pid, raw_sel in incoming.items():
+            pdb_id = _normalize_receptor_id(raw_pid)
+            if not pdb_id:
+                continue
+            sel = raw_sel if isinstance(raw_sel, dict) else {}
+            normalized_incoming[pdb_id] = {
+                "chain": str(sel.get("chain", "all") or "all"),
+                "ligand_resname": str(sel.get("ligand_resname") or sel.get("ligand") or ""),
+            }
+        for meta in STATE.get("receptor_meta", []):
+            pid = _normalize_receptor_id(meta.get("pdb_id"))
+            if not pid:
+                continue
+            normalized_incoming.setdefault(pid, {"chain": "all", "ligand_resname": ""})
+        STATE["selection_map"] = normalized_incoming
+        selected = _normalize_receptor_id(STATE.get("selected_receptor", ""))
+        if selected and selected in STATE["selection_map"]:
+            STATE["selected_chain"] = STATE["selection_map"][selected].get("chain", "all")
+            STATE["selected_ligand"] = STATE["selection_map"][selected].get("ligand_resname", "")
+
     new_jobs = _build_queue(payload)
-    STATE["queue"].extend(new_jobs)
+    replace_queue = bool(payload.get("replace_queue", True))
+    if replace_queue:
+        STATE["queue"] = list(new_jobs)
+    else:
+        STATE["queue"].extend(new_jobs)
     save_state_cache()  # persist queue + out_root so they survive hot-reload
 
     # --- Debug info (diagnose empty queue) ---
@@ -993,7 +1024,8 @@ def remove_batch(payload: dict[str, Any]) -> JSONResponse:
     batch_id = payload.get("batch_id")
     if batch_id is not None:
         STATE["queue"] = [job for job in STATE["queue"] if job.get("batch_id") != batch_id]
-        
+    save_state_cache()
+
     return JSONResponse({
         "queue_count": len(STATE["queue"]),
         "queue": STATE["queue"]

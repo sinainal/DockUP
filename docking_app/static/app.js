@@ -677,6 +677,21 @@ function updateModeUI() {
   if (appState.mode !== "Report") {
     closeReportMetaModal();
   }
+
+  const resultsOnly = appState.mode === "Results";
+  [els.showDockedLigand, els.showInteractions].forEach((el) => {
+    if (!el) return;
+    if (!resultsOnly) {
+      el.checked = false;
+    }
+    el.disabled = !resultsOnly;
+    const label = el.closest("label");
+    if (label) {
+      label.style.display = resultsOnly ? "" : "none";
+      label.style.opacity = resultsOnly ? "1" : "0.55";
+      label.style.pointerEvents = resultsOnly ? "auto" : "none";
+    }
+  });
 }
 
 function updateGridPath() {
@@ -803,7 +818,12 @@ function initViewer() {
 
 function updateRepresentations() {
   if (!comp) return;
-  const nativeLigandSele = "not polymer and not water and not ion and not hydrogen and not resn UNL";
+  const viewerChain = String(els.viewerChain?.value || "all").trim() || "all";
+  const chainFilter = viewerChain !== "all" ? ` and :${viewerChain}` : "";
+  const proteinSele = `protein and not hydrogen${chainFilter}`;
+  const nativeLigandSele = `not polymer and not water and not ion and not hydrogen${chainFilter}`;
+  const dockedLigandSele = `resn UNL${chainFilter}`;
+  const showResultsOnlyExtras = appState.mode === "Results";
 
   // Clear old representations
   if (representations.cartoon) {
@@ -830,7 +850,7 @@ function updateRepresentations() {
   // Cartoon representation (always on)
   representations.cartoon = comp.addRepresentation("cartoon", {
     colorScheme: colorScheme,
-    sele: "protein and not hydrogen",
+    sele: proteinSele,
     quality: "high",
   });
 
@@ -838,26 +858,31 @@ function updateRepresentations() {
   if (els.showSurface?.checked) {
     representations.surface = comp.addRepresentation("surface", {
       colorScheme: colorScheme,
-      sele: "protein and not hydrogen",
+      sele: proteinSele,
       opacity: 0.4,
       quality: "medium",
     });
   }
 
-  // Native ligands are always shown in neutral gray; explicit selection is
-  // highlighted separately in yellow.
-  representations.nativeLigand = comp.addRepresentation("ball+stick", {
-    sele: nativeLigandSele,
-    color: 0x9CA3AF,
-    multipleBond: "symmetric",
-    scale: 1.0,
-  });
+  if (els.showNativeLigand?.checked) {
+    // Native ligands stay neutral gray; atom highlight overlays separately.
+    representations.nativeLigand = comp.addRepresentation("ball+stick", {
+      sele: nativeLigandSele,
+      colorScheme: "uniform",
+      colorValue: 0x9CA3AF,
+      multipleBond: "symmetric",
+      scale: 1.0,
+    });
+  } else {
+    representations.nativeLigand = null;
+  }
 
   // Docked ligand (UNL) - Green color to distinguish from native
-  if (els.showDockedLigand?.checked) {
+  if (showResultsOnlyExtras && els.showDockedLigand?.checked) {
     representations.dockedLigand = comp.addRepresentation("ball+stick", {
-      sele: "resn UNL",
-      color: 0x2ECC71, // Emerald green - distinct from receptor
+      sele: dockedLigandSele,
+      colorScheme: "uniform",
+      colorValue: 0x2ECC71,
       multipleBond: "symmetric",
       scale: 1.2,
     });
@@ -867,7 +892,7 @@ function updateRepresentations() {
   if (els.showSticks?.checked) {
     if (!representations.sticks) {
       representations.sticks = comp.addRepresentation("licorice", {
-        sele: "protein and not hydrogen",
+        sele: proteinSele,
         scale: 0.5,
       });
     }
@@ -878,7 +903,7 @@ function updateRepresentations() {
     }
   }
 
-  if (els.showInteractions?.checked) {
+  if (showResultsOnlyExtras && els.showInteractions?.checked) {
     renderInteractionHighlights();
   } else if (els.interactionHover) {
     els.interactionHover.textContent = "Hover: -";
@@ -887,12 +912,15 @@ function updateRepresentations() {
   // Native ligand component (from original receptor PDB)
   if (nativeLigComp) {
     nativeLigComp.removeAllRepresentations();
-    nativeLigComp.addRepresentation("ball+stick", {
-      sele: nativeLigandSele,
-      color: 0x9CA3AF,
-      multipleBond: "symmetric",
-      scale: 1.0,
-    });
+    if (els.showNativeLigand?.checked) {
+      nativeLigComp.addRepresentation("ball+stick", {
+        sele: nativeLigandSele,
+        colorScheme: "uniform",
+        colorValue: 0x9CA3AF,
+        multipleBond: "symmetric",
+        scale: 1.0,
+      });
+    }
   }
 
   renderSelectedAtomHighlight();
@@ -1011,7 +1039,7 @@ function renderSelectedAtomHighlight() {
     representations.selectedAtom = comp.addRepresentation("spacefill", {
       sele: selectedAtomData.selection,
       color: 0xFFD700,
-      scale: 0.3,
+      radiusScale: 0.33,
       opacity: 1,
     });
   } catch (err) {
@@ -1198,16 +1226,19 @@ function focusOnLigand(lig) {
     sele = `${lig.resno}`;
   }
 
-  // Add highlighted representation - YELLOW color for selected ligand
-  representations.focusedLigand = comp.addRepresentation("ball+stick", {
-    sele: sele,
-    color: 0xFFD700, // Yellow/gold color
-    multipleBond: "symmetric",
-    scale: 1.5,
-    opacity: 1,
-  });
+  // Highlight selected ligand in yellow (on top of gray native representation)
+  try {
+    representations.focusedLigand = comp.addRepresentation("ball+stick", {
+      sele: sele,
+      colorScheme: "uniform",
+      colorValue: 0xFFD700,
+      multipleBond: "symmetric",
+      scale: 1.0,
+    });
+  } catch (e) {
+    representations.focusedLigand = null;
+  }
 
-  // Zoom to ligand
   comp.autoView(sele, 500);
   updateGridSelectionInfo();
 }
@@ -1279,12 +1310,6 @@ function populateLigandTableFromStructure(structure) {
       selectedLigandData = lig;
       appState.selectedLigand = lig.resname;
       appState.selectedChain = lig.chainname || "all";
-      if (!appState.selectionMap) appState.selectionMap = {};
-      if (!appState.selectionMap[appState.selectedReceptor]) {
-        appState.selectionMap[appState.selectedReceptor] = {};
-      }
-      appState.selectionMap[appState.selectedReceptor].ligand_resname = lig.resname;
-      appState.selectionMap[appState.selectedReceptor].chain = lig.chainname || "all";
 
       // Update table UI
       els.ligandTable.querySelectorAll(".table-row:not(.header)").forEach(r => r.classList.remove("selected"));
@@ -1293,16 +1318,27 @@ function populateLigandTableFromStructure(structure) {
       // Focus on ligand in viewer
       focusOnLigand(lig);
 
-      // Also notify server
-      fetchJSON("/api/ligands/select", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pdb_id: appState.selectedReceptor,
-          ligand: lig.resname,
-          chain: lig.chainname || "all",
-        }),
-      }).catch(e => console.error(e));
+      // In Docking mode, ligand table selection is only for gridbox/native focus.
+      // Keep the queue ligand chosen from Docking Configuration untouched.
+      if (appState.mode === "Redocking") {
+        if (!appState.selectionMap) appState.selectionMap = {};
+        if (!appState.selectionMap[appState.selectedReceptor]) {
+          appState.selectionMap[appState.selectedReceptor] = {};
+        }
+        appState.selectionMap[appState.selectedReceptor].ligand_resname = lig.resname;
+        appState.selectionMap[appState.selectedReceptor].chain = lig.chainname || "all";
+
+        // Also notify server
+        fetchJSON("/api/ligands/select", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            pdb_id: appState.selectedReceptor,
+            ligand: lig.resname,
+            chain: lig.chainname || "all",
+          }),
+        }).catch(e => console.error(e));
+      }
     });
 
     els.ligandTable.appendChild(row);
@@ -1378,14 +1414,21 @@ async function refreshViewer() {
 
 function updateViewerChainOptions(chains) {
   if (!els.viewerChain) return;
+  const currentValue = String(els.viewerChain.value || appState.selectedChain || "all").trim() || "all";
   const options = ["all", ...chains.filter((c) => c !== "all")];
   els.viewerChain.innerHTML = "";
   options.forEach((chain) => {
     const opt = document.createElement("option");
     opt.value = chain;
     opt.textContent = chain;
+    if (chain === currentValue) {
+      opt.selected = true;
+    }
     els.viewerChain.appendChild(opt);
   });
+  if (!options.includes(currentValue)) {
+    els.viewerChain.value = "all";
+  }
 }
 
 function clearInteractionReps() {
@@ -2601,7 +2644,7 @@ async function renderReceptorSummary(rows) {
       ligSelect.appendChild(allOpt);
     }
 
-      availableLigands.forEach(ligName => {
+    availableLigands.forEach(ligName => {
       const opt = document.createElement("option");
       opt.value = ligName;
       opt.textContent = ligName;

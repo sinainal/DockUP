@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 import time
 import urllib.error
@@ -108,67 +109,80 @@ def pick_render_source() -> tuple[str, str, str]:
 
 def run() -> None:
     t0 = time.time()
-    step("health check /api/state")
-    state = get_json("/api/state", timeout=20)
-    if "mode" not in state:
-        raise RuntimeError(f"Unexpected /api/state response: {state}")
+    created_output_abs = None
+    stamp = int(time.time())
+    try:
+        step("health check /api/state")
+        state = get_json("/api/state", timeout=20)
+        if "mode" not in state:
+            raise RuntimeError(f"Unexpected /api/state response: {state}")
 
-    step("waiting report task idle")
-    wait_report_idle(timeout_sec=30)
+        step("waiting report task idle")
+        wait_report_idle(timeout_sec=30)
 
-    source_path, output_path, receptor_id = pick_render_source()
-    step(f"selected source={source_path} receptor={receptor_id}")
+        source_path, _, receptor_id = pick_render_source()
+        output_path = f"{source_path}/report_outputs_e2e_{stamp}"
+        step(f"selected source={source_path} receptor={receptor_id}")
 
-    payload = {
-        "root_path": "data/dock",
-        "source_path": source_path,
-        "output_path": output_path,
-        "linked_path": "",
-        "dpi": 72,
-        "receptors": [receptor_id],
-        "run_by_receptor": {receptor_id: "run1"},
-        "is_preview": True,
-    }
-
-    step("triggering /api/reports/render")
-    start = api("POST", "/api/reports/render", payload, timeout=30)
-    if str(start.get("status") or "") != "started":
-        raise RuntimeError(f"Render did not start: {start}")
-
-    step("polling /api/reports/status")
-    final_status = wait_report_idle(timeout_sec=RENDER_TIMEOUT_SECONDS)
-    errors = list(final_status.get("errors") or [])
-    if errors:
-        raise RuntimeError(f"Render completed with errors: {errors}")
-
-    query = urllib.parse.urlencode(
-        {
+        payload = {
             "root_path": "data/dock",
             "source_path": source_path,
             "output_path": output_path,
-            "images_root_path": output_path,
+            "linked_path": "",
+            "dpi": 72,
+            "receptors": [receptor_id],
+            "run_by_receptor": {receptor_id: "run1"},
+            "is_preview": True,
         }
-    )
-    images_payload = get_json(f"/api/reports/images?{query}", timeout=30)
-    images = list(images_payload.get("images") or [])
-    if not images:
-        raise RuntimeError(f"Render finished but no images found under {output_path}")
 
-    first_path = str(images[0].get("path") or "").strip()
-    if not first_path:
-        raise RuntimeError("First image entry has empty path.")
-    serve_url = f"{_CFG['base_url'].rstrip('/')}/api/reports/image/{first_path}"
-    req = urllib.request.Request(serve_url, method="GET")
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        content_type = str(resp.headers.get("content-type") or "")
-        if "image" not in content_type.lower():
-            raise RuntimeError(f"Unexpected image content-type: {content_type}")
-        _ = resp.read(64)
+        step("triggering /api/reports/render")
+        start = api("POST", "/api/reports/render", payload, timeout=30)
+        if str(start.get("status") or "") != "started":
+            raise RuntimeError(f"Render did not start: {start}")
 
-    elapsed = time.time() - t0
-    step(f"render images={len(images)} first={first_path}")
-    print()
-    print(f"E2E render PASSED in {elapsed:.1f}s")
+        step("polling /api/reports/status")
+        final_status = wait_report_idle(timeout_sec=RENDER_TIMEOUT_SECONDS)
+        errors = list(final_status.get("errors") or [])
+        if errors:
+            raise RuntimeError(f"Render completed with errors: {errors}")
+
+        query = urllib.parse.urlencode(
+            {
+                "root_path": "data/dock",
+                "source_path": source_path,
+                "output_path": output_path,
+                "images_root_path": output_path,
+            }
+        )
+        images_payload = get_json(f"/api/reports/images?{query}", timeout=30)
+        images = list(images_payload.get("images") or [])
+        if not images:
+            raise RuntimeError(f"Render finished but no images found under {output_path}")
+
+        first_path = str(images[0].get("path") or "").strip()
+        if not first_path:
+            raise RuntimeError("First image entry has empty path.")
+        serve_url = f"{_CFG['base_url'].rstrip('/')}/api/reports/image/{first_path}"
+        req = urllib.request.Request(serve_url, method="GET")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content_type = str(resp.headers.get("content-type") or "")
+            if "image" not in content_type.lower():
+                raise RuntimeError(f"Unexpected image content-type: {content_type}")
+            _ = resp.read(64)
+
+        elapsed = time.time() - t0
+        step(f"render images={len(images)} first={first_path}")
+        print()
+        print(f"E2E render PASSED in {elapsed:.1f}s")
+
+        repo_root = __file__
+        for _ in range(2):
+            repo_root = repo_root.parent
+        created_output_abs = (repo_root / "docking_app" / "workspace" / output_path).resolve()
+    finally:
+        if created_output_abs and created_output_abs.exists():
+            if f"/report_outputs_e2e_{stamp}" in str(created_output_abs).replace("\\", "/"):
+                shutil.rmtree(created_output_abs, ignore_errors=True)
 
 
 def main() -> None:
@@ -190,4 +204,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

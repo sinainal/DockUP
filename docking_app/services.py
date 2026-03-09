@@ -6,6 +6,7 @@ _normalize_docking_config) have been removed — import them from helpers.py.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import shlex
 import subprocess
@@ -242,6 +243,26 @@ def _get_meta(pdb_id: str) -> dict[str, Any] | None:
         return None
     for item in STATE["receptor_meta"]:
         if _normalize_receptor_id(item.get("pdb_id")) == normalized:
+            # State cache deliberately strips `pdb_text`; reload it lazily from the
+            # stored local receptor file so the viewer can still open after restart.
+            if not item.get("pdb_text"):
+                pdb_file = str(item.get("pdb_file") or "").strip()
+                if pdb_file:
+                    try:
+                        text = Path(pdb_file).read_text(encoding="utf-8", errors="ignore")
+                    except OSError:
+                        text = ""
+                    if text:
+                        item["pdb_text"] = text
+                        chains, ligands_by_chain = _parse_pdb_chains_and_ligands(text)
+                        item["chains"] = ["all"] + [c for c in chains if c != "all"] if chains else ["all"]
+                        if ligands_by_chain:
+                            all_ligs = sorted({lig for ligs in ligands_by_chain.values() for lig in ligs})
+                            ligands_by_chain = dict(ligands_by_chain)
+                            ligands_by_chain["all"] = all_ligs
+                            item["ligands_by_chain"] = ligands_by_chain
+                        else:
+                            item["ligands_by_chain"] = {"all": []}
             return item
     return None
 
@@ -611,6 +632,36 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     batch_id = int(time.time() * 1000)
 
+    def _safe_out_root() -> Path:
+        raw = str(STATE.get("out_root") or "").strip()
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = (WORKSPACE_DIR / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+        dock_root = DOCK_DIR.resolve()
+        if candidate != dock_root and dock_root not in candidate.parents:
+            return dock_root
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate
+
+    def _grid_signature(pdb_id: str, grid: dict[str, Any]) -> str:
+        payload = {
+            "pdb_id": str(pdb_id or "").strip().upper(),
+            "cx": float(grid.get("cx", 0.0)),
+            "cy": float(grid.get("cy", 0.0)),
+            "cz": float(grid.get("cz", 0.0)),
+            "sx": float(grid.get("sx", 0.0)),
+            "sy": float(grid.get("sy", 0.0)),
+            "sz": float(grid.get("sz", 0.0)),
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+    out_root = _safe_out_root()
+    grid_store_dir = out_root / "_grid"
+    grid_store_dir.mkdir(parents=True, exist_ok=True)
+
     for meta in STATE["receptor_meta"]:
         pdb_id = meta["pdb_id"]
 
@@ -619,7 +670,7 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
         sel = selection_map[pdb_id]
         chain = sel.get("chain", "all")
-        selected_ligand = sel.get("ligand_resname", "") or sel.get("ligand", "")
+        selected_ligand = str(sel.get("ligand_resname", "") or sel.get("ligand", "")).strip()
 
         grid_info = grid_data.get(pdb_id)
         if not grid_info:
@@ -628,11 +679,22 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 detail=f"Grid parameters not set for {pdb_id}. Please create/set a gridbox before building the queue.",
             )
 
+        if not selected_ligand:
+            if mode == "Redocking":
+                detail = (
+                    f"No ligand selected for {pdb_id}. Please choose a native ligand before building the queue."
+                )
+            else:
+                detail = (
+                    f"No ligand selected for {pdb_id}. Please choose a dock-ready ligand "
+                    "or 'All Ligands (Dock All)' before building the queue."
+                )
+            raise HTTPException(status_code=400, detail=detail)
+
         target_ligands = []
 
         if mode == "Redocking":
-            if selected_ligand:
-                target_ligands = [{"name": selected_ligand, "path": ""}]
+            target_ligands = [{"name": selected_ligand, "path": ""}]
         else:
             if selected_ligand == "all_set":
                 if not active_ligands:
@@ -641,7 +703,7 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
                         detail="No dock-ready ligands selected. Use Add Selected in Ligands section.",
                     )
                 target_ligands = [{"name": name, "path": str(ligand_file_map[name])} for name in active_ligands]
-            elif selected_ligand:
+            else:
                 if selected_ligand not in active_set:
                     raise HTTPException(
                         status_code=400,
@@ -655,20 +717,22 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     )
                 target_ligands = [{"name": lig.name, "path": str(lig)}]
 
-        grid_file_path = DOCK_DIR / f"{pdb_id}_{batch_id}_gridbox.txt"
-        grid_file_path.write_text(
-            "\n".join(
-                [
-                    f"center_x = {grid_info['cx']}",
-                    f"center_y = {grid_info['cy']}",
-                    f"center_z = {grid_info['cz']}",
-                    f"size_x = {grid_info['sx']}",
-                    f"size_y = {grid_info['sy']}",
-                    f"size_z = {grid_info['sz']}",
-                ]
+        grid_sig = _grid_signature(pdb_id, grid_info)
+        grid_file_path = grid_store_dir / f"{pdb_id}_{grid_sig}.txt"
+        if not grid_file_path.exists():
+            grid_file_path.write_text(
+                "\n".join(
+                    [
+                        f"center_x = {grid_info['cx']}",
+                        f"center_y = {grid_info['cy']}",
+                        f"center_z = {grid_info['cz']}",
+                        f"size_x = {grid_info['sx']}",
+                        f"size_y = {grid_info['sy']}",
+                        f"size_z = {grid_info['sz']}",
+                    ]
+                )
+                + "\n"
             )
-            + "\n"
-        )
 
         for lig_obj in target_ligands:
             final_grid = None
