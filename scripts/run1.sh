@@ -245,17 +245,26 @@ if [ -f "$complex_pdb" ]; then
   if command -v plip >/dev/null 2>&1; then
     plip_dir="$OUTDIR/plip"
     mkdir -p "$plip_dir"
-    plip -f "$complex_pdb" -o "$plip_dir" -x -q --name report >/dev/null 2>&1 || true
-    if [ -f "$plip_dir/report.xml" ]; then
-      "$DOCKUP_PYTHON" "$script_dir/build_interaction_map.py" \
-        --report "$plip_dir/report.xml" \
-        --complex "$complex_pdb" \
-        --pose "$pose_pdb" \
-        --receptor "$OUTDIR/${PDB}_rec_raw.pdb" \
-        --output "$OUTDIR" >/dev/null 2>&1 || true
+    plip_log="$plip_dir/plip.log"
+    map_log="$plip_dir/interaction_map.log"
+    if plip -f "$complex_pdb" -o "$plip_dir" -x -q --name report >"$plip_log" 2>&1; then
+      if [ -f "$plip_dir/report.xml" ]; then
+        if ! "$DOCKUP_PYTHON" "$script_dir/build_interaction_map.py" \
+          --report "$plip_dir/report.xml" \
+          --complex "$complex_pdb" \
+          --pose "$pose_pdb" \
+          --receptor "$OUTDIR/${PDB}_rec_raw.pdb" \
+          --output "$OUTDIR" >"$map_log" 2>&1; then
+          echo "Warning: interaction map generation failed; see $map_log" | tee -a "$LOG"
+        fi
+      else
+        echo "Warning: PLIP finished without report.xml; see $plip_log" | tee -a "$LOG"
+      fi
+    else
+      echo "Warning: PLIP analysis failed; see $plip_log" | tee -a "$LOG"
     fi
   else
-    echo "Warning: plip not found; skipping interaction map generation"
+    echo "Warning: plip not found; skipping interaction map generation" | tee -a "$LOG"
   fi
 fi
 

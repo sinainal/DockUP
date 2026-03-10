@@ -83,6 +83,98 @@ install_vina_cli() {
   return 0
 }
 
+shared_library_available() {
+  local lib_name="$1"
+  "$VENV_PYTHON" - "$lib_name" <<'PY'
+import ctypes
+import sys
+
+lib_name = sys.argv[1]
+try:
+    ctypes.CDLL(lib_name)
+except OSError:
+    raise SystemExit(1)
+PY
+}
+
+ensure_plip_runtime_system_libs() {
+  local os_name
+  os_name=$(uname -s)
+  if [ "$os_name" != "Linux" ]; then
+    return 0
+  fi
+
+  local missing_libs=()
+  local lib_name
+  for lib_name in libXrender.so.1 libSM.so.6 libXext.so.6; do
+    if ! shared_library_available "$lib_name"; then
+      missing_libs+=("$lib_name")
+    fi
+  done
+
+  if [ ${#missing_libs[@]} -eq 0 ]; then
+    success "PLIP runtime shared libraries available"
+    return 0
+  fi
+
+  warn "Missing system libraries required by OpenBabel/PLIP: ${missing_libs[*]}"
+
+  if command -v apt-get >/dev/null 2>&1; then
+    info "Attempting to install PLIP runtime libraries via apt-get..."
+    if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+      apt-get update >> "$LOG_FILE" 2>&1 && \
+        apt-get install -y libxrender1 libsm6 libxext6 >> "$LOG_FILE" 2>&1 || return 1
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+      sudo -n apt-get update >> "$LOG_FILE" 2>&1 && \
+        sudo -n apt-get install -y libxrender1 libsm6 libxext6 >> "$LOG_FILE" 2>&1 || return 1
+    else
+      warn "Install these packages manually and re-run setup: sudo apt-get install -y libxrender1 libsm6 libxext6"
+      return 1
+    fi
+  elif command -v dnf >/dev/null 2>&1; then
+    warn "Install these packages manually and re-run setup: sudo dnf install -y libXrender libSM libXext"
+    return 1
+  elif command -v yum >/dev/null 2>&1; then
+    warn "Install these packages manually and re-run setup: sudo yum install -y libXrender libSM libXext"
+    return 1
+  elif command -v pacman >/dev/null 2>&1; then
+    warn "Install these packages manually and re-run setup: sudo pacman -S --needed libxrender libsm libxext"
+    return 1
+  else
+    warn "Unknown Linux package manager. Install libXrender.so.1, libSM.so.6, and libXext.so.6 manually."
+    return 1
+  fi
+
+  local still_missing=()
+  for lib_name in libXrender.so.1 libSM.so.6 libXext.so.6; do
+    if ! shared_library_available "$lib_name"; then
+      still_missing+=("$lib_name")
+    fi
+  done
+  if [ ${#still_missing[@]} -gt 0 ]; then
+    warn "PLIP runtime libraries are still missing after installation attempt: ${still_missing[*]}"
+    return 1
+  fi
+
+  success "Installed PLIP runtime system libraries"
+  return 0
+}
+
+verify_plip_runtime() {
+  local plip_bin="$VENV_DIR/bin/plip"
+  if [ ! -x "$plip_bin" ]; then
+    warn "PLIP CLI not found in venv"
+    return 1
+  fi
+  if ! "$plip_bin" -h >> "$LOG_FILE" 2>&1; then
+    warn "PLIP CLI failed to start — interaction analysis will not work"
+    warn "Check $LOG_FILE for the underlying PLIP/OpenBabel error"
+    return 1
+  fi
+  success "PLIP runtime verified"
+  return 0
+}
+
 # ── Argument parsing ─────────────────────────────────────────────────────────
 CORE_ONLY=0
 FORCE=0
@@ -237,6 +329,12 @@ if [ -d "$PLIP_DIR" ]; then
   fi
 else
   warn "PLIP vendor directory not found: $PLIP_DIR"
+fi
+
+if ! ensure_plip_runtime_system_libs; then
+  warn "PLIP runtime prerequisites are incomplete"
+elif ! verify_plip_runtime; then
+  warn "PLIP runtime verification failed"
 fi
 
 # ── 6. Optional: PyMOL ───────────────────────────────────────────────────────
