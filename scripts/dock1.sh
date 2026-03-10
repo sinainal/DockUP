@@ -15,11 +15,21 @@ fi
 # Determine the best Python to use
 DOCKUP_PYTHON="${DOCKUP_PYTHON:-python3}"
 DOCKUP_PYMOL_PYTHON="${DOCKUP_PYMOL_PYTHON:-$DOCKUP_PYTHON}"
+DOCKUP_VINA="${DOCKUP_VINA:-}"
 if [ -x "$DOCKUP_PYTHON" ]; then
   DOCKUP_BIN_DIR=$(dirname "$DOCKUP_PYTHON")
   export PATH="$DOCKUP_BIN_DIR:$PATH"
 fi
 export PYTHONNOUSERSITE=1
+
+if [ -n "$DOCKUP_VINA" ] && [ -x "$DOCKUP_VINA" ]; then
+  VINA_BIN="$DOCKUP_VINA"
+elif command -v vina >/dev/null 2>&1; then
+  VINA_BIN=$(command -v vina)
+else
+  echo "Error: vina CLI not found. Re-run ./setup.sh to install AutoDock Vina." >&2
+  exit 2
+fi
 
 [ $# -ge 3 ] || { echo "Usage: $0 <PDBID> <CHAIN> <LIGAND_RESNAME> [--lig_spec path_to_sdf] [--pdb_file path_to_receptor.pdb] [--grid_pad value|x,y,z] [--grid_file path] [--pdb2pqr_ph value] [--pdb2pqr_ff name] [--pdb2pqr_ffout name] [--pdb2pqr_nodebump 1|0] [--pdb2pqr_keep_chain 1|0] [--mkrec_allow_bad_res 1|0] [--mkrec_default_altloc A] [--vina_exhaustiveness N] [--vina_num_modes N] [--vina_energy_range E] [--vina_cpu N] [--vina_seed N]"; exit 1; }
 PDB=$1
@@ -510,7 +520,7 @@ fi
 
 #──────────────── 7. Docking – AutoDock Vina ────────────────────────
 vina_cmd=(
-  vina
+  "$VINA_BIN"
   --receptor "${PDB}_receptor.pdbqt"
   --ligand "${PDB}_ligand.pdbqt"
   --config "$GRIDBOX"

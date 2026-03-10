@@ -26,6 +26,63 @@ warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
 error()   { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 header()  { echo -e "\n${BOLD}$*${RESET}"; }
 
+download_file() {
+  local url="$1"
+  local dest="$2"
+  "$VENV_PYTHON" - "$url" "$dest" <<'PY'
+import shutil
+import sys
+import urllib.request
+
+url, dest = sys.argv[1], sys.argv[2]
+with urllib.request.urlopen(url, timeout=120) as response, open(dest, "wb") as handle:
+    shutil.copyfileobj(response, handle)
+PY
+}
+
+detect_vina_asset() {
+  local os_name arch_name
+  os_name=$(uname -s)
+  arch_name=$(uname -m)
+  case "${os_name}:${arch_name}" in
+    Linux:x86_64) echo "vina_1.2.7_linux_x86_64" ;;
+    Linux:aarch64|Linux:arm64) echo "vina_1.2.7_linux_aarch64" ;;
+    Darwin:x86_64) echo "vina_1.2.7_mac_x86_64" ;;
+    Darwin:arm64) echo "vina_1.2.7_mac_aarch64" ;;
+    *) return 1 ;;
+  esac
+}
+
+install_vina_cli() {
+  local target="$VENV_DIR/bin/vina"
+  local asset_name download_url tmp_target
+  if [ -x "$target" ] && "$target" --version >/dev/null 2>&1; then
+    success "AutoDock Vina CLI available in venv"
+    return 0
+  fi
+  if ! asset_name=$(detect_vina_asset); then
+    warn "Unsupported platform for automatic Vina CLI install: $(uname -s) $(uname -m)"
+    return 1
+  fi
+  download_url="https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.7/${asset_name}"
+  tmp_target="${target}.tmp"
+  rm -f "$tmp_target"
+  info "Installing official AutoDock Vina CLI (${asset_name})..."
+  if ! download_file "$download_url" "$tmp_target"; then
+    rm -f "$tmp_target"
+    warn "Failed to download AutoDock Vina CLI from ${download_url}"
+    return 1
+  fi
+  chmod +x "$tmp_target"
+  mv "$tmp_target" "$target"
+  if ! "$target" --version >/dev/null 2>&1; then
+    warn "Downloaded Vina CLI did not execute correctly"
+    return 1
+  fi
+  success "AutoDock Vina CLI installed"
+  return 0
+}
+
 # ── Argument parsing ─────────────────────────────────────────────────────────
 CORE_ONLY=0
 FORCE=0
@@ -148,6 +205,10 @@ if [ "$CORE_ONLY" -eq 0 ]; then
     fi
   done < "$ROOT_DIR/requirements/docking.txt"
 
+  if ! install_vina_cli; then
+    DOCKING_FAILED+=("vina-cli")
+  fi
+
   if [ ${#DOCKING_FAILED[@]} -gt 0 ]; then
     warn ""
     warn "Some docking tools failed to install: ${DOCKING_FAILED[*]}"
@@ -231,6 +292,7 @@ cat > "$ROOT_DIR/.env" <<ENVFILE
 DOCKUP_VENV="$VENV_DIR"
 DOCKUP_PYTHON="$VENV_PYTHON"
 DOCKUP_PYMOL_PYTHON="${DOCKUP_PYTHON_PATH}"
+DOCKUP_VINA="$VENV_DIR/bin/vina"
 DOCKUP_PYMOL_OK="${PYMOL_OK}"
 ENVFILE
 
