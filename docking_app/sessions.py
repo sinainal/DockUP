@@ -249,12 +249,18 @@ def scan_recent_incomplete_rows(
         if isinstance(latest_meta, dict):
             planned_total_hint = max(planned_total_hint, int(latest_meta.get("planned_total_runs") or 0))
         runtime_state = ""
+        runtime_returncode: int | None = None
         runtime_start_ts = 0.0
         runtime_updated_ts = 0.0
         runtime_total_hint = 0
         runtime_completed_hint = 0
         if isinstance(runtime_status, dict):
             runtime_state = str(runtime_status.get("status") or "").strip().lower()
+            raw_returncode = runtime_status.get("returncode")
+            try:
+                runtime_returncode = int(raw_returncode) if raw_returncode is not None else None
+            except (TypeError, ValueError):
+                runtime_returncode = None
             try:
                 runtime_start_ts = float(runtime_status.get("start_time") or 0.0)
             except (TypeError, ValueError):
@@ -348,6 +354,15 @@ def scan_recent_incomplete_rows(
                 completed_total += 1
         if runtime_completed_hint > 0:
             completed_total = max(completed_total, runtime_completed_hint)
+
+        runtime_reports_success = (
+            runtime_state == "done"
+            and runtime_returncode == 0
+            and runtime_total_hint > 0
+            and runtime_completed_hint >= runtime_total_hint
+        )
+        if runtime_reports_success:
+            completed_total = max(completed_total, expected_total)
 
         untracked_pending = 0
         for key, job in manifest_jobs.items():
