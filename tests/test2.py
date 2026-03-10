@@ -15,8 +15,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from docking_app.state import STATE
 
+pytestmark = [pytest.mark.legacy, pytest.mark.api]
+
 BASE_URL = "http://localhost:8000"
-WORKSPACE = Path("/home/sina/Downloads/ngl/DockUP/docking_app/workspace")
+WORKSPACE = REPO_ROOT / "docking_app" / "workspace"
 DOCK_DIR = WORKSPACE / "data" / "dock"
 SESSIONS_DIR = DOCK_DIR / ".sessions"
 SESSIONS_INDEX = SESSIONS_DIR / "index.json"

@@ -3,7 +3,7 @@ DockUP — Automated API Test Suite
 ===================================
 Çalıştırma:
     # Sunucu çalışırken (./start.sh):
-    cd /home/sina/Downloads/ngl/DockUP
+    cd <repo-root>
     python3 -m pytest tests/test_api.py -v
 
 Gereksinim:
@@ -33,8 +33,11 @@ import pytest
 import requests
 import pandas as pd
 
+pytestmark = [pytest.mark.legacy, pytest.mark.api]
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_URL = "http://localhost:8000"
-WORKSPACE = Path("/home/sina/Downloads/ngl/DockUP/docking_app/workspace")
+WORKSPACE = REPO_ROOT / "docking_app" / "workspace"
 DOCK_DIR = WORKSPACE / "data" / "dock"
 LIGAND_DIR = WORKSPACE / "data" / "ligand"
 RECEPTOR_DIR = WORKSPACE / "data" / "receptor"
