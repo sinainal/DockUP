@@ -175,6 +175,115 @@ verify_plip_runtime() {
   return 0
 }
 
+verify_pymol_python() {
+  local py_bin="$1"
+  if [ -z "$py_bin" ] || ! command -v "$py_bin" >/dev/null 2>&1; then
+    return 1
+  fi
+  "$py_bin" -c "import pymol2" >/dev/null 2>&1
+}
+
+resolve_pymol_bin() {
+  local py_bin="$1"
+  local candidate=""
+  if [ -n "$py_bin" ]; then
+    candidate="$(dirname "$py_bin")/pymol"
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+  if command -v pymol >/dev/null 2>&1; then
+    command -v pymol
+    return 0
+  fi
+  return 1
+}
+
+verify_pymol_binary() {
+  local pymol_bin="$1"
+  local probe_pml
+  if [ -z "$pymol_bin" ] || [ ! -x "$pymol_bin" ]; then
+    return 1
+  fi
+  probe_pml=$(mktemp "$ROOT_DIR/.pymol_probe.XXXXXX.pml")
+  printf 'quit\n' > "$probe_pml"
+  if "$pymol_bin" -cq "$probe_pml" >> "$LOG_FILE" 2>&1; then
+    rm -f "$probe_pml"
+    return 0
+  fi
+  rm -f "$probe_pml"
+  return 1
+}
+
+ensure_pymol_runtime_system_libs() {
+  local os_name
+  os_name=$(uname -s)
+  if [ "$os_name" != "Linux" ]; then
+    return 0
+  fi
+  if shared_library_available "libGL.so.1"; then
+    success "PyMOL runtime shared libraries available"
+    return 0
+  fi
+
+  warn "Missing system library required by PyMOL: libGL.so.1"
+  if command -v apt-get >/dev/null 2>&1; then
+    info "Attempting to install PyMOL runtime library via apt-get..."
+    if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+      apt-get update >> "$LOG_FILE" 2>&1 && \
+        apt-get install -y libgl1 >> "$LOG_FILE" 2>&1 || return 1
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+      sudo -n apt-get update >> "$LOG_FILE" 2>&1 && \
+        sudo -n apt-get install -y libgl1 >> "$LOG_FILE" 2>&1 || return 1
+    else
+      warn "Install this package manually and re-run setup: sudo apt-get install -y libgl1"
+      return 1
+    fi
+  elif command -v dnf >/dev/null 2>&1; then
+    warn "Install this package manually and re-run setup: sudo dnf install -y mesa-libGL"
+    return 1
+  elif command -v yum >/dev/null 2>&1; then
+    warn "Install this package manually and re-run setup: sudo yum install -y mesa-libGL"
+    return 1
+  elif command -v pacman >/dev/null 2>&1; then
+    warn "Install this package manually and re-run setup: sudo pacman -S --needed mesa"
+    return 1
+  else
+    warn "Unknown Linux package manager. Install libGL.so.1 manually."
+    return 1
+  fi
+
+  if ! shared_library_available "libGL.so.1"; then
+    warn "PyMOL runtime library libGL.so.1 is still missing after installation attempt"
+    return 1
+  fi
+
+  success "Installed PyMOL runtime system library"
+  return 0
+}
+
+install_pymol_in_venv() {
+  if ! ensure_pymol_runtime_system_libs; then
+    return 1
+  fi
+  info "Installing PyMOL into venv..."
+  if ! "$PIP" install --quiet pymol-open-source >> "$LOG_FILE" 2>&1; then
+    warn "PyMOL install failed — report rendering and PSE scene generation may not work"
+    return 1
+  fi
+  if ! verify_pymol_python "$VENV_PYTHON"; then
+    warn "PyMOL Python bindings are unavailable after installation"
+    return 1
+  fi
+  if ! verify_pymol_binary "$VENV_DIR/bin/pymol"; then
+    warn "PyMOL binary failed to start after installation"
+    return 1
+  fi
+  success "PyMOL installed in venv"
+  return 0
+}
+
 # ── Argument parsing ─────────────────────────────────────────────────────────
 CORE_ONLY=0
 FORCE=0
@@ -337,45 +446,77 @@ elif ! verify_plip_runtime; then
   warn "PLIP runtime verification failed"
 fi
 
-# ── 6. Optional: PyMOL ───────────────────────────────────────────────────────
-header "Step 6/6 — PyMOL (optional, for PSE scene generation)"
+# ── 6. PyMOL (rendering + PSE scenes) ───────────────────────────────────────
+header "Step 6/6 — PyMOL (report rendering + PSE scene generation)"
 
 PYMOL_OK=0
+PYMOL_BIN=""
+PYMOL_PYTHON="$VENV_PYTHON"
 
-# Check if PyMOL is already accessible from any Python
-for py_candidate in "$VENV_PYTHON" "${CONDA_PREFIX:-__none__}/bin/python" python3; do
-  if [ "$py_candidate" = "__none__/bin/python" ]; then continue; fi
-  if command -v "$py_candidate" &>/dev/null && "$py_candidate" -c "import pymol2" 2>/dev/null; then
-    PYMOL_PYTHON="$py_candidate"
+# Prefer a working venv-local PyMOL first.
+if verify_pymol_python "$VENV_PYTHON"; then
+  candidate_bin="$(resolve_pymol_bin "$VENV_PYTHON" || true)"
+  if [ -n "$candidate_bin" ] && verify_pymol_binary "$candidate_bin"; then
+    PYMOL_BIN="$candidate_bin"
     PYMOL_OK=1
-    success "PyMOL found via: $py_candidate"
-    break
+    success "PyMOL available in venv"
   fi
-done
+fi
+
+if [ "$PYMOL_OK" -eq 0 ] && [ "$CORE_ONLY" -eq 0 ]; then
+  install_pymol_in_venv || true
+  if verify_pymol_python "$VENV_PYTHON"; then
+    candidate_bin="$(resolve_pymol_bin "$VENV_PYTHON" || true)"
+    if [ -n "$candidate_bin" ] && verify_pymol_binary "$candidate_bin"; then
+      PYMOL_BIN="$candidate_bin"
+      PYMOL_OK=1
+      success "PyMOL ready in venv"
+    fi
+  fi
+fi
 
 if [ "$PYMOL_OK" -eq 0 ]; then
-  if [ "$WITH_PYMOL" -eq 1 ]; then
-    info "Attempting PyMOL installation..."
-
-    # Try conda-forge first (most reliable)
-    if command -v conda &>/dev/null; then
-      info "  Trying: conda install -c conda-forge pymol-open-source"
-      conda install -c conda-forge pymol-open-source -y --quiet >> "$LOG_FILE" 2>&1 && \
-        PYMOL_OK=1 && success "  PyMOL installed via conda-forge" || true
+  # Fall back to an externally managed Python if the venv install path is unavailable.
+  for py_candidate in "${CONDA_PREFIX:-__none__}/bin/python" python3; do
+    if [ "$py_candidate" = "__none__/bin/python" ]; then
+      continue
     fi
-
-    # Pip fallback
-    if [ "$PYMOL_OK" -eq 0 ]; then
-      info "  Trying: pip install pymol-open-source"
-      "$PIP" install --quiet pymol-open-source >> "$LOG_FILE" 2>&1 && \
-        PYMOL_OK=1 && success "  PyMOL installed via pip" || \
-        warn "  PyMOL pip install failed — PSE scenes will be skipped during docking"
+    if verify_pymol_python "$py_candidate"; then
+      candidate_bin="$(resolve_pymol_bin "$py_candidate" || true)"
+      if [ -n "$candidate_bin" ] && verify_pymol_binary "$candidate_bin"; then
+        PYMOL_PYTHON="$py_candidate"
+        PYMOL_BIN="$candidate_bin"
+        PYMOL_OK=1
+        success "PyMOL found via: $py_candidate"
+        break
+      fi
     fi
-  else
-    warn "PyMOL not found. PSE scene files will not be generated."
-    warn "To install PyMOL: ./setup.sh --with-pymol"
-    warn "Or manually:      conda install -c conda-forge pymol-open-source"
-  fi
+  done
+fi
+
+if [ "$PYMOL_OK" -eq 0 ] && [ "$WITH_PYMOL" -eq 1 ] && command -v conda &>/dev/null; then
+  info "Attempting external PyMOL installation via conda..."
+  conda install -c conda-forge pymol-open-source -y --quiet >> "$LOG_FILE" 2>&1 || true
+  for py_candidate in "${CONDA_PREFIX:-__none__}/bin/python" python3; do
+    if [ "$py_candidate" = "__none__/bin/python" ]; then
+      continue
+    fi
+    if verify_pymol_python "$py_candidate"; then
+      candidate_bin="$(resolve_pymol_bin "$py_candidate" || true)"
+      if [ -n "$candidate_bin" ] && verify_pymol_binary "$candidate_bin"; then
+        PYMOL_PYTHON="$py_candidate"
+        PYMOL_BIN="$candidate_bin"
+        PYMOL_OK=1
+        success "PyMOL installed via conda-forge"
+        break
+      fi
+    fi
+  done
+fi
+
+if [ "$PYMOL_OK" -eq 0 ]; then
+  warn "PyMOL not available. Report render images and PSE scene files will be skipped/fail."
+  warn "Manual install hint: conda install -c conda-forge pymol-open-source"
 fi
 
 # ── Write DOCKUP_PYTHON env cache ───────────────────────────────────────────
@@ -390,6 +531,7 @@ cat > "$ROOT_DIR/.env" <<ENVFILE
 DOCKUP_VENV="$VENV_DIR"
 DOCKUP_PYTHON="$VENV_PYTHON"
 DOCKUP_PYMOL_PYTHON="${DOCKUP_PYTHON_PATH}"
+DOCKUP_PYMOL_BIN="${PYMOL_BIN:-}"
 DOCKUP_VINA="$VENV_DIR/bin/vina"
 DOCKUP_PYMOL_OK="${PYMOL_OK}"
 ENVFILE
@@ -412,7 +554,7 @@ echo ""
 echo -e "  Start the server:  ${BOLD}./start.sh${RESET}"
 echo ""
 if [ "$PYMOL_OK" -eq 0 ]; then
-  echo -e "  ${YELLOW}ℹ  PyMOL not installed — docking works, PSE scenes skipped.${RESET}"
-  echo -e "  ${YELLOW}   To install: ./setup.sh --with-pymol${RESET}"
+  echo -e "  ${YELLOW}ℹ  PyMOL not installed — report render images and PSE scenes are unavailable.${RESET}"
+  echo -e "  ${YELLOW}   To retry install: ./setup.sh --force --with-pymol${RESET}"
   echo ""
 fi

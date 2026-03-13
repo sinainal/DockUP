@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import shutil
 import subprocess
 import time
 import xml.etree.ElementTree as ET
@@ -88,7 +89,10 @@ def load_interacting_residues(
 
 def run_pymol(pml_path: str, workdir: str = ".") -> float:
     start = time.time()
-    subprocess.run(["pymol", "-cq", pml_path], check=True, cwd=workdir)
+    pymol_bin = str(os.environ.get("DOCKUP_PYMOL_BIN") or "").strip()
+    if not pymol_bin:
+        pymol_bin = shutil.which("pymol") or "pymol"
+    subprocess.run([pymol_bin, "-cq", pml_path], check=True, cwd=workdir)
     return time.time() - start
 
 
