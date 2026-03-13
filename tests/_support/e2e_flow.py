@@ -16,6 +16,7 @@ NON_MAIN_LIGAND_HINTS = {"PEG", "OLA", "EDO", "GOL", "SO4"}
 class BasicFlowArtifacts:
     receptor_id: str = ""
     ligand_name: str = ""
+    generated_file_name: str = ""
     out_root: Path | None = None
 
 
@@ -177,6 +178,17 @@ def clear_loaded_receptors(api: ApiClient) -> None:
 
 
 def cleanup_basic_flow(api: ApiClient, artifacts: BasicFlowArtifacts) -> None:
+    if artifacts.out_root is not None:
+        try:
+            api.post(
+                "/api/run/recent/delete",
+                {
+                    "out_root": str(artifacts.out_root),
+                    "purge_files": True,
+                },
+            )
+        except Exception:
+            pass
     try:
         clear_queue(api)
     except Exception:
@@ -193,6 +205,11 @@ def cleanup_basic_flow(api: ApiClient, artifacts: BasicFlowArtifacts) -> None:
     if artifacts.ligand_name:
         try:
             api.post("/api/ligands/delete", {"name": artifacts.ligand_name})
+        except Exception:
+            pass
+    if artifacts.generated_file_name:
+        try:
+            api.post("/ligand-3d/api/files/delete", {"file_names": [artifacts.generated_file_name]})
         except Exception:
             pass
     if artifacts.out_root and artifacts.out_root.exists():
@@ -273,6 +290,7 @@ def provision_single_docking_run(
     )
     converted_name = str(convert.get("name") or "").strip()
     assert converted_name, f"convert3d returned empty name: {convert}"
+    artifacts.generated_file_name = converted_name
 
     add = api.assert_ok(
         api.post("/ligand-3d/api/ligands/add", {"file_names": [converted_name]}),

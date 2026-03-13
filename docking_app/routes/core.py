@@ -51,6 +51,7 @@ from ..services import (
 )
 from ..sessions import (
     RUN_SESSION_DIR,
+    build_legacy_session_entry,
     load_run_sessions,
     register_run_session,
     save_run_sessions,
@@ -1035,27 +1036,104 @@ def remove_batch(payload: dict[str, Any]) -> JSONResponse:
 @router.post("/api/run/recent/delete")
 def run_recent_delete(payload: dict[str, Any]) -> JSONResponse:
     item_id = str(payload.get("item_id") or "").strip()
-    if not item_id:
-        raise HTTPException(status_code=400, detail="Missing item_id.")
+    out_root_hint = str(payload.get("out_root") or "").strip()
+    purge_files = bool(payload.get("purge_files", False))
+    if not item_id and not out_root_hint:
+        raise HTTPException(status_code=400, detail="Missing item_id or out_root.")
+
+    target_out_root = ""
+    removed_legacy = False
+    legacy_entry = build_legacy_session_entry()
     if item_id.startswith("legacy::"):
-        raise HTTPException(status_code=400, detail="Legacy recent entry cannot be deleted from index.")
+        target_out_root = item_id.split("legacy::", 1)[1].strip()
+    elif out_root_hint:
+        try:
+            target_out_root = str(Path(out_root_hint).expanduser().resolve())
+        except OSError:
+            target_out_root = out_root_hint
 
     sessions = load_run_sessions()
-    target = next((row for row in sessions if str(row.get("id") or "") == item_id), None)
-    if not target:
+    target = next((row for row in sessions if str(row.get("id") or "") == item_id), None) if item_id else None
+    if target and not target_out_root:
+        try:
+            target_out_root = str(Path(str(target.get("out_root") or "")).expanduser().resolve())
+        except OSError:
+            target_out_root = str(target.get("out_root") or "").strip()
+
+    if not target_out_root and legacy_entry:
+        target_out_root = str(Path(str(legacy_entry.get("out_root") or "")).expanduser().resolve())
+
+    if not target_out_root:
         raise HTTPException(status_code=404, detail="Recent docking item not found.")
 
-    remaining = [row for row in sessions if str(row.get("id") or "") != item_id]
+    target_out_root_path = Path(target_out_root).expanduser()
+    try:
+        target_out_root_resolved = target_out_root_path.resolve()
+    except OSError:
+        target_out_root_resolved = target_out_root_path
+
+    with RUN_LOCK:
+        active_out_root = str(RUN_STATE.get("out_root") or "").strip()
+        if active_out_root:
+            try:
+                active_out_root = str(Path(active_out_root).expanduser().resolve())
+            except OSError:
+                pass
+        if (
+            str(RUN_STATE.get("status") or "") in {"running", "stopping"}
+            and active_out_root
+            and active_out_root == str(target_out_root_resolved)
+        ):
+            raise HTTPException(status_code=409, detail="Cannot delete a dock root while it is running.")
+
+    removed_ids = [
+        str(row.get("id") or "").strip()
+        for row in sessions
+        if str(Path(str(row.get("out_root") or "")).expanduser().resolve()) == str(target_out_root_resolved)
+    ]
+    remaining = [
+        row
+        for row in sessions
+        if str(Path(str(row.get("out_root") or "")).expanduser().resolve()) != str(target_out_root_resolved)
+    ]
     save_run_sessions(remaining)
 
-    session_dir = RUN_SESSION_DIR / item_id
-    if session_dir.exists():
-        try:
-            shutil.rmtree(session_dir, ignore_errors=True)
-        except Exception:
-            pass
+    for session_id in removed_ids:
+        if not session_id:
+            continue
+        session_dir = RUN_SESSION_DIR / session_id
+        if session_dir.exists():
+            try:
+                shutil.rmtree(session_dir, ignore_errors=True)
+            except Exception:
+                pass
 
-    return JSONResponse({"ok": True, "deleted_id": item_id, "count": len(remaining)})
+    if legacy_entry:
+        legacy_out_root = str(Path(str(legacy_entry.get("out_root") or "")).expanduser().resolve())
+        if legacy_out_root == str(target_out_root_resolved):
+            for path in [DOCK_DIR / "run_batch.sh", DOCK_DIR / "manifest.tsv"]:
+                if path.exists():
+                    path.unlink(missing_ok=True)
+            removed_legacy = True
+
+    purged_out_root = False
+    if purge_files:
+        dock_root = DOCK_DIR.resolve()
+        if target_out_root_resolved != dock_root and dock_root in target_out_root_resolved.parents:
+            shutil.rmtree(target_out_root_resolved, ignore_errors=True)
+            purged_out_root = True
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "deleted_id": item_id,
+            "deleted_session_ids": removed_ids,
+            "deleted_out_root": str(target_out_root_resolved),
+            "deleted_legacy_entry": removed_legacy,
+            "purged_out_root": purged_out_root,
+            "count": len(remaining),
+        }
+    )
 
 
 def _stop_active_run_process(timeout_sec: float = 8.0) -> tuple[bool, str, int | None]:

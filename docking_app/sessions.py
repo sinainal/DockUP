@@ -33,6 +33,15 @@ RUN_SESSION_INDEX = RUN_SESSION_DIR / "index.json"
 # Session CRUD
 # ---------------------------------------------------------------------------
 
+def _parse_batch_assignment(content: str, name: str) -> str:
+    match = re.search(rf"^{re.escape(name)}=(.+)$", content, flags=re.MULTILINE)
+    if not match:
+        return ""
+    raw = str(match.group(1) or "").strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {'"', "'"}:
+        return raw[1:-1]
+    return raw
+
 def load_run_sessions() -> list[dict[str, Any]]:
     raw = read_json(RUN_SESSION_INDEX, {"sessions": []})
     if isinstance(raw, dict):
@@ -98,6 +107,27 @@ def register_run_session(
         "planned_total": max(0, int(planned_total or 0)),
     }
     sessions = load_run_sessions()
+    replaced_ids = [
+        str(row.get("id") or "").strip()
+        for row in sessions
+        if str(Path(str(row.get("out_root") or "")).expanduser().resolve()) == out_root_abs
+    ]
+    sessions = [
+        row
+        for row in sessions
+        if str(Path(str(row.get("out_root") or "")).expanduser().resolve()) != out_root_abs
+    ]
+    for old_id in replaced_ids:
+        if not old_id:
+            continue
+        old_dir = RUN_SESSION_DIR / old_id
+        if old_dir.exists():
+            try:
+                import shutil
+
+                shutil.rmtree(old_dir, ignore_errors=True)
+            except Exception:
+                pass
     sessions.append(entry)
     sessions.sort(key=lambda row: float(row.get("created_ts") or 0.0), reverse=True)
     sessions = sessions[:200]
@@ -122,9 +152,9 @@ def build_legacy_session_entry() -> dict[str, Any] | None:
         content = ""
 
     out_root = str(DOCK_DIR.resolve())
-    match_out = re.search(r'^OUT_ROOT="([^"]+)"', content, flags=re.MULTILINE)
-    if match_out:
-        out_root = str(match_out.group(1) or "").strip()
+    parsed_out_root = _parse_batch_assignment(content, "OUT_ROOT")
+    if parsed_out_root:
+        out_root = parsed_out_root
     out_root_path = Path(out_root).expanduser()
     if not out_root_path.is_absolute():
         ws = (WORKSPACE_DIR / out_root_path).resolve()
@@ -132,22 +162,22 @@ def build_legacy_session_entry() -> dict[str, Any] | None:
     out_root_abs = str(out_root_path.resolve())
     plan["out_root"] = out_root_abs
 
-    match_runs = re.search(r'^RUNS="(\d+)"', content, flags=re.MULTILINE)
-    if match_runs:
+    parsed_runs = _parse_batch_assignment(content, "RUNS")
+    if parsed_runs:
         try:
-            plan["runs"] = int(match_runs.group(1))
+            plan["runs"] = int(parsed_runs)
         except (TypeError, ValueError):
             plan["runs"] = 0
-    match_total_runs = re.search(r'^TOTAL_RUNS="(\d+)"', content, flags=re.MULTILINE)
-    if match_total_runs:
+    parsed_total_runs = _parse_batch_assignment(content, "TOTAL_RUNS")
+    if parsed_total_runs:
         try:
-            plan["planned_total"] = int(match_total_runs.group(1))
+            plan["planned_total"] = int(parsed_total_runs)
         except (TypeError, ValueError):
             plan["planned_total"] = 0
 
-    match_manifest = re.search(r'^MANIFEST="([^"]+)"', content, flags=re.MULTILINE)
-    if match_manifest:
-        plan["manifest"] = str(match_manifest.group(1) or "").strip()
+    parsed_manifest = _parse_batch_assignment(content, "MANIFEST")
+    if parsed_manifest:
+        plan["manifest"] = parsed_manifest
     if not plan["manifest"]:
         plan["manifest"] = str(manifest_path.resolve())
 
@@ -179,7 +209,6 @@ def collect_resume_sessions() -> list[dict[str, Any]]:
     sessions = load_run_sessions()
     cleaned: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    seen_out_roots: set[str] = set()
     for row in sessions:
         manifest_path = Path(str(row.get("manifest_snapshot") or "")).expanduser()
         out_root = str(row.get("out_root") or "").strip()
@@ -200,17 +229,26 @@ def collect_resume_sessions() -> list[dict[str, Any]]:
         item["runs"] = max(1, int(item.get("runs") or 1))
         item["planned_total"] = max(0, int(item.get("planned_total") or 0))
         cleaned.append(item)
-        seen_out_roots.add(item["out_root"])
+
+    cleaned.sort(key=lambda row: float(row.get("created_ts") or 0.0), reverse=True)
+    deduped: list[dict[str, Any]] = []
+    seen_out_roots: set[str] = set()
+    for row in cleaned:
+        out_root = str(row.get("out_root") or "")
+        if out_root in seen_out_roots:
+            continue
+        deduped.append(row)
+        seen_out_roots.add(out_root)
 
     legacy = build_legacy_session_entry()
     if legacy:
         legacy_out_root = str(Path(legacy["out_root"]).resolve())
         key = (legacy_out_root, str(Path(legacy["manifest_snapshot"]).resolve()))
         if legacy_out_root not in seen_out_roots and key not in seen:
-            cleaned.append(legacy)
+            deduped.append(legacy)
 
-    cleaned.sort(key=lambda row: float(row.get("created_ts") or 0.0), reverse=True)
-    return cleaned
+    deduped.sort(key=lambda row: float(row.get("created_ts") or 0.0), reverse=True)
+    return deduped
 
 
 # ---------------------------------------------------------------------------

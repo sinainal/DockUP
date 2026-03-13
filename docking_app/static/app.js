@@ -2946,8 +2946,7 @@ function renderRecentDockings(rows) {
     const statusLabel = rowRunning ? "Running" : (resumable ? "Ready" : "Needs Attention");
     const statusClass = rowRunning ? "running" : (resumable ? "" : "not-ready");
     const canContinue = resumable && !runActive;
-    const isLegacyRow = String(row.id || "").startsWith("legacy::");
-    const canDelete = !rowRunning && !isLegacyRow;
+    const canDelete = !rowRunning;
     const continueBtn = canContinue
       ? `<button class="recent-resume-btn" data-id="${escapeHtml(row.id || "")}" data-out-root="${escapeHtml(rootPath)}">Continue Queue</button>`
       : `<button class="recent-resume-btn" disabled title="${escapeHtml(runActive ? "Another queue is currently running." : (row.resume_reason || "Missing metadata"))}">Continue Queue</button>`;
@@ -2955,7 +2954,7 @@ function renderRecentDockings(rows) {
       ? `<button class="secondary danger-soft recent-stop-btn" type="button">Stop Queue</button>`
       : "";
     const actionBtn = `${continueBtn}${stopBtn}`;
-    const deleteBtn = `<button class="recent-delete-btn" data-id="${escapeHtml(row.id || "")}" ${canDelete ? "" : "disabled"} title="${canDelete ? "Remove from recent list" : (isLegacyRow ? "Legacy entries cannot be deleted from index" : "Cannot delete while running")}">&times;</button>`;
+    const deleteBtn = `<button class="recent-delete-btn" data-id="${escapeHtml(row.id || "")}" data-out-root="${escapeHtml(rootPath)}" ${canDelete ? "" : "disabled"} title="${canDelete ? "Remove from recent list" : "Cannot delete while running"}">&times;</button>`;
 
     return `
       <article class="recent-docking-item">
@@ -2998,13 +2997,14 @@ function renderRecentDockings(rows) {
   Array.from(els.recentDockingsTable.querySelectorAll(".recent-delete-btn")).forEach((btn) => {
     btn.addEventListener("click", async () => {
       const itemId = btn.dataset.id || "";
+      const outRoot = btn.dataset.outRoot || "";
       if (!itemId || btn.disabled) return;
       if (!confirm("Remove this recent docking entry from the list?")) return;
       try {
         await fetchJSON("/api/run/recent/delete", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ item_id: itemId }),
+          body: JSON.stringify({ item_id: itemId, out_root: outRoot }),
         });
         await refreshRecentDockings();
       } catch (err) {
@@ -3032,12 +3032,7 @@ async function refreshRecentDockings() {
   const rows = Array.isArray(data.rows) ? data.rows : [];
   renderRecentDockings(rows);
   if (els.recentDockingsMeta) {
-    const totals = rows.reduce((acc, row) => {
-      acc.completed += Number(row.completed_runs_total || 0);
-      acc.expected += Number(row.expected_runs_total || 0);
-      return acc;
-    }, { completed: 0, expected: 0 });
-    els.recentDockingsMeta.textContent = `${rows.length} incomplete dock root(s) | total progress ${totals.completed} / ${totals.expected || 0}`;
+    els.recentDockingsMeta.textContent = `${rows.length} incomplete dock root(s)`;
   }
 }
 

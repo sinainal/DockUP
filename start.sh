@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$ROOT_DIR"
 PORT="${PORT:-8000}"
+REQUESTED_PORT="$PORT"
+PORT_SEARCH_LIMIT="${PORT_SEARCH_LIMIT:-50}"
 APP_MODULE="docking_app.app:app"
 export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
@@ -32,16 +34,61 @@ else
   exit 1
 fi
 
-# ── Port cleanup ─────────────────────────────────────────────────────────────
-if command -v lsof >/dev/null 2>&1; then
-  pids=$(lsof -ti "tcp:${PORT}" || true)
-  if [ -n "$pids" ]; then
-    kill $pids || true
+port_is_available() {
+  local candidate="$1"
+  python - "$candidate" <<'PY'
+import socket
+import sys
+
+port = int(sys.argv[1])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    sock.bind(("0.0.0.0", port))
+except OSError:
+    raise SystemExit(1)
+finally:
+    sock.close()
+PY
+}
+
+try_release_port() {
+  local candidate="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    local pids
+    pids=$(lsof -ti "tcp:${candidate}" || true)
+    if [ -n "$pids" ]; then
+      kill $pids >/dev/null 2>&1 || true
+      sleep 1
+    fi
+  elif command -v fuser >/dev/null 2>&1; then
+    fuser -k "${candidate}/tcp" >/dev/null 2>&1 || true
     sleep 1
   fi
-elif command -v fuser >/dev/null 2>&1; then
-  fuser -k "${PORT}/tcp" >/dev/null 2>&1 || true
-  sleep 1
+}
+
+find_available_port() {
+  local start_port="$1"
+  local end_port=$((start_port + PORT_SEARCH_LIMIT))
+  local candidate="$start_port"
+  while [ "$candidate" -le "$end_port" ]; do
+    if port_is_available "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    candidate=$((candidate + 1))
+  done
+  return 1
+}
+
+# ── Port cleanup ─────────────────────────────────────────────────────────────
+try_release_port "$PORT"
+if ! port_is_available "$PORT"; then
+  if ! PORT=$(find_available_port "$PORT"); then
+    echo "[ERROR] No available port found in range ${REQUESTED_PORT}-$((REQUESTED_PORT + PORT_SEARCH_LIMIT))"
+    exit 1
+  fi
+  echo "[WARN] Port ${REQUESTED_PORT} is already in use; falling back to ${PORT}."
 fi
 
 echo "=== DockUP Docking Application ==="
