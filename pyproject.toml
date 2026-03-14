@@ -33,7 +33,7 @@ dependencies = [
 # ── Docking pipeline tools ──────────────────────────────────────────────────
 docking = [
     "pdb2pqr>=3.6",
-    "meeko>=0.5",
+    "meeko>=0.7",
     "scipy>=1.10.0",
     "gemmi>=0.6.2",
     "vina>=1.2.5",

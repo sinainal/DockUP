@@ -679,6 +679,7 @@ function updateModeUI() {
   }
 
   const resultsOnly = appState.mode === "Results";
+  if (resultsOnly) enforceResultsInteractionToggle();
   [els.showDockedLigand, els.showInteractions].forEach((el) => {
     if (!el) return;
     if (!resultsOnly) {
@@ -1866,6 +1867,7 @@ function renderResultDetail(result) {
 
 async function loadResultDetail(resultDir) {
   if (!resultDir) return;
+  enforceResultsInteractionToggle();
   const data = await fetchJSON("/api/results/detail", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2290,6 +2292,12 @@ function toObjectOrEmpty(value) {
   return value;
 }
 
+function enforceResultsInteractionToggle() {
+  if (appState.mode === "Results" && els.showInteractions) {
+    els.showInteractions.checked = true;
+  }
+}
+
 function scheduleUIStateSave(delayMs = 180) {
   if (uiStateSaveTimer) clearTimeout(uiStateSaveTimer);
   uiStateSaveTimer = setTimeout(() => {
@@ -2321,7 +2329,7 @@ function saveUIState() {
         showSurface: Boolean(els.showSurface?.checked),
         showNativeLigand: Boolean(els.showNativeLigand?.checked),
         showDockedLigand: Boolean(els.showDockedLigand?.checked),
-        showInteractions: Boolean(els.showInteractions?.checked),
+        showInteractions: appState.mode === "Results" ? true : Boolean(els.showInteractions?.checked),
         showSticks: Boolean(els.showSticks?.checked),
         showGrid: Boolean(els.showGrid?.checked),
         fixedGridSize: String(els.fixedGridSize?.value || ""),
@@ -2410,7 +2418,9 @@ async function restoreUIState() {
   if (els.showSurface && ui.showSurface !== undefined) els.showSurface.checked = Boolean(ui.showSurface);
   if (els.showNativeLigand && ui.showNativeLigand !== undefined) els.showNativeLigand.checked = Boolean(ui.showNativeLigand);
   if (els.showDockedLigand && ui.showDockedLigand !== undefined) els.showDockedLigand.checked = Boolean(ui.showDockedLigand);
-  if (els.showInteractions && ui.showInteractions !== undefined) els.showInteractions.checked = Boolean(ui.showInteractions);
+  if (els.showInteractions && ui.showInteractions !== undefined) {
+    els.showInteractions.checked = appState.mode === "Results" ? true : Boolean(ui.showInteractions);
+  }
   if (els.showSticks && ui.showSticks !== undefined) els.showSticks.checked = Boolean(ui.showSticks);
   if (els.showGrid && ui.showGrid !== undefined) els.showGrid.checked = Boolean(ui.showGrid);
   if (els.fixedGridSize && ui.fixedGridSize !== undefined) els.fixedGridSize.value = String(ui.fixedGridSize);
@@ -2420,6 +2430,7 @@ async function restoreUIState() {
   applyAdvancedDockingConfigToModal(appState.dockingConfig);
   renderDockingConfigSummary();
   updateModeUI();
+  enforceResultsInteractionToggle();
 }
 
 function normalizeReceptorIds(rawText) {

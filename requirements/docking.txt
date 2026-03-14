@@ -5,7 +5,7 @@
 pdb2pqr>=3.6
 
 # Ligand preparation (AutoDock Tools replacement)
-meeko>=0.5
+meeko>=0.7
 scipy>=1.10.0
 gemmi>=0.6.2
 

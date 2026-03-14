@@ -173,12 +173,12 @@ fi
 
 MK_PREP_REC="mk_prepare_receptor.py"
 MK_PREP_LIG="mk_prepare_ligand.py"
-if [ -n "${CONDA_PREFIX:-}" ]; then
-  if [ -x "$CONDA_PREFIX/bin/mk_prepare_receptor.py" ]; then
-    MK_PREP_REC="$CONDA_PREFIX/bin/mk_prepare_receptor.py"
+if [ -n "${DOCKUP_BIN_DIR:-}" ]; then
+  if [ -x "$DOCKUP_BIN_DIR/mk_prepare_receptor.py" ]; then
+    MK_PREP_REC="$DOCKUP_BIN_DIR/mk_prepare_receptor.py"
   fi
-  if [ -x "$CONDA_PREFIX/bin/mk_prepare_ligand.py" ]; then
-    MK_PREP_LIG="$CONDA_PREFIX/bin/mk_prepare_ligand.py"
+  if [ -x "$DOCKUP_BIN_DIR/mk_prepare_ligand.py" ]; then
+    MK_PREP_LIG="$DOCKUP_BIN_DIR/mk_prepare_ligand.py"
   fi
 fi
 

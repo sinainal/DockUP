@@ -33,6 +33,8 @@ else
   echo "[ERROR] Virtual environment not found. Please run ./setup.sh --force"
   exit 1
 fi
+VENV_PYTHON="${DOCKUP_VENV}/bin/python"
+VENV_UVICORN="${DOCKUP_VENV}/bin/uvicorn"
 
 port_is_available() {
   local candidate="$1"
@@ -96,8 +98,8 @@ echo "    Starting on http://0.0.0.0:${PORT} ..."
 echo "    Virtual Env: $VIRTUAL_ENV"
 echo ""
 
-if command -v uvicorn >/dev/null 2>&1; then
-  exec uvicorn "$APP_MODULE" --host 0.0.0.0 --port "$PORT"
+if [ -x "$VENV_UVICORN" ]; then
+  exec "$VENV_UVICORN" "$APP_MODULE" --host 0.0.0.0 --port "$PORT"
 else
-  exec python -m uvicorn "$APP_MODULE" --host 0.0.0.0 --port "$PORT"
+  exec "$VENV_PYTHON" -m uvicorn "$APP_MODULE" --host 0.0.0.0 --port "$PORT"
 fi
