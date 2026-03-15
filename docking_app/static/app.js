@@ -2272,6 +2272,38 @@ function applyGridbox() {
   gridComp.addRepresentation("buffer");
 }
 
+function applyExternalGridbox(grid, options = {}) {
+  const targetPdbId = String(options.pdbId || appState.selectedReceptor || "").trim().toUpperCase();
+  if (!targetPdbId) {
+    throw new Error("Select a receptor before applying a binding-site gridbox.");
+  }
+
+  const normalized = {
+    cx: Number(grid?.cx) || 0,
+    cy: Number(grid?.cy) || 0,
+    cz: Number(grid?.cz) || 0,
+    sx: Math.max(Number(grid?.sx) || 0, 1),
+    sy: Math.max(Number(grid?.sy) || 0, 1),
+    sz: Math.max(Number(grid?.sz) || 0, 1),
+  };
+
+  gridboxData = { ...normalized };
+  gridDataPerReceptor[targetPdbId] = { ...normalized };
+  showGridControlsPanel();
+  setGridboxSliders();
+  if (els.showGrid) {
+    els.showGrid.checked = options.showGrid !== false;
+  }
+  applyGridbox();
+  scheduleUIStateSave();
+}
+
+window.DockUPGridbox = {
+  applyExternalGridbox,
+  getSelectedReceptorId: () => String(appState.selectedReceptor || "").trim().toUpperCase(),
+  getDefaultFixedGridSize: () => Number.parseFloat(els.fixedGridSize?.value || "20") || 20,
+};
+
 // =====================================================
 // Receptor Summary & Ligand List
 // =====================================================

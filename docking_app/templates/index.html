@@ -11,6 +11,7 @@
     href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap"
     rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css?v=31">
+  <link rel="stylesheet" href="/static/pocket_finder.css?v=1">
   <script src="/static/vendor/ngl.js?v=1"></script>
   <script>
     if (typeof window.NGL === "undefined") {
@@ -125,8 +126,11 @@
                 <span class="grid-selection-label">Selection</span>
                 <span class="grid-selection-value">None</span>
               </div>
-              <button class="primary gridbox-create-btn" id="createGridLigand">Create Gridbox for
-                Selection</button>
+              <div class="gridbox-action-group">
+                <button class="primary gridbox-create-btn" id="createGridLigand">Create Gridbox for
+                  Selection</button>
+                <button class="secondary gridbox-finder-btn" id="openBindingSiteFinder" type="button">Binding Site Finder</button>
+              </div>
             </div>
 
             <div id="gridControlsPanel" class="grid-panel-hidden">
@@ -790,7 +794,88 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=43"></script>
+  <div id="bindingSiteFinderModal" class="report-modal" role="dialog" aria-modal="true" aria-labelledby="bindingSiteFinderTitle">
+    <div class="report-modal-card pocket-finder-modal-card">
+      <div class="report-modal-header">
+        <div>
+          <div class="section-title" id="bindingSiteFinderTitle" style="margin-bottom: 2px;">Binding Site Finder</div>
+          <div class="helper" id="bindingSiteFinderSubtitle">Run P2Rank on the selected receptor and apply a pocket as gridbox.</div>
+        </div>
+        <button class="secondary" id="closeBindingSiteFinder" type="button">Close</button>
+      </div>
+
+      <div id="bindingSiteFinderLoading" class="pocket-finder-loading">
+        <div class="pocket-finder-loading-card">
+          <div class="pocket-finder-spinner"></div>
+          <div>
+            <div class="section-title" style="margin-bottom: 4px;">Analyzing selected receptor</div>
+            <div class="helper" id="bindingSiteFinderLoadingText">Preparing binding site prediction...</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="bindingSiteFinderError" class="pocket-finder-error" style="display:none;"></div>
+
+      <div id="bindingSiteFinderBody" class="pocket-finder-shell" style="display:none;">
+        <aside class="pocket-finder-sidebar">
+          <div class="pocket-finder-sidebar-head">
+            <div class="section-title" style="margin-bottom: 0;">Detected Pockets</div>
+            <div class="helper" id="bindingSitePocketMeta">-</div>
+          </div>
+          <div id="bindingSitePocketList" class="pocket-finder-pocket-list"></div>
+        </aside>
+
+        <section class="pocket-finder-main">
+          <div class="pocket-finder-viewer-card">
+            <div class="pocket-finder-viewer-head">
+              <div>
+                <div class="helper">Selected Pocket</div>
+                <div class="section-title pocket-finder-viewer-title" id="bindingSiteViewerTitle">-</div>
+              </div>
+              <label class="pocket-finder-inline-toggle">
+                <input type="checkbox" id="bindingSiteShowGrid" checked>
+                <span>Show gridbox</span>
+              </label>
+            </div>
+            <div id="bindingSiteViewport" class="binding-site-viewport"></div>
+          </div>
+
+          <div class="pocket-finder-detail-card">
+            <div class="section-title" style="margin-bottom: 8px;">Pocket Details</div>
+            <div id="bindingSiteDetailTable" class="pocket-finder-detail-table"></div>
+            <div class="pocket-finder-residue-block">
+              <div class="helper" style="margin-bottom: 6px;">Top residues</div>
+              <div id="bindingSiteResidues" class="pocket-finder-residue-list"></div>
+            </div>
+            <div class="pocket-finder-grid-row">
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Grid mode</label>
+                <select id="bindingSiteGridMode">
+                  <option value="fit">Fit to pocket</option>
+                  <option value="fixed">Fixed cube</option>
+                </select>
+              </div>
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Fixed Size (A)</label>
+                <input type="number" id="bindingSiteFixedSize" min="6" max="80" step="1" value="20">
+              </div>
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Padding (A)</label>
+                <input type="number" id="bindingSitePadding" min="0" max="20" step="0.5" value="2">
+              </div>
+              <div class="field pocket-finder-apply-field" style="margin-bottom: 0;">
+                <label class="field-label">&nbsp;</label>
+                <button class="primary" id="bindingSiteApplyGrid" type="button">Apply Selected Pocket as Gridbox</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=44"></script>
+  <script src="/static/pocket_finder.js?v=1"></script>
 </body>
 
 </html>
