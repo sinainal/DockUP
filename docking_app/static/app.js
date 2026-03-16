@@ -2642,7 +2642,7 @@ window.DockUPGridSelectionSearchBridge = {
     chain: getSelectedChainForReceptor(appState.selectedReceptor),
   }),
   getResidueCatalog: () => buildResidueSearchCatalog(),
-  setResidueSelection: (selection) => applyResidueSearchSelection(selection),
+  setResidueSelection: (selection, options) => applyResidueSearchSelection(selection, options || {}),
   clearResidueSelection: (options) => clearResidueSearchSelection(options || {}),
   getResidueSelection: () => (residueSearchSelectionData ? { ...residueSearchSelectionData } : null),
 };

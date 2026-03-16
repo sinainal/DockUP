@@ -129,7 +129,10 @@
                   <span class="grid-selection-value">None</span>
                 </button>
                 <div id="gridSelectionSearchPanel" class="grid-selection-search-panel" hidden>
-                  <label class="field-label grid-selection-search-label" for="gridSelectionSearchInput">Residue Search</label>
+                  <div class="grid-selection-search-head">
+                    <label class="field-label grid-selection-search-label" for="gridSelectionSearchInput">Residue Search</label>
+                    <button type="button" id="gridSelectionSearchClear" class="secondary grid-selection-search-clear">Clear Selection</button>
+                  </div>
                   <input type="text" id="gridSelectionSearchInput" class="grid-selection-search-input" placeholder="TRP or tryptophan">
                   <div id="gridSelectionSearchHint" class="grid-selection-search-hint helper">Search amino-acid names or 3-letter codes for the selected chain.</div>
                   <div id="gridSelectionSearchSummary" class="grid-selection-search-summary helper">No residue search selected.</div>
