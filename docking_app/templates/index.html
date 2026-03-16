@@ -11,6 +11,7 @@
     href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap"
     rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css?v=31">
+  <link rel="stylesheet" href="/static/grid_selection_search.css?v=1">
   <link rel="stylesheet" href="/static/pocket_finder.css?v=1">
   <script src="/static/vendor/ngl.js?v=1"></script>
   <script>
@@ -122,9 +123,18 @@
                 <label class="field-label">Initial Box Size (Å)</label>
                 <input type="number" id="fixedGridSize" value="20.0" min="10" max="100" step="0.1" style="width: 120px;">
               </div>
-              <div id="gridSelectionInfo" class="grid-selection-info is-none" aria-live="polite">
-                <span class="grid-selection-label">Selection</span>
-                <span class="grid-selection-value">None</span>
+              <div class="grid-selection-shell">
+                <button id="gridSelectionInfo" class="grid-selection-info is-none" type="button" aria-live="polite" aria-expanded="false" aria-controls="gridSelectionSearchPanel">
+                  <span class="grid-selection-label">Selection</span>
+                  <span class="grid-selection-value">None</span>
+                </button>
+                <div id="gridSelectionSearchPanel" class="grid-selection-search-panel" hidden>
+                  <label class="field-label grid-selection-search-label" for="gridSelectionSearchInput">Residue Search</label>
+                  <input type="text" id="gridSelectionSearchInput" class="grid-selection-search-input" placeholder="TRP or tryptophan">
+                  <div id="gridSelectionSearchHint" class="grid-selection-search-hint helper">Search amino-acid names or 3-letter codes for the selected chain.</div>
+                  <div id="gridSelectionSearchSummary" class="grid-selection-search-summary helper">No residue search selected.</div>
+                  <div id="gridSelectionSearchMatches" class="grid-selection-search-matches"></div>
+                </div>
               </div>
               <div class="gridbox-action-group">
                 <button class="primary gridbox-create-btn" id="createGridLigand">Create Gridbox for
@@ -874,7 +884,8 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=44"></script>
+  <script src="/static/app.js?v=45"></script>
+  <script src="/static/grid_selection_search.js?v=1"></script>
   <script src="/static/pocket_finder.js?v=1"></script>
 </body>
 

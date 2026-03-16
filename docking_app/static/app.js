@@ -115,6 +115,7 @@ let representations = {
   sticks: null,
   focusedLigand: null,
   selectedAtom: null,
+  residueSearch: null,
 };
 
 // Gridbox state
@@ -122,6 +123,7 @@ let gridboxData = null;
 let gridDataPerReceptor = {}; // Store grid data per receptor
 let gridSelectionMetaPerReceptor = {};
 let externalGridSelectionData = null;
+let residueSearchSelectionData = null;
 
 // DOM Elements
 const els = {};
@@ -450,6 +452,17 @@ function getNativeLigandsForChain(ligandsByChain, chain) {
     return Array.isArray(source.all) ? [...source.all] : [];
   }
   return Array.isArray(source[normalizedChain]) ? [...source[normalizedChain]] : [];
+}
+
+function dispatchGridSelectionContext(reason = "viewer-refresh") {
+  window.dispatchEvent(new CustomEvent("dockup:grid-selection-context", {
+    detail: {
+      reason: String(reason || "viewer-refresh"),
+      pdbId: String(appState.selectedReceptor || "").trim().toUpperCase(),
+      chain: getSelectedChainForReceptor(appState.selectedReceptor),
+      hasStructure: !!comp?.structure,
+    },
+  }));
 }
 
 function escapeHtml(value) {
@@ -821,6 +834,7 @@ function initViewer() {
           : `${resno} and .${atomname}`
       );
 
+      clearResidueSearchSelection({ refreshUI: false, reason: "atom" });
       selectedAtomData = {
         index: Number.isInteger(atom.index) ? atom.index : null,
         atomname,
@@ -838,6 +852,8 @@ function initViewer() {
         try { comp.removeRepresentation(representations.focusedLigand); } catch (e) { }
         representations.focusedLigand = null;
       }
+      clearLigandTableSelection();
+      selectedLigandData = null;
       externalGridSelectionData = null;
       updateSelectedAtomInfo();
       updateGridSelectionInfo();
@@ -886,6 +902,10 @@ function updateRepresentations() {
   if (representations.selectedAtom) {
     try { comp.removeRepresentation(representations.selectedAtom); } catch (e) { }
     representations.selectedAtom = null;
+  }
+  if (representations.residueSearch) {
+    try { comp.removeRepresentation(representations.residueSearch); } catch (e) { }
+    representations.residueSearch = null;
   }
   clearInteractionReps();
 
@@ -969,6 +989,7 @@ function updateRepresentations() {
   }
 
   renderSelectedAtomHighlight();
+  renderResidueSearchHighlight();
 }
 
 function updateSelectedAtomInfo() {
@@ -985,15 +1006,40 @@ function updateSelectedAtomInfo() {
   els.selectedAtomInfo.textContent = `${atomName} @ ${location}`;
 }
 
+function clearLigandTableSelection() {
+  if (!els.ligandTable) return;
+  els.ligandTable.querySelectorAll(".table-row.selected").forEach((row) => row.classList.remove("selected"));
+}
+
+function removeFocusedLigandRepresentation() {
+  if (representations.focusedLigand && comp) {
+    try {
+      comp.removeRepresentation(representations.focusedLigand);
+    } catch (e) { }
+  }
+  representations.focusedLigand = null;
+}
+
+function emitResidueSearchSelectionEvent(reason = "") {
+  window.dispatchEvent(new CustomEvent("dockup:residue-search-selection", {
+    detail: {
+      active: !!residueSearchSelectionData,
+      label: String(residueSearchSelectionData?.label || ""),
+      reason: String(reason || ""),
+    },
+  }));
+}
+
 function updateGridSelectionInfo() {
   if (!els.gridSelectionInfo) return;
   const infoEl = els.gridSelectionInfo;
   const valueEl = infoEl.querySelector(".grid-selection-value");
   const setState = (state, valueText) => {
-    infoEl.classList.remove("is-none", "is-ligand", "is-atom", "is-pocket");
+    infoEl.classList.remove("is-none", "is-ligand", "is-atom", "is-pocket", "is-residue");
     if (state === "atom") infoEl.classList.add("is-atom");
     else if (state === "ligand") infoEl.classList.add("is-ligand");
     else if (state === "pocket") infoEl.classList.add("is-pocket");
+    else if (state === "residue") infoEl.classList.add("is-residue");
     else infoEl.classList.add("is-none");
     if (valueEl) {
       valueEl.textContent = valueText;
@@ -1020,6 +1066,10 @@ function updateGridSelectionInfo() {
     setState("ligand", location);
     return;
   }
+  if (residueSearchSelectionData?.label) {
+    setState("residue", String(residueSearchSelectionData.label));
+    return;
+  }
   if (externalGridSelectionData?.label) {
     setState("pocket", String(externalGridSelectionData.label));
     return;
@@ -1028,6 +1078,7 @@ function updateGridSelectionInfo() {
 }
 
 function normalizeGridSelectionMeta(meta = {}) {
+  if (!meta || typeof meta !== "object") return null;
   const label = String(meta.label || "").trim();
   if (!label) return null;
   const pocketRank = Number.parseInt(meta.pocketRank, 10);
@@ -1060,6 +1111,97 @@ function restoreExternalGridSelection(pdbId = appState.selectedReceptor) {
 
 function clearExternalGridSelection(pdbId = appState.selectedReceptor, { refreshUI = true } = {}) {
   setExternalGridSelection(null, pdbId, { refreshUI });
+}
+
+function buildResidueSearchCatalog() {
+  const catalog = [];
+  if (!comp?.structure) return catalog;
+  const seen = new Set();
+  comp.structure.eachResidue((res) => {
+    const resname = normalizeResname(res.resname);
+    if (!AMINO_ACID_RESN.has(resname)) return;
+    const chain = String(res.chainname || "").trim() || "_";
+    const resno = String(res.resno ?? "").trim();
+    if (!resno) return;
+    const key = `${chain}:${resno}:${resname}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    let atomCount = 0;
+    let minX = Infinity;
+    let minY = Infinity;
+    let minZ = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let maxZ = -Infinity;
+
+    res.eachAtom((atom) => {
+      const x = Number(atom.x);
+      const y = Number(atom.y);
+      const z = Number(atom.z);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+      atomCount += 1;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (z < minZ) minZ = z;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+      if (z > maxZ) maxZ = z;
+    });
+
+    if (!atomCount) return;
+    catalog.push({
+      chain,
+      resno,
+      resname,
+      atomCount,
+      selection: residueSelection(resno, chain !== "_" ? chain : ""),
+      bbox: { minX, minY, minZ, maxX, maxY, maxZ },
+    });
+  });
+  return catalog;
+}
+
+function clearResidueSearchSelection({ refreshUI = true, reason = "clear" } = {}) {
+  residueSearchSelectionData = null;
+  if (representations.residueSearch) {
+    try { comp.removeRepresentation(representations.residueSearch); } catch (e) { }
+    representations.residueSearch = null;
+  }
+  emitResidueSearchSelectionEvent(reason);
+  if (refreshUI) {
+    updateGridSelectionInfo();
+    scheduleUIStateSave();
+  }
+}
+
+function applyResidueSearchSelection(selection, { refreshUI = true, reason = "search" } = {}) {
+  const label = String(selection?.label || "").trim();
+  const bbox = selection?.bbox && typeof selection.bbox === "object" ? selection.bbox : null;
+  const selectionText = String(selection?.selection || "").trim();
+  if (!label || !bbox || !selectionText) {
+    clearResidueSearchSelection({ refreshUI, reason: "invalid" });
+    return;
+  }
+
+  residueSearchSelectionData = {
+    label,
+    query: String(selection?.query || "").trim(),
+    selection: selectionText,
+    residues: Array.isArray(selection?.residues) ? selection.residues.map((row) => ({ ...row })) : [],
+    bbox: { ...bbox },
+  };
+  clearSelectedAtomSelection();
+  removeFocusedLigandRepresentation();
+  selectedLigandData = null;
+  clearLigandTableSelection();
+  clearExternalGridSelection(appState.selectedReceptor, { refreshUI: false });
+  renderResidueSearchHighlight();
+  emitResidueSearchSelectionEvent(reason);
+  if (refreshUI) {
+    updateGridSelectionInfo();
+    scheduleUIStateSave();
+  }
 }
 
 function clearSelectedAtomSelection() {
@@ -1100,19 +1242,12 @@ function resetGridboxState({ clearAllStored = false } = {}) {
   if (els.infoCenter) els.infoCenter.textContent = "-";
   if (els.infoSize) els.infoSize.textContent = "-";
 
+  clearResidueSearchSelection({ refreshUI: false, reason: "reset-gridbox" });
   clearSelectedAtomSelection();
-
-  if (representations.focusedLigand && comp) {
-    try {
-      comp.removeRepresentation(representations.focusedLigand);
-    } catch (e) { }
-    representations.focusedLigand = null;
-  }
+  removeFocusedLigandRepresentation();
 
   selectedLigandData = null;
-  if (els.ligandTable) {
-    els.ligandTable.querySelectorAll(".table-row.selected").forEach((row) => row.classList.remove("selected"));
-  }
+  clearLigandTableSelection();
   updateGridSelectionInfo();
   scheduleUIStateSave();
 }
@@ -1132,6 +1267,26 @@ function renderSelectedAtomHighlight() {
     });
   } catch (err) {
     representations.selectedAtom = null;
+  }
+}
+
+function renderResidueSearchHighlight() {
+  if (representations.residueSearch) {
+    try { comp.removeRepresentation(representations.residueSearch); } catch (e) { }
+    representations.residueSearch = null;
+  }
+  if (!comp || !residueSearchSelectionData?.selection) return;
+  try {
+    representations.residueSearch = comp.addRepresentation("licorice", {
+      sele: residueSearchSelectionData.selection,
+      colorScheme: "uniform",
+      colorValue: 0xFACC15,
+      multipleBond: "symmetric",
+      radiusScale: 1.15,
+      opacity: 1,
+    });
+  } catch (err) {
+    representations.residueSearch = null;
   }
 }
 
@@ -1299,6 +1454,7 @@ function focusOnLigand(lig) {
 
   // Ligand table selection overrides any atom-picked selection.
   clearSelectedAtomSelection();
+  clearResidueSearchSelection({ refreshUI: false, reason: "ligand" });
 
   // Remove old focused ligand representation
   if (representations.focusedLigand) {
@@ -1443,6 +1599,7 @@ function populateLigandTableFromStructure(structure, chainFilter = appState.sele
 async function refreshViewer() {
   if (!appState.selectedReceptor) {
     setViewportMessage("Load a receptor to start the viewer.");
+    dispatchGridSelectionContext("no-receptor");
     return;
   }
   if (!initViewer()) return;
@@ -1460,7 +1617,7 @@ async function refreshViewer() {
     }
 
     // Reset representations
-    representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null };
+    representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, residueSearch: null };
     selectedLigandData = null;
     selectedAtomData = null;
     externalGridSelectionData = appState.selectedReceptor
@@ -1509,9 +1666,11 @@ async function refreshViewer() {
 
     // Apply gridbox if exists
     applyGridbox();
+    dispatchGridSelectionContext("viewer-refresh");
 
   } catch (e) {
     console.error("Error loading viewer:", e);
+    dispatchGridSelectionContext("viewer-error");
   }
 }
 
@@ -2022,7 +2181,7 @@ async function loadResultStructure(result, originalReceptorPath) {
     }
     const component = await stage.loadFile(blob, { ext: "pdb" });
     comp = component;
-    representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, highlightedResidue: null };
+    representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, residueSearch: null, highlightedResidue: null };
     selectedAtomData = null;
     externalGridSelectionData = appState.selectedReceptor
       ? (gridSelectionMetaPerReceptor[appState.selectedReceptor] || null)
@@ -2149,6 +2308,40 @@ function createGridboxForSelection() {
     setGridboxSliders();
     showGridControlsPanel();
     applyGridbox();
+    return;
+  }
+
+  if (residueSearchSelectionData?.bbox) {
+    clearExternalGridSelection(appState.selectedReceptor, { refreshUI: false });
+    const bounds = residueSearchSelectionData.bbox;
+    const sx = Math.max((Number(bounds.maxX) || 0) - (Number(bounds.minX) || 0), 1);
+    const sy = Math.max((Number(bounds.maxY) || 0) - (Number(bounds.minY) || 0), 1);
+    const sz = Math.max((Number(bounds.maxZ) || 0) - (Number(bounds.minZ) || 0), 1);
+    gridboxData = {
+      cx: ((Number(bounds.minX) || 0) + (Number(bounds.maxX) || 0)) / 2,
+      cy: ((Number(bounds.minY) || 0) + (Number(bounds.maxY) || 0)) / 2,
+      cz: ((Number(bounds.minZ) || 0) + (Number(bounds.maxZ) || 0)) / 2,
+      sx,
+      sy,
+      sz,
+    };
+
+    if (appState.selectedReceptor) {
+      gridDataPerReceptor[appState.selectedReceptor] = {
+        cx: Number(gridboxData.cx.toFixed(1)),
+        cy: Number(gridboxData.cy.toFixed(1)),
+        cz: Number(gridboxData.cz.toFixed(1)),
+        sx: Number(gridboxData.sx.toFixed(1)),
+        sy: Number(gridboxData.sy.toFixed(1)),
+        sz: Number(gridboxData.sz.toFixed(1)),
+      };
+      refreshReceptorSummary();
+    }
+
+    setGridboxSliders();
+    showGridControlsPanel();
+    applyGridbox();
+    updateGridSelectionInfo();
     return;
   }
 
@@ -2421,6 +2614,7 @@ function applyExternalGridbox(grid, options = {}) {
     sz: Math.max(round1(grid?.sz, 0), 1),
   };
 
+  clearResidueSearchSelection({ refreshUI: false, reason: "pocket" });
   gridboxData = { ...normalized };
   gridDataPerReceptor[targetPdbId] = { ...normalized };
   setExternalGridSelection(options.selection || null, targetPdbId, { refreshUI: false });
@@ -2440,6 +2634,17 @@ window.DockUPGridbox = {
   getSelectedReceptorId: () => String(appState.selectedReceptor || "").trim().toUpperCase(),
   getSelectedChainId: () => getSelectedChainForReceptor(appState.selectedReceptor),
   getDefaultFixedGridSize: () => Number.parseFloat(els.fixedGridSize?.value || "20") || 20,
+};
+
+window.DockUPGridSelectionSearchBridge = {
+  getSelectedContext: () => ({
+    pdbId: String(appState.selectedReceptor || "").trim().toUpperCase(),
+    chain: getSelectedChainForReceptor(appState.selectedReceptor),
+  }),
+  getResidueCatalog: () => buildResidueSearchCatalog(),
+  setResidueSelection: (selection) => applyResidueSearchSelection(selection),
+  clearResidueSelection: (options) => clearResidueSearchSelection(options || {}),
+  getResidueSelection: () => (residueSearchSelectionData ? { ...residueSearchSelectionData } : null),
 };
 
 // =====================================================
@@ -2806,6 +3011,7 @@ async function renderReceptorSummary(rows) {
       });
       await refreshReceptorSummary();
       if (row.pdb_id === appState.selectedReceptor) {
+        clearResidueSearchSelection({ refreshUI: false, reason: "chain-change" });
         await Promise.resolve(window.DockUPPocketFinder?.syncSelectedChain?.(row.pdb_id, selectedChain));
         await refreshViewer();
       }
@@ -2889,6 +3095,7 @@ async function renderReceptorSummary(rows) {
       });
       await refreshReceptorSummary();
       if (row.pdb_id === appState.selectedReceptor) {
+        clearResidueSearchSelection({ refreshUI: false, reason: "ligand-chain-change" });
         await Promise.resolve(window.DockUPPocketFinder?.syncSelectedChain?.(row.pdb_id, targetChain));
         await refreshViewer();
       }
@@ -3106,6 +3313,7 @@ async function selectReceptor(pdbId) {
     appState.selectedLigand = "";
     appState.selectedChain = getSelectedChainForReceptor(pdbId);
     selectedLigandData = null;
+    clearResidueSearchSelection({ refreshUI: false, reason: "receptor-change" });
 
     // Restore grid data if exists
     if (gridDataPerReceptor[pdbId]) {
@@ -4099,6 +4307,7 @@ function bindEvents() {
         if (el === els.viewerChain && appState.selectedReceptor && appState.mode !== "Results" && appState.mode !== "Report") {
           const nextChain = setSelectedChainForReceptor(appState.selectedReceptor, els.viewerChain.value || "all");
           const currentLigand = String(appState.selectionMap?.[appState.selectedReceptor]?.ligand_resname || "");
+          clearResidueSearchSelection({ refreshUI: false, reason: "viewer-chain-change" });
           await fetchJSON("/api/ligands/select", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
