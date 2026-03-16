@@ -145,6 +145,13 @@ def _run_predict(job_id: int, pdb_id: str, chain: str, receptor_file: Path, work
             str(output_dir),
         ]
         env = os.environ.copy()
+        java_home = str(env.get("DOCKUP_P2RANK_JAVA_HOME") or "").strip()
+        if java_home:
+            java_bin = Path(java_home).expanduser() / "bin"
+            java_exec = java_bin / "java"
+            if java_exec.exists():
+                env["JAVA_HOME"] = str(Path(java_home).expanduser())
+                env["PATH"] = f"{java_bin}:{env.get('PATH', '')}"
         if not shutil.which("java", path=env.get("PATH", "")):
             java_bin = BASE.parent / "pocket_test" / "p2rank_java" / "bin"
             java_exec = java_bin / "java"

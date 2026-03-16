@@ -15,6 +15,12 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 VENV_DIR="$ROOT_DIR/.venv"
 SETUP_DONE_FILE="$ROOT_DIR/.setup_done"
 LOG_FILE="$ROOT_DIR/.setup.log"
+TOOLS_DIR="$ROOT_DIR/docking_app/workspace/tools"
+P2RANK_DIR="$TOOLS_DIR/p2rank"
+P2RANK_JAVA_HOME="$TOOLS_DIR/p2rank_java"
+P2RANK_VERSION="2.5.1"
+P2RANK_ARCHIVE_URL="https://github.com/rdk/p2rank/releases/download/${P2RANK_VERSION}/p2rank_${P2RANK_VERSION}.tar.gz"
+P2RANK_JAVA_MIN_MAJOR=17
 
 # ── Colours ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -35,7 +41,14 @@ import sys
 import urllib.request
 
 url, dest = sys.argv[1], sys.argv[2]
-with urllib.request.urlopen(url, timeout=120) as response, open(dest, "wb") as handle:
+request = urllib.request.Request(
+    url,
+    headers={
+        "User-Agent": "DockUP-Setup/1.0",
+        "Accept": "*/*",
+    },
+)
+with urllib.request.urlopen(request, timeout=120) as response, open(dest, "wb") as handle:
     shutil.copyfileobj(response, handle)
 PY
 }
@@ -284,6 +297,197 @@ install_pymol_in_venv() {
   return 0
 }
 
+parse_java_major_version() {
+  local java_exec="$1"
+  local version_line major
+  if ! version_line=$("$java_exec" -version 2>&1 | head -1); then
+    return 1
+  fi
+  major=$(printf '%s\n' "$version_line" | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p')
+  if [ -z "$major" ]; then
+    return 1
+  fi
+  printf '%s\n' "$major"
+}
+
+verify_java_runtime() {
+  local java_exec="$1"
+  local major
+  if [ ! -x "$java_exec" ]; then
+    return 1
+  fi
+  major=$(parse_java_major_version "$java_exec" || true)
+  if [ -z "$major" ] || [ "$major" -lt "$P2RANK_JAVA_MIN_MAJOR" ]; then
+    return 1
+  fi
+  return 0
+}
+
+detect_temurin_jre_url() {
+  local os_name arch_name
+  os_name=$(uname -s)
+  arch_name=$(uname -m)
+  case "${os_name}:${arch_name}" in
+    Linux:x86_64) echo "https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jre/hotspot/normal/eclipse" ;;
+    Linux:aarch64|Linux:arm64) echo "https://api.adoptium.net/v3/binary/latest/17/ga/linux/aarch64/jre/hotspot/normal/eclipse" ;;
+    Darwin:x86_64) echo "https://api.adoptium.net/v3/binary/latest/17/ga/mac/x64/jre/hotspot/normal/eclipse" ;;
+    Darwin:arm64) echo "https://api.adoptium.net/v3/binary/latest/17/ga/mac/aarch64/jre/hotspot/normal/eclipse" ;;
+    *) return 1 ;;
+  esac
+}
+
+install_local_p2rank_java() {
+  local java_exec="${P2RANK_JAVA_HOME}/bin/java"
+  local download_url tmp_dir archive extracted_dir
+
+  mkdir -p "$TOOLS_DIR"
+
+  if [ "$FORCE" -eq 1 ] && [ -d "$P2RANK_JAVA_HOME" ]; then
+    rm -rf "$P2RANK_JAVA_HOME"
+  fi
+
+  if verify_java_runtime "$java_exec"; then
+    ln -sfn "$java_exec" "$VENV_DIR/bin/java"
+    success "Local Java runtime for P2Rank available"
+    return 0
+  fi
+
+  if ! download_url=$(detect_temurin_jre_url); then
+    warn "Unsupported platform for automatic P2Rank Java install: $(uname -s) $(uname -m)"
+    return 1
+  fi
+
+  tmp_dir=$(mktemp -d)
+  archive="$tmp_dir/p2rank-java.tar.gz"
+  rm -rf "$P2RANK_JAVA_HOME"
+
+  info "Installing local Java runtime for P2Rank..."
+  if ! download_file "$download_url" "$archive"; then
+    rm -rf "$tmp_dir"
+    warn "Failed to download Java runtime for P2Rank"
+    return 1
+  fi
+  if ! tar -xzf "$archive" -C "$tmp_dir" >> "$LOG_FILE" 2>&1; then
+    rm -rf "$tmp_dir"
+    warn "Failed to extract Java runtime for P2Rank"
+    return 1
+  fi
+
+  extracted_dir=$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+  if [ -z "$extracted_dir" ] || [ ! -x "$extracted_dir/bin/java" ]; then
+    rm -rf "$tmp_dir"
+    warn "Extracted Java runtime for P2Rank is invalid"
+    return 1
+  fi
+
+  mv "$extracted_dir" "$P2RANK_JAVA_HOME"
+  ln -sfn "$P2RANK_JAVA_HOME/bin/java" "$VENV_DIR/bin/java"
+  rm -rf "$tmp_dir"
+
+  if ! verify_java_runtime "$P2RANK_JAVA_HOME/bin/java"; then
+    warn "Installed Java runtime for P2Rank did not verify correctly"
+    return 1
+  fi
+
+  success "Local Java runtime for P2Rank installed"
+  return 0
+}
+
+write_p2rank_wrapper() {
+  cat > "$VENV_DIR/bin/prank" <<EOF
+#!/usr/bin/env bash
+exec "$P2RANK_DIR/prank" "\$@"
+EOF
+  chmod +x "$VENV_DIR/bin/prank"
+}
+
+install_p2rank_distribution() {
+  local prank_bin="$P2RANK_DIR/prank"
+  local tmp_dir archive extracted_dir
+
+  mkdir -p "$TOOLS_DIR"
+
+  if [ "$FORCE" -eq 1 ] && [ -d "$P2RANK_DIR" ]; then
+    rm -rf "$P2RANK_DIR"
+  fi
+
+  if [ -x "$prank_bin" ]; then
+    write_p2rank_wrapper
+    success "P2Rank distribution already present"
+    return 0
+  fi
+
+  tmp_dir=$(mktemp -d)
+  archive="$tmp_dir/p2rank.tar.gz"
+
+  info "Installing P2Rank ${P2RANK_VERSION}..."
+  if ! download_file "$P2RANK_ARCHIVE_URL" "$archive"; then
+    rm -rf "$tmp_dir"
+    warn "Failed to download P2Rank distribution"
+    return 1
+  fi
+  if ! tar -xzf "$archive" -C "$tmp_dir" >> "$LOG_FILE" 2>&1; then
+    rm -rf "$tmp_dir"
+    warn "Failed to extract P2Rank distribution"
+    return 1
+  fi
+
+  extracted_dir=$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+  if [ -z "$extracted_dir" ] || [ ! -x "$extracted_dir/prank" ]; then
+    rm -rf "$tmp_dir"
+    warn "Extracted P2Rank distribution is invalid"
+    return 1
+  fi
+
+  rm -rf "$P2RANK_DIR"
+  mv "$extracted_dir" "$P2RANK_DIR"
+  write_p2rank_wrapper
+  rm -rf "$tmp_dir"
+
+  success "P2Rank distribution installed"
+  return 0
+}
+
+verify_p2rank_runtime() {
+  local prank_bin="$P2RANK_DIR/prank"
+  local smoke_dir
+  local prediction_files=()
+
+  if [ ! -x "$prank_bin" ]; then
+    warn "P2Rank executable not found after install"
+    return 1
+  fi
+  if ! verify_java_runtime "$P2RANK_JAVA_HOME/bin/java"; then
+    warn "P2Rank Java runtime is unavailable or too old"
+    return 1
+  fi
+
+  if ! PATH="$VENV_DIR/bin:$PATH" JAVA_HOME="$P2RANK_JAVA_HOME" "$prank_bin" -v >> "$LOG_FILE" 2>&1; then
+    warn "P2Rank version check failed"
+    return 1
+  fi
+
+  smoke_dir=$(mktemp -d "$ROOT_DIR/.p2rank_smoke.XXXXXX")
+  if ! PATH="$VENV_DIR/bin:$PATH" JAVA_HOME="$P2RANK_JAVA_HOME" \
+    "$prank_bin" predict -f "$P2RANK_DIR/test_data/1fbl.pdb" -o "$smoke_dir" -visualizations 0 >> "$LOG_FILE" 2>&1; then
+    rm -rf "$smoke_dir"
+    warn "P2Rank smoke prediction failed"
+    return 1
+  fi
+
+  shopt -s nullglob
+  prediction_files=("$smoke_dir"/*_predictions.csv)
+  shopt -u nullglob
+  rm -rf "$smoke_dir"
+  if [ ${#prediction_files[@]} -eq 0 ]; then
+    warn "P2Rank smoke prediction produced no pocket output"
+    return 1
+  fi
+
+  success "P2Rank runtime verified"
+  return 0
+}
+
 # ── Argument parsing ─────────────────────────────────────────────────────────
 CORE_ONLY=0
 FORCE=0
@@ -385,8 +589,9 @@ header "Step 3/6 — Installing core dependencies (web server)"
 success "Core dependencies installed"
 
 # ── 4. Install docking tools ─────────────────────────────────────────────────
+P2RANK_OK=0
 if [ "$CORE_ONLY" -eq 0 ]; then
-  header "Step 4/6 — Installing docking tools (pdb2pqr, meeko, vina, rdkit, openbabel)"
+  header "Step 4/6 — Installing docking tools (pdb2pqr, meeko, vina, rdkit, openbabel, P2Rank)"
   info "This may take a few minutes..."
 
   DOCKING_FAILED=()
@@ -408,6 +613,17 @@ if [ "$CORE_ONLY" -eq 0 ]; then
 
   if ! install_vina_cli; then
     DOCKING_FAILED+=("vina-cli")
+  fi
+
+  if ! install_local_p2rank_java; then
+    DOCKING_FAILED+=("p2rank-java")
+  fi
+  if ! install_p2rank_distribution; then
+    DOCKING_FAILED+=("p2rank")
+  elif verify_p2rank_runtime; then
+    P2RANK_OK=1
+  else
+    DOCKING_FAILED+=("p2rank-runtime")
   fi
 
   if [ ${#DOCKING_FAILED[@]} -gt 0 ]; then
@@ -534,6 +750,9 @@ DOCKUP_PYMOL_PYTHON="${DOCKUP_PYTHON_PATH}"
 DOCKUP_PYMOL_BIN="${PYMOL_BIN:-}"
 DOCKUP_VINA="$VENV_DIR/bin/vina"
 DOCKUP_PYMOL_OK="${PYMOL_OK}"
+DOCKUP_P2RANK_BIN="$P2RANK_DIR/prank"
+DOCKUP_P2RANK_JAVA_HOME="$P2RANK_JAVA_HOME"
+DOCKUP_P2RANK_OK="${P2RANK_OK}"
 ENVFILE
 
 # ── Mark setup as complete ───────────────────────────────────────────────────
@@ -544,6 +763,7 @@ cat > "$SETUP_DONE_FILE" <<DONEFILE
 # Venv: $VENV_DIR
 # Core-only: $CORE_ONLY
 # PyMOL: $PYMOL_OK
+# P2Rank: $P2RANK_OK
 DONEFILE
 
 echo ""

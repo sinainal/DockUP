@@ -17,6 +17,8 @@ def candidate_p2rank_paths() -> list[Path]:
 
     candidates.extend(
         [
+            BASE / ".venv" / "bin" / "prank",
+            WORKSPACE_DIR / "tools" / "p2rank" / "prank",
             WORKSPACE_DIR / "tools" / "p2rank" / "distro" / "prank",
             BASE.parent / "pocket_test" / "p2rank" / "distro" / "prank",
         ]
@@ -37,7 +39,7 @@ def resolve_p2rank_bin() -> Path:
         if resolved.exists() and resolved.is_file():
             return resolved
     raise FileNotFoundError(
-        "P2Rank executable not found. Set DOCKUP_P2RANK_BIN or install prank."
+        "P2Rank executable not found. Re-run ./setup.sh or set DOCKUP_P2RANK_BIN."
     )
 
 
