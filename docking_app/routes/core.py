@@ -39,10 +39,12 @@ from ..models import (
 from ..services import (
     _build_queue,
     _existing_files,
+    _filter_pdb_text_by_chain,
     _get_meta,
     _init_selection_map,
     _ligand_table,
     _load_receptor_meta,
+    _normalize_chain_id,
     _normalize_receptor_id,
     _parse_grid_file,
     _save_uploads,
@@ -57,6 +59,7 @@ from ..sessions import (
     save_run_sessions,
     scan_recent_incomplete_rows,
 )
+from ..pocket_finder import clear_cached_results, clear_runtime_state, get_runtime_state
 from ..state import DOCKING_CONFIG_DEFAULTS, RUN_LOCK, RUN_STATE, STATE, save_state_cache
 
 router = APIRouter()
@@ -524,6 +527,11 @@ def remove_receptor(payload: SelectReceptorPayload) -> JSONResponse:
         STATE["selected_receptor"] = STATE["receptor_meta"][0]["pdb_id"] if STATE["receptor_meta"] else ""
         STATE["selected_ligand"] = ""
 
+    clear_cached_results(pdb_id)
+    pocket_state = get_runtime_state()
+    if str(pocket_state.get("pdb_id") or "").upper() == pdb_id:
+        clear_runtime_state()
+
     save_state_cache()  # persist removal
     return JSONResponse({"summary": _summarize_receptors(STATE["receptor_meta"])})
 
@@ -547,34 +555,44 @@ def receptor_select(payload: SelectReceptorPayload) -> JSONResponse:
 
 
 @router.get("/api/receptors/{pdb_id}")
-def receptor_detail(pdb_id: str) -> JSONResponse:
+def receptor_detail(pdb_id: str, chain: str = "") -> JSONResponse:
     _normalize_receptor_state()
     normalized_id = _normalize_receptor_id(pdb_id)
     meta = _get_meta(normalized_id)
     if not meta:
         return JSONResponse({"error": "not found"}, status_code=404)
+    selected_chain = _normalize_chain_id(
+        chain or STATE.get("selection_map", {}).get(normalized_id, {}).get("chain", STATE.get("selected_chain", "all"))
+    )
+    pdb_text = str(meta.get("pdb_text") or "")
+    if selected_chain != "all":
+        pdb_text = _filter_pdb_text_by_chain(pdb_text, selected_chain)
     grid_data = _parse_grid_file(STATE.get("grid_file_path", ""))
     return JSONResponse(
         {
             "pdb_id": _normalize_receptor_id(meta.get("pdb_id")),
-            "pdb_text": meta.get("pdb_text"),
+            "pdb_text": pdb_text,
             "chains": meta.get("chains", []),
             "ligands_by_chain": meta.get("ligands_by_chain", {}),
             "pdb_file": meta.get("pdb_file", ""),
             "grid_data": grid_data,
-            "selected_chain": STATE.get("selected_chain", "all"),
+            "selected_chain": selected_chain,
             "selected_ligand": STATE.get("selected_ligand", ""),
         }
     )
 
 
 @router.get("/api/receptors/{pdb_id}/ligands")
-def receptor_ligands(pdb_id: str) -> JSONResponse:
+def receptor_ligands(pdb_id: str, chain: str = "") -> JSONResponse:
     _normalize_receptor_state()
-    meta = _get_meta(_normalize_receptor_id(pdb_id))
+    normalized_id = _normalize_receptor_id(pdb_id)
+    meta = _get_meta(normalized_id)
     if not meta:
         return JSONResponse({"rows": []})
-    return JSONResponse({"rows": _ligand_table(meta)})
+    selected_chain = _normalize_chain_id(
+        chain or STATE.get("selection_map", {}).get(normalized_id, {}).get("chain", STATE.get("selected_chain", "all"))
+    )
+    return JSONResponse({"rows": _ligand_table(meta, selected_chain)})
 
 
 @router.post("/api/ligands/select")

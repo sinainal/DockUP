@@ -107,6 +107,41 @@ def _parse_pdb_chains_and_ligands(pdb_text: str) -> tuple[list[str], dict[str, l
     return chains_sorted, ligands_clean
 
 
+def _normalize_chain_id(raw: Any) -> str:
+    chain = str(raw or "").strip()
+    return "all" if not chain or chain.lower() == "all" else chain
+
+
+def _filter_pdb_text_by_chain(pdb_text: str, chain: Any) -> str:
+    selected_chain = _normalize_chain_id(chain)
+    if selected_chain == "all":
+        return pdb_text
+    kept: list[str] = []
+    matched_atoms = 0
+    for line in str(pdb_text or "").splitlines(keepends=True):
+        record = line[:6].strip().upper()
+        if record in {"ATOM", "HETATM", "ANISOU"}:
+            line_chain = line[21].strip() or "_"
+            if line_chain == selected_chain:
+                kept.append(line)
+                matched_atoms += 1
+            continue
+        if record == "TER":
+            line_chain = line[21].strip() or "_"
+            if line_chain == selected_chain:
+                kept.append(line)
+            continue
+        kept.append(line)
+    filtered = "".join(kept)
+    if matched_atoms <= 0:
+        return ""
+    if filtered and not filtered.endswith("\n"):
+        filtered += "\n"
+    if not filtered.rstrip().endswith("END"):
+        filtered += "END\n"
+    return filtered
+
+
 # ---------------------------------------------------------------------------
 # Receptor metadata
 # ---------------------------------------------------------------------------
@@ -201,11 +236,14 @@ def _summarize_receptors(meta: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def _ligand_table(meta: dict[str, Any]) -> list[dict[str, str]]:
+def _ligand_table(meta: dict[str, Any], chain: str = "all") -> list[dict[str, str]]:
     rows = []
     ligands_by_chain = meta.get("ligands_by_chain", {})
+    selected_chain = _normalize_chain_id(chain)
     for chain, ligs in ligands_by_chain.items():
         if chain == "all":
+            continue
+        if selected_chain != "all" and chain != selected_chain:
             continue
         for lig in ligs:
             rows.append({"ligand": lig, "chain": chain})

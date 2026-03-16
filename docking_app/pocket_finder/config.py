@@ -41,5 +41,13 @@ def resolve_p2rank_bin() -> Path:
     )
 
 
-def receptor_run_dir(pdb_id: str) -> Path:
-    return POCKET_FINDER_DIR / pdb_id.upper()
+def normalize_chain_key(chain: str | None) -> str:
+    raw = str(chain or "").strip()
+    if not raw or raw.lower() == "all":
+        return "all"
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else f"x{ord(ch):02x}" for ch in raw)
+    return safe or "all"
+
+
+def receptor_run_dir(pdb_id: str, chain: str | None = None) -> Path:
+    return POCKET_FINDER_DIR / pdb_id.upper() / normalize_chain_key(chain)

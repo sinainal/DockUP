@@ -120,6 +120,8 @@ let representations = {
 // Gridbox state
 let gridboxData = null;
 let gridDataPerReceptor = {}; // Store grid data per receptor
+let gridSelectionMetaPerReceptor = {};
+let externalGridSelectionData = null;
 
 // DOM Elements
 const els = {};
@@ -407,6 +409,47 @@ function formatNumber(val, digits = 2) {
   const num = Number(val);
   if (Number.isNaN(num)) return "-";
   return num.toFixed(digits);
+}
+
+function normalizeChainValue(value) {
+  const chain = String(value || "").trim();
+  return chain && chain.toLowerCase() !== "all" ? chain : "all";
+}
+
+function getSelectedChainForReceptor(pdbId = appState.selectedReceptor) {
+  const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
+  if (!normalizedPdbId) return "all";
+  const row = appState.selectionMap?.[normalizedPdbId] || {};
+  const fallback = normalizedPdbId === String(appState.selectedReceptor || "").trim().toUpperCase()
+    ? appState.selectedChain
+    : "all";
+  return normalizeChainValue(row.chain || fallback || "all");
+}
+
+function setSelectedChainForReceptor(pdbId, chain) {
+  const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
+  const normalizedChain = normalizeChainValue(chain);
+  if (!normalizedPdbId) return normalizedChain;
+  if (!appState.selectionMap) appState.selectionMap = {};
+  const current = appState.selectionMap[normalizedPdbId] || {};
+  appState.selectionMap[normalizedPdbId] = {
+    ...current,
+    chain: normalizedChain,
+    ligand_resname: String(current.ligand_resname || ""),
+  };
+  if (normalizedPdbId === String(appState.selectedReceptor || "").trim().toUpperCase()) {
+    appState.selectedChain = normalizedChain;
+  }
+  return normalizedChain;
+}
+
+function getNativeLigandsForChain(ligandsByChain, chain) {
+  const normalizedChain = normalizeChainValue(chain);
+  const source = ligandsByChain && typeof ligandsByChain === "object" ? ligandsByChain : {};
+  if (normalizedChain === "all") {
+    return Array.isArray(source.all) ? [...source.all] : [];
+  }
+  return Array.isArray(source[normalizedChain]) ? [...source[normalizedChain]] : [];
 }
 
 function escapeHtml(value) {
@@ -795,6 +838,7 @@ function initViewer() {
         try { comp.removeRepresentation(representations.focusedLigand); } catch (e) { }
         representations.focusedLigand = null;
       }
+      externalGridSelectionData = null;
       updateSelectedAtomInfo();
       updateGridSelectionInfo();
       renderSelectedAtomHighlight();
@@ -946,9 +990,10 @@ function updateGridSelectionInfo() {
   const infoEl = els.gridSelectionInfo;
   const valueEl = infoEl.querySelector(".grid-selection-value");
   const setState = (state, valueText) => {
-    infoEl.classList.remove("is-none", "is-ligand", "is-atom");
+    infoEl.classList.remove("is-none", "is-ligand", "is-atom", "is-pocket");
     if (state === "atom") infoEl.classList.add("is-atom");
     else if (state === "ligand") infoEl.classList.add("is-ligand");
+    else if (state === "pocket") infoEl.classList.add("is-pocket");
     else infoEl.classList.add("is-none");
     if (valueEl) {
       valueEl.textContent = valueText;
@@ -975,7 +1020,46 @@ function updateGridSelectionInfo() {
     setState("ligand", location);
     return;
   }
+  if (externalGridSelectionData?.label) {
+    setState("pocket", String(externalGridSelectionData.label));
+    return;
+  }
   setState("none", "None");
+}
+
+function normalizeGridSelectionMeta(meta = {}) {
+  const label = String(meta.label || "").trim();
+  if (!label) return null;
+  const pocketRank = Number.parseInt(meta.pocketRank, 10);
+  return {
+    source: String(meta.source || "binding-site"),
+    label,
+    pocketRank: Number.isFinite(pocketRank) && pocketRank > 0 ? pocketRank : null,
+  };
+}
+
+function setExternalGridSelection(meta, pdbId = appState.selectedReceptor, { refreshUI = true } = {}) {
+  const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
+  const normalizedMeta = normalizeGridSelectionMeta(meta);
+  if (normalizedPdbId) {
+    if (normalizedMeta) gridSelectionMetaPerReceptor[normalizedPdbId] = normalizedMeta;
+    else delete gridSelectionMetaPerReceptor[normalizedPdbId];
+  }
+  externalGridSelectionData = normalizedMeta;
+  if (refreshUI) {
+    updateGridSelectionInfo();
+    scheduleUIStateSave();
+  }
+}
+
+function restoreExternalGridSelection(pdbId = appState.selectedReceptor) {
+  const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
+  externalGridSelectionData = normalizedPdbId ? (gridSelectionMetaPerReceptor[normalizedPdbId] || null) : null;
+  updateGridSelectionInfo();
+}
+
+function clearExternalGridSelection(pdbId = appState.selectedReceptor, { refreshUI = true } = {}) {
+  setExternalGridSelection(null, pdbId, { refreshUI });
 }
 
 function clearSelectedAtomSelection() {
@@ -999,9 +1083,12 @@ function resetGridboxState({ clearAllStored = false } = {}) {
   gridboxData = null;
   if (clearAllStored) {
     gridDataPerReceptor = {};
+    gridSelectionMetaPerReceptor = {};
   } else if (appState.selectedReceptor) {
     delete gridDataPerReceptor[appState.selectedReceptor];
+    delete gridSelectionMetaPerReceptor[appState.selectedReceptor];
   }
+  externalGridSelectionData = null;
 
   if (els.gridControlsPanel) {
     els.gridControlsPanel.classList.add("grid-panel-hidden");
@@ -1248,7 +1335,7 @@ function focusOnLigand(lig) {
 // Ligand Table - Using structure parsing like script.js
 // =====================================================
 
-function populateLigandTableFromStructure(structure) {
+function populateLigandTableFromStructure(structure, chainFilter = appState.selectedChain) {
   if (!els.ligandTable) return;
 
   els.ligandTable.className = "table simple";
@@ -1256,11 +1343,14 @@ function populateLigandTableFromStructure(structure) {
 
   const ligands = [];
   const seen = new Set();
+  const normalizedChainFilter = normalizeChainValue(chainFilter);
 
   // Exclusion lists
   structure.eachResidue((res) => {
     const resname = normalizeResname(res.resname);
-    const key = `${resname}_${res.resno}_${res.chainname}`;
+    const residueChain = String(res.chainname || "").trim() || "_";
+    if (normalizedChainFilter !== "all" && residueChain !== normalizedChainFilter) return;
+    const key = `${resname}_${res.resno}_${residueChain}`;
 
     if (seen.has(key)) return;
     if (!isLigandResidue(resname)) return;
@@ -1269,7 +1359,7 @@ function populateLigandTableFromStructure(structure) {
     ligands.push({
       resname: resname,
       resno: res.resno,
-      chainname: res.chainname || "",
+      chainname: residueChain,
     });
   });
 
@@ -1359,8 +1449,9 @@ async function refreshViewer() {
 
   try {
     const data = await fetchJSON(`/api/receptors/${appState.selectedReceptor}`);
-
-    updateViewerChainOptions(data.chains || []);
+    const effectiveChain = normalizeChainValue(data.selected_chain || getSelectedChainForReceptor(appState.selectedReceptor));
+    appState.selectedChain = effectiveChain;
+    updateViewerChainOptions(data.chains || [], effectiveChain);
 
     // Remove old component
     if (comp) {
@@ -1372,6 +1463,9 @@ async function refreshViewer() {
     representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null };
     selectedLigandData = null;
     selectedAtomData = null;
+    externalGridSelectionData = appState.selectedReceptor
+      ? (gridSelectionMetaPerReceptor[appState.selectedReceptor] || null)
+      : null;
     updateSelectedAtomInfo();
     updateGridSelectionInfo();
     interactionResiduesByType = {};
@@ -1399,11 +1493,19 @@ async function refreshViewer() {
 
     // Populate ligand table from actual structure
     if (comp.structure) {
-      populateLigandTableFromStructure(comp.structure);
+      populateLigandTableFromStructure(comp.structure, effectiveChain);
     }
 
     // Auto view
-    comp.autoView();
+    if (effectiveChain !== "all") {
+      try {
+        comp.autoView(`:${effectiveChain}`);
+      } catch (_err) {
+        comp.autoView();
+      }
+    } else {
+      comp.autoView();
+    }
 
     // Apply gridbox if exists
     applyGridbox();
@@ -1413,9 +1515,9 @@ async function refreshViewer() {
   }
 }
 
-function updateViewerChainOptions(chains) {
+function updateViewerChainOptions(chains, preferredChain = "") {
   if (!els.viewerChain) return;
-  const currentValue = String(els.viewerChain.value || appState.selectedChain || "all").trim() || "all";
+  const currentValue = normalizeChainValue(preferredChain || appState.selectedChain || els.viewerChain.value || "all");
   const options = ["all", ...chains.filter((c) => c !== "all")];
   els.viewerChain.innerHTML = "";
   options.forEach((chain) => {
@@ -1922,6 +2024,9 @@ async function loadResultStructure(result, originalReceptorPath) {
     comp = component;
     representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, highlightedResidue: null };
     selectedAtomData = null;
+    externalGridSelectionData = appState.selectedReceptor
+      ? (gridSelectionMetaPerReceptor[appState.selectedReceptor] || null)
+      : null;
     updateSelectedAtomInfo();
     updateGridSelectionInfo();
 
@@ -2025,6 +2130,7 @@ function createGridboxForSelection() {
 
   // Priority: atom picked from viewer > ligand selected in table.
   if (selectedAtomData) {
+    clearExternalGridSelection(appState.selectedReceptor, { refreshUI: false });
     const fixedSize = parseFloat(els.fixedGridSize?.value) || 20;
     gridboxData = {
       cx: Number(selectedAtomData.x) || 0,
@@ -2043,6 +2149,29 @@ function createGridboxForSelection() {
     setGridboxSliders();
     showGridControlsPanel();
     applyGridbox();
+    return;
+  }
+
+  if (externalGridSelectionData?.label) {
+    const activeGrid = gridboxData || (
+      appState.selectedReceptor && gridDataPerReceptor[appState.selectedReceptor]
+        ? { ...gridDataPerReceptor[appState.selectedReceptor] }
+        : null
+    );
+    if (!activeGrid) {
+      alert("No pocket gridbox is available for the current selection.");
+      return;
+    }
+    gridboxData = { ...activeGrid };
+    if (appState.selectedReceptor) {
+      gridDataPerReceptor[appState.selectedReceptor] = { ...gridboxData };
+      refreshReceptorSummary();
+    }
+    setGridboxSliders();
+    showGridControlsPanel();
+    applyGridbox();
+    updateGridSelectionInfo();
+    scheduleUIStateSave();
     return;
   }
 
@@ -2104,6 +2233,7 @@ function createGridboxForSelection() {
 
   // Get fixed size from input (same for all dimensions)
   const fixedSize = parseFloat(els.fixedGridSize?.value) || 20;
+  clearExternalGridSelection(appState.selectedReceptor, { refreshUI: false });
 
   gridboxData = {
     cx: (minX + maxX) / 2,
@@ -2278,29 +2408,37 @@ function applyExternalGridbox(grid, options = {}) {
     throw new Error("Select a receptor before applying a binding-site gridbox.");
   }
 
+  const round1 = (value, fallback = 0) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? Number(num.toFixed(1)) : fallback;
+  };
   const normalized = {
-    cx: Number(grid?.cx) || 0,
-    cy: Number(grid?.cy) || 0,
-    cz: Number(grid?.cz) || 0,
-    sx: Math.max(Number(grid?.sx) || 0, 1),
-    sy: Math.max(Number(grid?.sy) || 0, 1),
-    sz: Math.max(Number(grid?.sz) || 0, 1),
+    cx: round1(grid?.cx, 0),
+    cy: round1(grid?.cy, 0),
+    cz: round1(grid?.cz, 0),
+    sx: Math.max(round1(grid?.sx, 0), 1),
+    sy: Math.max(round1(grid?.sy, 0), 1),
+    sz: Math.max(round1(grid?.sz, 0), 1),
   };
 
   gridboxData = { ...normalized };
   gridDataPerReceptor[targetPdbId] = { ...normalized };
+  setExternalGridSelection(options.selection || null, targetPdbId, { refreshUI: false });
+  void refreshReceptorSummary();
   showGridControlsPanel();
   setGridboxSliders();
   if (els.showGrid) {
     els.showGrid.checked = options.showGrid !== false;
   }
   applyGridbox();
+  restoreExternalGridSelection(targetPdbId);
   scheduleUIStateSave();
 }
 
 window.DockUPGridbox = {
   applyExternalGridbox,
   getSelectedReceptorId: () => String(appState.selectedReceptor || "").trim().toUpperCase(),
+  getSelectedChainId: () => getSelectedChainForReceptor(appState.selectedReceptor),
   getDefaultFixedGridSize: () => Number.parseFloat(els.fixedGridSize?.value || "20") || 20,
 };
 
@@ -2345,6 +2483,7 @@ function saveUIState() {
       resultsView: appState.resultsView,
       selectionMap: appState.selectionMap,
       gridDataPerReceptor,
+      gridSelectionMetaPerReceptor,
       dockingConfig: normalizeDockingConfig(appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
       ui: {
         runCount: String(els.runCount?.value || ""),
@@ -2429,6 +2568,10 @@ async function restoreUIState() {
   const savedGridMap = toObjectOrEmpty(saved.gridDataPerReceptor);
   if (Object.keys(savedGridMap).length) {
     gridDataPerReceptor = savedGridMap;
+  }
+  const savedGridSelectionMap = toObjectOrEmpty(saved.gridSelectionMetaPerReceptor);
+  if (Object.keys(savedGridSelectionMap).length) {
+    gridSelectionMetaPerReceptor = savedGridSelectionMap;
   }
   appState.dockingConfig = normalizeDockingConfig(saved.dockingConfig || appState.dockingConfig || DEFAULT_DOCKING_CONFIG);
 
@@ -2637,11 +2780,19 @@ async function renderReceptorSummary(rows) {
 
     chainSelect.addEventListener("click", (e) => e.stopPropagation());
     chainSelect.addEventListener("change", async (e) => {
-      const selectedChain = e.target.value;
+      const selectedChain = setSelectedChainForReceptor(row.pdb_id, e.target.value);
+      const previousLigand = String(appState.selectionMap?.[row.pdb_id]?.ligand_resname || "");
+      const allowedLigands = appState.mode === "Redocking"
+        ? getNativeLigandsForChain(row.ligands_by_chain, selectedChain)
+        : [...activeLigands];
+      const nextLigand = previousLigand && previousLigand !== "all_set" && !allowedLigands.includes(previousLigand)
+        ? ""
+        : previousLigand;
       // Update selection map
       if (!appState.selectionMap) appState.selectionMap = {};
       if (!appState.selectionMap[row.pdb_id]) appState.selectionMap[row.pdb_id] = {};
       appState.selectionMap[row.pdb_id].chain = selectedChain;
+      appState.selectionMap[row.pdb_id].ligand_resname = nextLigand;
 
       // Send to backend
       await fetchJSON("/api/ligands/select", {
@@ -2650,9 +2801,15 @@ async function renderReceptorSummary(rows) {
         body: JSON.stringify({
           pdb_id: row.pdb_id,
           chain: selectedChain,
-          ligand: appState.selectionMap[row.pdb_id].ligand_resname || ""
+          ligand: nextLigand
         }),
       });
+      await refreshReceptorSummary();
+      if (row.pdb_id === appState.selectedReceptor) {
+        await Promise.resolve(window.DockUPPocketFinder?.syncSelectedChain?.(row.pdb_id, selectedChain));
+        await refreshViewer();
+      }
+      scheduleUIStateSave();
     });
 
     // Ligand Dropdown
@@ -2665,13 +2822,10 @@ async function renderReceptorSummary(rows) {
     defOpt.textContent = "Select Ligand...";
     ligSelect.appendChild(defOpt);
 
+    const selectedChainForRow = getSelectedChainForReceptor(row.pdb_id);
     let availableLigands = [];
     if (appState.mode === "Redocking") {
-      // Use native ligands from row.ligands_by_chain
-      // We use the "all" key which contains the sorted unique list
-      if (row.ligands_by_chain && row.ligands_by_chain["all"]) {
-        availableLigands = row.ligands_by_chain["all"];
-      }
+      availableLigands = getNativeLigandsForChain(row.ligands_by_chain, selectedChainForRow);
     } else {
       // Docking mode: Use dock-ready ligands
       availableLigands = activeLigands;
@@ -2703,13 +2857,12 @@ async function renderReceptorSummary(rows) {
 
       // Auto-select chain logic
       let targetChain = chainSelect.value;
-      let chainFound = false;
 
       if (selectedLig && selectedLig !== "all_set" && row.ligands_by_chain) {
         for (const [chn, ligs] of Object.entries(row.ligands_by_chain)) {
+          if (chn === "all") continue;
           if (ligs.includes(selectedLig)) {
             targetChain = chn;
-            chainFound = true;
             break;
           }
         }
@@ -2734,6 +2887,12 @@ async function renderReceptorSummary(rows) {
           ligand: selectedLig
         }),
       });
+      await refreshReceptorSummary();
+      if (row.pdb_id === appState.selectedReceptor) {
+        await Promise.resolve(window.DockUPPocketFinder?.syncSelectedChain?.(row.pdb_id, targetChain));
+        await refreshViewer();
+      }
+      scheduleUIStateSave();
 
       // If Redocking, trigger preview
       // User requested to remove focus logic for now
@@ -2789,8 +2948,8 @@ async function renderReceptorSummary(rows) {
     let gridCenter = "-";
     let gridSize = "-";
     if (grid) {
-      gridCenter = `${grid.cx.toFixed(0)},${grid.cy.toFixed(0)},${grid.cz.toFixed(0)}`;
-      gridSize = `${grid.sx.toFixed(0)},${grid.sy.toFixed(0)},${grid.sz.toFixed(0)}`;
+      gridCenter = `${formatNumber(grid.cx, 1)},${formatNumber(grid.cy, 1)},${formatNumber(grid.cz, 1)}`;
+      gridSize = `${formatNumber(grid.sx, 1)},${formatNumber(grid.sy, 1)},${formatNumber(grid.sz, 1)}`;
     }
 
     const colGridC = document.createElement("div"); colGridC.innerHTML = gridCenter;
@@ -2830,6 +2989,15 @@ async function removeReceptor(pdbId) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pdb_id: pdbId }),
     });
+    try {
+      await Promise.resolve(window.DockUPPocketFinder?.clearReceptorCache?.(pdbId));
+    } catch (cacheErr) {
+      console.warn("Failed to clear binding-site cache for receptor:", pdbId, cacheErr);
+    }
+    delete gridSelectionMetaPerReceptor[String(pdbId || "").trim().toUpperCase()];
+    if (appState.selectedReceptor === pdbId) {
+      externalGridSelectionData = null;
+    }
     // If the removed one was selected, the backend handles re-selection logic,
     // but we need to update frontend state.
     // Ideally backend returns the new summary.
@@ -2936,7 +3104,7 @@ async function selectReceptor(pdbId) {
     });
     appState.selectedReceptor = pdbId;
     appState.selectedLigand = "";
-    appState.selectedChain = "all";
+    appState.selectedChain = getSelectedChainForReceptor(pdbId);
     selectedLigandData = null;
 
     // Restore grid data if exists
@@ -2951,6 +3119,7 @@ async function selectReceptor(pdbId) {
         els.gridControlsPanel.style.display = "none";
       }
     }
+    restoreExternalGridSelection(pdbId);
 
     await refreshReceptorSummary();
     await refreshViewer();
@@ -3259,8 +3428,8 @@ function renderQueueTable(queue) {
       let gridDisplay = "-";
       if (item.grid_params) {
         const g = item.grid_params;
-        const c = `${g.cx.toFixed(0)},${g.cy.toFixed(0)},${g.cz.toFixed(0)}`;
-        const s = `${g.sx.toFixed(0)},${g.sy.toFixed(0)},${g.sz.toFixed(0)}`;
+        const c = `${formatNumber(g.cx, 1)},${formatNumber(g.cy, 1)},${formatNumber(g.cz, 1)}`;
+        const s = `${formatNumber(g.sx, 1)},${formatNumber(g.sy, 1)},${formatNumber(g.sz, 1)}`;
         gridDisplay = `C:[${c}] S:[${s}]`;
       }
 
@@ -3926,7 +4095,25 @@ function bindEvents() {
   // Viewer controls
   [els.colorScheme, els.viewerChain, els.showSurface, els.showNativeLigand, els.showDockedLigand, els.showInteractions, els.showSticks].forEach((el) => {
     if (el) {
-      el.addEventListener("change", () => {
+      el.addEventListener("change", async () => {
+        if (el === els.viewerChain && appState.selectedReceptor && appState.mode !== "Results" && appState.mode !== "Report") {
+          const nextChain = setSelectedChainForReceptor(appState.selectedReceptor, els.viewerChain.value || "all");
+          const currentLigand = String(appState.selectionMap?.[appState.selectedReceptor]?.ligand_resname || "");
+          await fetchJSON("/api/ligands/select", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              pdb_id: appState.selectedReceptor,
+              chain: nextChain,
+              ligand: currentLigand,
+            }),
+          });
+          await Promise.resolve(window.DockUPPocketFinder?.syncSelectedChain?.(appState.selectedReceptor, nextChain));
+          await refreshReceptorSummary();
+          await refreshViewer();
+          scheduleUIStateSave();
+          return;
+        }
         updateRepresentations();
         scheduleUIStateSave();
       });

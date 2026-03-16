@@ -26,8 +26,10 @@
   const state = {
     modalOpen: false,
     pdbId: "",
+    chain: "all",
     pdbText: "",
     pockets: [],
+    cacheByReceptor: {},
     selectedIndex: 0,
     stage: null,
     proteinComponent: null,
@@ -36,7 +38,39 @@
     centerComponent: null,
     gridComponent: null,
     loadToken: 0,
+    resizeHandler: null,
   };
+
+  function deepClone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function normalizeChainValue(value) {
+    const chain = String(value || "").trim();
+    return chain && chain.toLowerCase() !== "all" ? chain : "all";
+  }
+
+  function receptorCacheKey(pdbId, chain) {
+    const receptor = String(pdbId || "").trim().toUpperCase();
+    const selectedChain = normalizeChainValue(chain);
+    return receptor ? `${receptor}::${selectedChain}` : "";
+  }
+
+  function currentSelectedChain() {
+    return window.DockUPGridbox?.getSelectedChainId
+      ? normalizeChainValue(window.DockUPGridbox.getSelectedChainId())
+      : "all";
+  }
+
+  function cachedPayload(pdbId, chain) {
+    return state.cacheByReceptor[receptorCacheKey(pdbId, chain)] || null;
+  }
+
+  function storeCachedPayload(pdbId, chain, payload) {
+    const key = receptorCacheKey(pdbId, chain);
+    if (!key) return;
+    state.cacheByReceptor[key] = deepClone(payload);
+  }
 
   function nextPaint() {
     return new Promise((resolve) => {
@@ -51,8 +85,8 @@
       ? window.DockUPGridbox.getDefaultFixedGridSize()
       : 20;
     els.gridMode.value = "fit";
-    els.fixedSize.value = String(defaultFixedSize);
-    els.padding.value = "2";
+    els.fixedSize.value = Number(defaultFixedSize).toFixed(1);
+    els.padding.value = "2.0";
     els.showGrid.checked = true;
     syncGridModeUI();
   }
@@ -160,25 +194,31 @@
     }
   }
 
+  function removeProteinComponent() {
+    if (!state.proteinComponent || !state.stage) return;
+    try {
+      state.stage.removeComponent(state.proteinComponent);
+    } catch (_err) {
+      // ignore stale component removals
+    }
+    state.proteinComponent = null;
+  }
+
   async function ensureStage() {
     if (!state.stage) {
       state.stage = new NGL.Stage("bindingSiteViewport", {
         backgroundColor: "#02070c",
         clipNear: 0,
       });
-      window.addEventListener("resize", () => {
-        if (state.stage) state.stage.handleResize();
-      });
+      if (!state.resizeHandler) {
+        state.resizeHandler = () => {
+          if (state.stage) state.stage.handleResize();
+        };
+        window.addEventListener("resize", state.resizeHandler);
+      }
     }
 
-    if (state.proteinComponent) {
-      try {
-        state.stage.removeComponent(state.proteinComponent);
-      } catch (_err) {
-        // ignore
-      }
-      state.proteinComponent = null;
-    }
+    removeProteinComponent();
 
     const blob = new Blob([state.pdbText], { type: "text/plain" });
     state.proteinComponent = await state.stage.loadFile(blob, { ext: "pdb" });
@@ -200,6 +240,28 @@
     } catch (_err) {
       // ignore layout refresh failures
     }
+  }
+
+  async function applyPocketPayload(pdbId, chain, pdbText, pockets, token) {
+    if (!state.modalOpen || token !== state.loadToken) return;
+    state.pdbId = String(pdbId || "").trim().toUpperCase();
+    state.chain = normalizeChainValue(chain);
+    state.pdbText = String(pdbText || "").trim();
+    state.pockets = Array.isArray(pockets) ? deepClone(pockets) : [];
+    state.selectedIndex = 0;
+    els.subtitle.textContent = state.chain === "all"
+      ? `Binding site prediction for ${state.pdbId}`
+      : `Binding site prediction for ${state.pdbId} · chain ${state.chain}`;
+    if (!state.pdbText || !state.pockets.length) {
+      throw new Error("No binding site pockets were produced for the selected receptor.");
+    }
+    showBody();
+    await nextPaint();
+    await ensureStage();
+    await refreshStageLayout();
+    renderPocketList();
+    updateSelectedPocket(true);
+    await refreshStageLayout();
   }
 
   function renderPocketList() {
@@ -378,41 +440,38 @@
     updateViewerPocket(pocket, shouldAutoView);
   }
 
-  async function loadResultsForSelectedReceptor(pdbId, token) {
+  async function loadResultsForSelectedReceptor(pdbId, chain, token) {
     const [detail, results] = await Promise.all([
-      fetchJSON(`/api/receptors/${encodeURIComponent(pdbId)}`),
-      fetchJSON(`/api/pockets/results?pdb_id=${encodeURIComponent(pdbId)}`),
+      fetchJSON(`/api/receptors/${encodeURIComponent(pdbId)}?chain=${encodeURIComponent(chain)}`),
+      fetchJSON(`/api/pockets/results?pdb_id=${encodeURIComponent(pdbId)}&chain=${encodeURIComponent(chain)}`),
     ]);
-    if (!state.modalOpen || token !== state.loadToken) return;
-    state.pdbId = pdbId;
-    state.pdbText = String(detail.pdb_text || "").trim();
-    state.pockets = Array.isArray(results.pockets) ? results.pockets : [];
-    state.selectedIndex = 0;
-    els.subtitle.textContent = `Binding site prediction for ${pdbId}`;
-    if (!state.pdbText || !state.pockets.length) {
-      throw new Error("No binding site pockets were produced for the selected receptor.");
-    }
-    showBody();
-    await nextPaint();
-    await ensureStage();
-    await refreshStageLayout();
-    renderPocketList();
-    updateSelectedPocket(true);
-    await refreshStageLayout();
+    const payload = {
+      pdbText: String(detail.pdb_text || "").trim(),
+      pockets: Array.isArray(results.pockets) ? results.pockets : [],
+    };
+    storeCachedPayload(pdbId, chain, payload);
+    await applyPocketPayload(pdbId, chain, payload.pdbText, payload.pockets, token);
   }
 
-  async function waitForPrediction(pdbId, token) {
+  async function loadCachedResultsForReceptor(pdbId, chain, token) {
+    const cached = cachedPayload(pdbId, chain);
+    if (!cached) return false;
+    await applyPocketPayload(pdbId, chain, cached.pdbText, cached.pockets, token);
+    return true;
+  }
+
+  async function waitForPrediction(pdbId, chain, token) {
     while (state.modalOpen && token === state.loadToken) {
-      const status = await fetchJSON(`/api/pockets/status?pdb_id=${encodeURIComponent(pdbId)}`);
+      const status = await fetchJSON(`/api/pockets/status?pdb_id=${encodeURIComponent(pdbId)}&chain=${encodeURIComponent(chain)}`);
       if (!state.modalOpen || token !== state.loadToken) return;
       if (status.status === "done") {
-        await loadResultsForSelectedReceptor(pdbId, token);
+        await loadResultsForSelectedReceptor(pdbId, chain, token);
         return;
       }
       if (status.status === "error") {
         throw new Error(status.error || status.message || "Binding site prediction failed.");
       }
-      setLoading(status.message || `Running binding site prediction for ${pdbId}...`);
+      setLoading(status.message || `Running binding site prediction for ${pdbId} (${chain})...`);
       await new Promise((resolve) => window.setTimeout(resolve, 1000));
     }
   }
@@ -425,20 +484,28 @@
       alert("Select a receptor first.");
       return;
     }
+    const selectedChain = currentSelectedChain();
 
     state.modalOpen = true;
     state.loadToken += 1;
     modal.classList.add("active");
     resetGridInputs();
-    setLoading(`Running binding site prediction for ${selectedReceptor}...`);
+    setLoading(
+      selectedChain === "all"
+        ? `Running binding site prediction for ${selectedReceptor}...`
+        : `Running binding site prediction for ${selectedReceptor} · chain ${selectedChain}...`
+    );
 
     try {
+      if (await loadCachedResultsForReceptor(selectedReceptor, selectedChain, state.loadToken)) {
+        return;
+      }
       await fetchJSON("/api/pockets/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pdb_id: selectedReceptor }),
+        body: JSON.stringify({ pdb_id: selectedReceptor, chain: selectedChain }),
       });
-      await waitForPrediction(selectedReceptor, state.loadToken);
+      await waitForPrediction(selectedReceptor, selectedChain, state.loadToken);
     } catch (error) {
       showError(error.message || "Binding site finder failed.");
     }
@@ -449,6 +516,7 @@
     state.loadToken += 1;
     modal.classList.remove("active");
     state.pdbId = "";
+    state.chain = "all";
     state.pdbText = "";
     state.pockets = [];
     state.selectedIndex = 0;
@@ -458,22 +526,9 @@
     els.viewerTitle.textContent = "-";
     els.pocketMeta.textContent = "-";
     clearViewerOverlays();
-    if (state.stage) {
-      try {
-        state.stage.dispose();
-      } catch (_err) {
-        // ignore
-      }
-      state.stage = null;
-      state.proteinComponent = null;
-    }
+    removeProteinComponent();
     setLoading("Preparing binding site prediction...");
     resetGridInputs();
-    try {
-      await fetchJSON("/api/pockets/clear", { method: "POST" });
-    } catch (_err) {
-      // ignore
-    }
   }
 
   async function applySelectedPocket() {
@@ -488,6 +543,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           pdb_id: state.pdbId,
+          chain: state.chain,
           pocket_rank: pocket.rank,
           mode: gridMode,
           fixed_size: fixedSize,
@@ -500,6 +556,11 @@
       window.DockUPGridbox.applyExternalGridbox(response.grid_data, {
         pdbId: state.pdbId,
         showGrid: Boolean(els.showGrid.checked),
+        selection: {
+          source: "binding-site",
+          pocketRank: pocket.rank,
+          label: `Pocket #${pocket.rank}`,
+        },
       });
       await closeBindingSiteFinder();
     } catch (error) {
@@ -520,6 +581,37 @@
         if (pocket) renderGridPreview(previewGridData(pocket));
       });
     });
+  }
+
+  async function clearReceptorCache(pdbId) {
+    const key = String(pdbId || "").trim().toUpperCase();
+    if (!key) return;
+    Object.keys(state.cacheByReceptor).forEach((cacheKey) => {
+      if (cacheKey.startsWith(`${key}::`)) {
+        delete state.cacheByReceptor[cacheKey];
+      }
+    });
+    if (state.pdbId === key) {
+      await closeBindingSiteFinder();
+    }
+    try {
+      await fetchJSON("/api/pockets/clear", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pdb_id: key }),
+      });
+    } catch (_err) {
+      // ignore backend clear failures during receptor cleanup
+    }
+  }
+
+  async function syncSelectedChain(pdbId, chain) {
+    const receptor = String(pdbId || "").trim().toUpperCase();
+    const nextChain = normalizeChainValue(chain);
+    if (!receptor) return;
+    if (state.modalOpen && state.pdbId === receptor && state.chain !== nextChain) {
+      await closeBindingSiteFinder();
+    }
   }
 
   els.open.addEventListener("click", () => {
@@ -548,4 +640,9 @@
 
   bindGridPreviewControls();
   resetGridInputs();
+
+  window.DockUPPocketFinder = {
+    clearReceptorCache,
+    syncSelectedChain,
+  };
 })();

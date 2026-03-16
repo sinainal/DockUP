@@ -1054,6 +1054,12 @@ textarea {
   color: #92400e;
 }
 
+.grid-selection-info.is-pocket {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
 .grid-selection-info.is-none {
   border-color: #dbe4ef;
   color: #64748b;
