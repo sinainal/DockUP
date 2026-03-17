@@ -586,27 +586,34 @@ textarea {
 .interaction-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
+  gap: 6px;
+  margin-top: 8px;
 }
 
 .legend-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
+  gap: 5px;
+  padding: 3px 7px;
   border-radius: 999px;
   background: #f1f5f9;
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--ink);
   border: 1px solid var(--border);
+  line-height: 1.2;
 }
 
 .legend-swatch {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   border: 1px solid rgba(15, 23, 42, 0.2);
+}
+
+.legend-chip-flex {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #9a3412;
 }
 
 .interaction-hover {
@@ -922,16 +929,50 @@ textarea {
 
 .controls-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 10px 12px;
   font-size: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .controls-grid label {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
+  line-height: 1.2;
+}
+
+.queue-grid-cell {
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.queue-grid-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.queue-mode-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 74px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.queue-mode-chip.is-flexible {
+  border-color: #fdba74;
+  background: #fff7ed;
+  color: #c2410c;
 }
 
 .viewer-canvas {

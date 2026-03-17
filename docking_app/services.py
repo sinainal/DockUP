@@ -21,7 +21,7 @@ from fastapi import HTTPException, UploadFile
 
 from . import state
 from .config import BASE, DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR, WORKSPACE_DIR
-from .helpers import normalize_docking_config
+from .helpers import build_flex_residue_spec, normalize_docking_config, normalize_flex_residue_list
 from .manifest import RUN_META_DIR_NAME
 from .state import (
     AMINO_ACIDS,
@@ -305,13 +305,13 @@ def _get_meta(pdb_id: str) -> dict[str, Any] | None:
     return None
 
 
-def _init_selection_map(meta: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
-    selection: dict[str, dict[str, str]] = {}
+def _init_selection_map(meta: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    selection: dict[str, dict[str, Any]] = {}
     for item in meta:
         pdb_id = _normalize_receptor_id(item.get("pdb_id"))
         if not pdb_id:
             continue
-        selection[pdb_id] = {"chain": "all", "ligand_resname": ""}
+        selection[pdb_id] = {"chain": "all", "ligand_resname": "", "flex_residues": []}
     return selection
 
 
@@ -541,7 +541,14 @@ def _parse_results_folder(folder: Path) -> dict[str, Any] | None:
             pose_path = str(candidate)
             break
 
-    for name in (f"{pdb_id_upper}_rec_raw.pdb", f"{pdb_id_lower}_rec_raw.pdb", f"{pdb_id}_rec_raw.pdb"):
+    for name in (
+        f"{pdb_id_upper}_rec_docked.pdb",
+        f"{pdb_id_lower}_rec_docked.pdb",
+        f"{pdb_id}_rec_docked.pdb",
+        f"{pdb_id_upper}_rec_raw.pdb",
+        f"{pdb_id_lower}_rec_raw.pdb",
+        f"{pdb_id}_rec_raw.pdb",
+    ):
         candidate = folder / name
         if candidate.exists():
             receptor_path = str(candidate)
@@ -709,6 +716,12 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
         sel = selection_map[pdb_id]
         chain = sel.get("chain", "all")
         selected_ligand = str(sel.get("ligand_resname", "") or sel.get("ligand", "")).strip()
+        flex_mode = docking_config.get("docking_mode") == "flexible"
+        flex_residues = normalize_flex_residue_list(sel.get("flex_residues") or sel.get("flex_residue_spec") or [])
+        flex_residue_spec = build_flex_residue_spec(flex_residues)
+        if not flex_mode:
+            flex_residues = []
+            flex_residue_spec = ""
 
         grid_info = grid_data.get(pdb_id)
         if not grid_info:
@@ -754,6 +767,15 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
                         detail=f"Ligand file not found for '{selected_ligand}'.",
                     )
                 target_ligands = [{"name": lig.name, "path": str(lig)}]
+
+        if flex_mode and not flex_residue_spec:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No flexible residues selected for {pdb_id}. "
+                    "Open Docking Settings and choose at least one flexible residue."
+                ),
+            )
 
         grid_sig = _grid_signature(pdb_id, grid_info)
         grid_file_path = grid_store_dir / f"{pdb_id}_{grid_sig}.txt"
@@ -801,6 +823,8 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "padding": padding,
                 "run_count": run_count,
                 "docking_config": docking_config,
+                "flex_residues": flex_residues,
+                "flex_residue_spec": flex_residue_spec,
             })
 
     return entries
@@ -888,6 +912,7 @@ def _start_run(
             "    ! is_empty \"$pdb_file\" && args+=(--pdb_file \"$pdb_file\")\n"
             "    ! is_empty \"$grid_pad\" && args+=(--grid_pad \"$grid_pad\")\n"
             "    ! is_empty \"$grid_file\" && args+=(--grid_file \"$grid_file\")\n"
+            "    ! is_empty \"$flex_residue_spec\" && args+=(--flexres \"$flex_residue_spec\")\n"
             "    ! is_empty \"$pdb2pqr_ph\" && args+=(--pdb2pqr_ph \"$pdb2pqr_ph\")\n"
             "    ! is_empty \"$pdb2pqr_ff\" && args+=(--pdb2pqr_ff \"$pdb2pqr_ff\")\n"
             "    ! is_empty \"$pdb2pqr_ffout\" && args+=(--pdb2pqr_ffout \"$pdb2pqr_ffout\")\n"
@@ -929,7 +954,7 @@ def _start_run(
         "run_idx=0",
         "batch_start_epoch=$(date +%s)",
         "echo \"[$(ts)] Batch start | jobs=$job_total runs=$RUNS total_runs=$run_total\"",
-        "while IFS=$'\\t' read -r pdb chain ligand lig_spec pdb_file grid_pad grid_file force_run_id pdb2pqr_ph pdb2pqr_ff pdb2pqr_ffout pdb2pqr_nodebump pdb2pqr_keep_chain mkrec_allow_bad_res mkrec_default_altloc vina_exhaustiveness vina_num_modes vina_energy_range vina_cpu vina_seed; do",
+        "while IFS=$'\\t' read -r pdb chain ligand lig_spec pdb_file grid_pad grid_file force_run_id flex_residue_spec pdb2pqr_ph pdb2pqr_ff pdb2pqr_ffout pdb2pqr_nodebump pdb2pqr_keep_chain mkrec_allow_bad_res mkrec_default_altloc docking_mode vina_exhaustiveness vina_num_modes vina_energy_range vina_cpu vina_seed; do",
         "  [[ -z \"$pdb\" || \"$pdb\" =~ ^# ]] && continue",
         "  run_start=1",
         "  run_end=$RUNS",

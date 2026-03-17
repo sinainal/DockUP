@@ -25,6 +25,7 @@ const appState = {
 };
 
 const DEFAULT_DOCKING_CONFIG = {
+  docking_mode: "standard",
   pdb2pqr_ph: 7.4,
   pdb2pqr_ff: "AMBER",
   pdb2pqr_ffout: "AMBER",
@@ -116,6 +117,7 @@ let representations = {
   focusedLigand: null,
   selectedAtom: null,
   residueSearch: null,
+  flexResidueSearch: null,
 };
 
 // Gridbox state
@@ -175,6 +177,7 @@ function initElements() {
   els.saveDockingConfigModal = document.getElementById("saveDockingConfigModal");
   els.cancelDockingConfigModal = document.getElementById("cancelDockingConfigModal");
   els.dockCfgPdb2pqrPh = document.getElementById("dockCfgPdb2pqrPh");
+  els.dockCfgDockingMode = document.getElementById("dockCfgDockingMode");
   els.dockCfgPdb2pqrFf = document.getElementById("dockCfgPdb2pqrFf");
   els.dockCfgPdb2pqrFfout = document.getElementById("dockCfgPdb2pqrFfout");
   els.dockCfgPdb2pqrNodebump = document.getElementById("dockCfgPdb2pqrNodebump");
@@ -186,6 +189,8 @@ function initElements() {
   els.dockCfgVinaEnergyRange = document.getElementById("dockCfgVinaEnergyRange");
   els.dockCfgVinaCpu = document.getElementById("dockCfgVinaCpu");
   els.dockCfgVinaSeed = document.getElementById("dockCfgVinaSeed");
+  els.dockCfgFlexInfo = document.getElementById("dockCfgFlexInfo");
+  els.dockCfgFlexModeBlock = document.getElementById("dockCfgFlexModeBlock");
   els.runQueue = document.getElementById("runQueue");
   els.stopRunQueue = document.getElementById("stopRunQueue");
   els.runLog = document.getElementById("runLog");
@@ -418,6 +423,136 @@ function normalizeChainValue(value) {
   return chain && chain.toLowerCase() !== "all" ? chain : "all";
 }
 
+function normalizeDockingMode(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  return mode === "flexible" ? "flexible" : "standard";
+}
+
+function normalizeFlexResidueRow(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const chain = String(raw.chain || "").trim();
+  const resno = String(raw.resno ?? raw.resid ?? "").trim();
+  const resname = String(raw.resname || raw.residue_name || "").trim().toUpperCase();
+  if (!chain || !resno) return null;
+  return { chain, resno, resname };
+}
+
+function normalizeFlexResidueList(rawList) {
+  if (typeof rawList === "string") {
+    return rawList
+      .split(",")
+      .map((token) => token.trim())
+      .filter(Boolean)
+      .map((token) => {
+        const parts = token.split(":").map((part) => part.trim()).filter(Boolean);
+        if (parts.length < 2) return null;
+        return { chain: parts[0], resno: parts[1], resname: parts[2] ? parts[2].toUpperCase() : "" };
+      })
+      .filter(Boolean);
+  }
+  if (!Array.isArray(rawList)) return [];
+  const rows = [];
+  const seen = new Set();
+  rawList.forEach((row) => {
+    const normalized = normalizeFlexResidueRow(row);
+    if (!normalized) return;
+    const key = `${normalized.chain}:${normalized.resno}:${normalized.resname}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push(normalized);
+  });
+  return rows;
+}
+
+function buildFlexResidueSpec(rows) {
+  return normalizeFlexResidueList(rows)
+    .map((row) => `${row.chain}:${row.resno}`)
+    .join(",");
+}
+
+function flexResidueKey(row) {
+  return `${String(row?.chain || "").trim()}:${String(row?.resno || "").trim()}:${String(row?.resname || "").trim().toUpperCase()}`;
+}
+
+function computeResidueSelectionLabel(rows) {
+  const normalized = normalizeFlexResidueList(rows);
+  if (!normalized.length) return "";
+  if (normalized.length === 1) {
+    const row = normalized[0];
+    return row.chain ? `${row.resname || "RES"}_${row.chain}${row.resno}` : `${row.resname || "RES"}_${row.resno}`;
+  }
+  const resnames = new Set(normalized.map((row) => row.resname).filter(Boolean));
+  if (resnames.size === 1) {
+    const [resname] = Array.from(resnames);
+    return `${resname}_ALL`;
+  }
+  return `${normalized.length} Residues`;
+}
+
+function buildResidueSelectionString(rows) {
+  return normalizeFlexResidueList(rows)
+    .map((row) => residueSelection(row.resno, row.chain !== "_" ? row.chain : ""))
+    .filter(Boolean)
+    .join(" or ");
+}
+
+function ensureSelectionMapEntry(pdbId) {
+  const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
+  if (!normalizedPdbId) return null;
+  if (!appState.selectionMap) appState.selectionMap = {};
+  const current = appState.selectionMap[normalizedPdbId] || {};
+  const next = {
+    chain: normalizeChainValue(current.chain || "all"),
+    ligand_resname: String(current.ligand_resname || ""),
+    flex_residues: normalizeFlexResidueList(current.flex_residues || current.flex_residue_spec || []),
+  };
+  appState.selectionMap[normalizedPdbId] = next;
+  return next;
+}
+
+function normalizeSelectionMapState(rawMap) {
+  const next = {};
+  if (!rawMap || typeof rawMap !== "object") return next;
+  Object.entries(rawMap).forEach(([key, value]) => {
+    const pdbId = String(key || "").trim().toUpperCase();
+    if (!pdbId) return;
+    const source = value && typeof value === "object" ? value : {};
+    next[pdbId] = {
+      chain: normalizeChainValue(source.chain || "all"),
+      ligand_resname: String(source.ligand_resname || source.ligand || ""),
+      flex_residues: normalizeFlexResidueList(source.flex_residues || source.flex_residue_spec || []),
+    };
+  });
+  return next;
+}
+
+function getFlexResiduesForReceptor(pdbId = appState.selectedReceptor) {
+  const row = ensureSelectionMapEntry(pdbId);
+  return row ? normalizeFlexResidueList(row.flex_residues || []) : [];
+}
+
+function setFlexResiduesForReceptor(pdbId, residues) {
+  const row = ensureSelectionMapEntry(pdbId);
+  if (!row) return [];
+  row.flex_residues = normalizeFlexResidueList(residues);
+  return row.flex_residues;
+}
+
+function clearFlexResiduesForReceptor(pdbId) {
+  return setFlexResiduesForReceptor(pdbId, []);
+}
+
+function getFlexSelectionData(pdbId = appState.selectedReceptor) {
+  const rows = getFlexResiduesForReceptor(pdbId);
+  if (!rows.length) return null;
+  return {
+    label: computeResidueSelectionLabel(rows),
+    selection: buildResidueSelectionString(rows),
+    residues: rows.map((row) => ({ ...row })),
+    spec: buildFlexResidueSpec(rows),
+  };
+}
+
 function getSelectedChainForReceptor(pdbId = appState.selectedReceptor) {
   const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
   if (!normalizedPdbId) return "all";
@@ -432,13 +567,9 @@ function setSelectedChainForReceptor(pdbId, chain) {
   const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
   const normalizedChain = normalizeChainValue(chain);
   if (!normalizedPdbId) return normalizedChain;
-  if (!appState.selectionMap) appState.selectionMap = {};
-  const current = appState.selectionMap[normalizedPdbId] || {};
-  appState.selectionMap[normalizedPdbId] = {
-    ...current,
-    chain: normalizedChain,
-    ligand_resname: String(current.ligand_resname || ""),
-  };
+  const current = ensureSelectionMapEntry(normalizedPdbId);
+  if (!current) return normalizedChain;
+  current.chain = normalizedChain;
   if (normalizedPdbId === String(appState.selectedReceptor || "").trim().toUpperCase()) {
     appState.selectedChain = normalizedChain;
   }
@@ -461,6 +592,18 @@ function dispatchGridSelectionContext(reason = "viewer-refresh") {
       pdbId: String(appState.selectedReceptor || "").trim().toUpperCase(),
       chain: getSelectedChainForReceptor(appState.selectedReceptor),
       hasStructure: !!comp?.structure,
+    },
+  }));
+}
+
+function dispatchFlexSelectionContext(reason = "viewer-refresh") {
+  window.dispatchEvent(new CustomEvent("dockup:flex-selection-context", {
+    detail: {
+      reason: String(reason || "viewer-refresh"),
+      pdbId: String(appState.selectedReceptor || "").trim().toUpperCase(),
+      chain: getSelectedChainForReceptor(appState.selectedReceptor),
+      hasStructure: !!comp?.structure,
+      hasGrid: !!(gridboxData || (appState.selectedReceptor && gridDataPerReceptor[appState.selectedReceptor])),
     },
   }));
 }
@@ -526,6 +669,7 @@ function normalizeDockingConfig(rawConfig) {
     return out;
   };
 
+  normalized.docking_mode = normalizeDockingMode(source.docking_mode ?? normalized.docking_mode);
   const ph = asFloat(source.pdb2pqr_ph, 0, 14, false);
   if (ph !== null) normalized.pdb2pqr_ph = ph;
   normalized.pdb2pqr_ff = String(source.pdb2pqr_ff ?? normalized.pdb2pqr_ff).trim() || normalized.pdb2pqr_ff;
@@ -566,6 +710,7 @@ function applyQueueCoreValues(values) {
 
 function readAdvancedDockingConfigFromModal() {
   return normalizeDockingConfig({
+    docking_mode: els.dockCfgDockingMode?.value,
     pdb2pqr_ph: els.dockCfgPdb2pqrPh?.value,
     pdb2pqr_ff: els.dockCfgPdb2pqrFf?.value,
     pdb2pqr_ffout: els.dockCfgPdb2pqrFfout?.value,
@@ -601,6 +746,7 @@ function applyAdvancedDockingConfigToModal(config) {
     }
   };
 
+  if (els.dockCfgDockingMode) els.dockCfgDockingMode.value = cfg.docking_mode || "standard";
   if (els.dockCfgPdb2pqrPh) els.dockCfgPdb2pqrPh.value = String(cfg.pdb2pqr_ph);
   setSelectValue(els.dockCfgPdb2pqrFf, cfg.pdb2pqr_ff, "AMBER");
   setSelectValue(els.dockCfgPdb2pqrFfout, cfg.pdb2pqr_ffout, "AMBER");
@@ -613,12 +759,31 @@ function applyAdvancedDockingConfigToModal(config) {
   if (els.dockCfgVinaEnergyRange) els.dockCfgVinaEnergyRange.value = cfg.vina_energy_range === null ? "" : String(cfg.vina_energy_range);
   if (els.dockCfgVinaCpu) els.dockCfgVinaCpu.value = cfg.vina_cpu === null ? "" : String(cfg.vina_cpu);
   if (els.dockCfgVinaSeed) els.dockCfgVinaSeed.value = cfg.vina_seed === null ? "" : String(cfg.vina_seed);
+  syncDockingModeUI();
 }
 
 function renderDockingConfigSummary() {
   const cfg = normalizeDockingConfig(appState.dockingConfig || {});
   if (els.openDockingConfigModal) {
-    els.openDockingConfigModal.title = `pH ${cfg.pdb2pqr_ph} | Exhaustiveness ${cfg.vina_exhaustiveness}`;
+    const flexCount = getFlexResiduesForReceptor(appState.selectedReceptor).length;
+    const flexSuffix = cfg.docking_mode === "flexible" ? ` | ${flexCount} flex residues` : "";
+    els.openDockingConfigModal.title = `${cfg.docking_mode} | pH ${cfg.pdb2pqr_ph} | Exhaustiveness ${cfg.vina_exhaustiveness}${flexSuffix}`;
+  }
+}
+
+function syncDockingModeUI() {
+  const mode = normalizeDockingMode(els.dockCfgDockingMode?.value || appState.dockingConfig?.docking_mode || "standard");
+  if (els.dockCfgFlexModeBlock) {
+    els.dockCfgFlexModeBlock.style.display = mode === "flexible" ? "" : "none";
+  }
+  if (els.dockCfgFlexInfo) {
+    const selected = getFlexSelectionData(appState.selectedReceptor);
+    const valueEl = els.dockCfgFlexInfo.querySelector(".grid-selection-value");
+    if (valueEl) {
+      valueEl.textContent = selected?.label || "None";
+    }
+    els.dockCfgFlexInfo.classList.remove("is-none", "is-residue");
+    els.dockCfgFlexInfo.classList.add(selected ? "is-residue" : "is-none");
   }
 }
 
@@ -626,6 +791,8 @@ function openDockingConfigModal() {
   if (!els.dockingConfigModal) return;
   dockingConfigSnapshot = normalizeDockingConfig(appState.dockingConfig || {});
   applyAdvancedDockingConfigToModal(dockingConfigSnapshot);
+  dispatchFlexSelectionContext("modal-open");
+  emitFlexResidueSelectionEvent("modal-open");
   els.dockingConfigModal.classList.add("active");
 }
 
@@ -644,6 +811,7 @@ function saveDockingConfigModal() {
   applyAdvancedDockingConfigToModal(appState.dockingConfig);
 
   closeDockingConfigModal({ restore: false });
+  renderDockingConfigSummary();
   scheduleUIStateSave();
 }
 
@@ -660,6 +828,20 @@ async function loadState() {
     appState.selectedChain = data.selected_chain || "all";
     appState.activeLigands = Array.isArray(data.active_ligands) ? data.active_ligands : [];
     activeLigands = [...appState.activeLigands];
+    if (data.selection_map && typeof data.selection_map === "object") {
+      const nextSelection = {};
+      Object.entries(data.selection_map).forEach(([key, value]) => {
+        const pdbId = String(key || "").trim().toUpperCase();
+        if (!pdbId) return;
+        const row = value && typeof value === "object" ? value : {};
+        nextSelection[pdbId] = {
+          chain: normalizeChainValue(row.chain || "all"),
+          ligand_resname: String(row.ligand_resname || ""),
+          flex_residues: normalizeFlexResidueList(row.flex_residues || row.flex_residue_spec || []),
+        };
+      });
+      appState.selectionMap = nextSelection;
+    }
     appState.gridFilePath = data.grid_file_path || "";
     appState.queueCount = data.queue_count || 0;
     appState.runStatus = data.run_status || "idle";
@@ -907,6 +1089,10 @@ function updateRepresentations() {
     try { comp.removeRepresentation(representations.residueSearch); } catch (e) { }
     representations.residueSearch = null;
   }
+  if (representations.flexResidueSearch) {
+    try { comp.removeRepresentation(representations.flexResidueSearch); } catch (e) { }
+    representations.flexResidueSearch = null;
+  }
   clearInteractionReps();
 
   const color = els.colorScheme?.value || "chainid";
@@ -990,6 +1176,7 @@ function updateRepresentations() {
 
   renderSelectedAtomHighlight();
   renderResidueSearchHighlight();
+  renderFlexResidueHighlight();
 }
 
 function updateSelectedAtomInfo() {
@@ -1162,6 +1349,32 @@ function buildResidueSearchCatalog() {
   return catalog;
 }
 
+function bboxIntersectsGrid(bbox, grid) {
+  if (!bbox || !grid) return true;
+  const gx1 = Number(grid.cx) - Number(grid.sx) / 2;
+  const gx2 = Number(grid.cx) + Number(grid.sx) / 2;
+  const gy1 = Number(grid.cy) - Number(grid.sy) / 2;
+  const gy2 = Number(grid.cy) + Number(grid.sy) / 2;
+  const gz1 = Number(grid.cz) - Number(grid.sz) / 2;
+  const gz2 = Number(grid.cz) + Number(grid.sz) / 2;
+  return !(
+    Number(bbox.maxX) < gx1 || Number(bbox.minX) > gx2
+    || Number(bbox.maxY) < gy1 || Number(bbox.minY) > gy2
+    || Number(bbox.maxZ) < gz1 || Number(bbox.minZ) > gz2
+  );
+}
+
+function buildFlexibleResidueCatalog() {
+  const catalog = buildResidueSearchCatalog();
+  const activeGrid = gridboxData || (
+    appState.selectedReceptor && gridDataPerReceptor[appState.selectedReceptor]
+      ? gridDataPerReceptor[appState.selectedReceptor]
+      : null
+  );
+  if (!activeGrid) return catalog;
+  return catalog.filter((row) => bboxIntersectsGrid(row.bbox, activeGrid));
+}
+
 function clearResidueSearchSelection({ refreshUI = true, reason = "clear" } = {}) {
   residueSearchSelectionData = null;
   if (representations.residueSearch) {
@@ -1171,6 +1384,39 @@ function clearResidueSearchSelection({ refreshUI = true, reason = "clear" } = {}
   emitResidueSearchSelectionEvent(reason);
   if (refreshUI) {
     updateGridSelectionInfo();
+    scheduleUIStateSave();
+  }
+}
+
+function emitFlexResidueSelectionEvent(reason = "") {
+  window.dispatchEvent(new CustomEvent("dockup:flex-selection-selection", {
+    detail: {
+      active: !!getFlexSelectionData(appState.selectedReceptor),
+      label: String(getFlexSelectionData(appState.selectedReceptor)?.label || ""),
+      reason: String(reason || ""),
+    },
+  }));
+}
+
+function clearFlexResidueSearchSelection({ refreshUI = true, reason = "clear" } = {}) {
+  clearFlexResiduesForReceptor(appState.selectedReceptor);
+  renderFlexResidueHighlight();
+  emitFlexResidueSelectionEvent(reason);
+  if (refreshUI) {
+    syncDockingModeUI();
+    renderDockingConfigSummary();
+    scheduleUIStateSave();
+  }
+}
+
+function applyFlexResidueSearchSelection(selection, { refreshUI = true, reason = "search" } = {}) {
+  const rows = normalizeFlexResidueList(selection?.residues || []);
+  setFlexResiduesForReceptor(appState.selectedReceptor, rows);
+  renderFlexResidueHighlight();
+  emitFlexResidueSelectionEvent(reason);
+  if (refreshUI) {
+    syncDockingModeUI();
+    renderDockingConfigSummary();
     scheduleUIStateSave();
   }
 }
@@ -1249,6 +1495,7 @@ function resetGridboxState({ clearAllStored = false } = {}) {
   selectedLigandData = null;
   clearLigandTableSelection();
   updateGridSelectionInfo();
+  dispatchFlexSelectionContext("reset-gridbox");
   scheduleUIStateSave();
 }
 
@@ -1287,6 +1534,27 @@ function renderResidueSearchHighlight() {
     });
   } catch (err) {
     representations.residueSearch = null;
+  }
+}
+
+function renderFlexResidueHighlight() {
+  if (representations.flexResidueSearch) {
+    try { comp.removeRepresentation(representations.flexResidueSearch); } catch (e) { }
+    representations.flexResidueSearch = null;
+  }
+  const selection = getFlexSelectionData(appState.selectedReceptor);
+  if (!comp || !selection?.selection) return;
+  try {
+    representations.flexResidueSearch = comp.addRepresentation("licorice", {
+      sele: selection.selection,
+      colorScheme: "uniform",
+      colorValue: 0xF97316,
+      multipleBond: "symmetric",
+      radiusScale: 0.95,
+      opacity: 0.95,
+    });
+  } catch (err) {
+    representations.flexResidueSearch = null;
   }
 }
 
@@ -1455,6 +1723,7 @@ function focusOnLigand(lig) {
   // Ligand table selection overrides any atom-picked selection.
   clearSelectedAtomSelection();
   clearResidueSearchSelection({ refreshUI: false, reason: "ligand" });
+  clearExternalGridSelection(appState.selectedReceptor, { refreshUI: false });
 
   // Remove old focused ligand representation
   if (representations.focusedLigand) {
@@ -1600,6 +1869,7 @@ async function refreshViewer() {
   if (!appState.selectedReceptor) {
     setViewportMessage("Load a receptor to start the viewer.");
     dispatchGridSelectionContext("no-receptor");
+    dispatchFlexSelectionContext("no-receptor");
     return;
   }
   if (!initViewer()) return;
@@ -1617,7 +1887,7 @@ async function refreshViewer() {
     }
 
     // Reset representations
-    representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, residueSearch: null };
+    representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, residueSearch: null, flexResidueSearch: null };
     selectedLigandData = null;
     selectedAtomData = null;
     externalGridSelectionData = appState.selectedReceptor
@@ -1667,10 +1937,12 @@ async function refreshViewer() {
     // Apply gridbox if exists
     applyGridbox();
     dispatchGridSelectionContext("viewer-refresh");
+    dispatchFlexSelectionContext("viewer-refresh");
 
   } catch (e) {
     console.error("Error loading viewer:", e);
     dispatchGridSelectionContext("viewer-error");
+    dispatchFlexSelectionContext("viewer-error");
   }
 }
 
@@ -1752,7 +2024,8 @@ function renderInteractionHighlights() {
 function renderInteractionLegend() {
   if (!els.interactionLegend) return;
   const types = Object.keys(interactionResiduesByType);
-  if (!types.length) {
+  const flexSelection = getFlexSelectionData();
+  if (!types.length && !flexSelection) {
     els.interactionLegend.innerHTML = "";
     els.interactionLegend.style.display = "none";
     return;
@@ -1774,6 +2047,19 @@ function renderInteractionLegend() {
     chip.appendChild(label);
     els.interactionLegend.appendChild(chip);
   });
+  if (flexSelection) {
+    const chip = document.createElement("div");
+    chip.className = "legend-chip legend-chip-flex";
+    const swatch = document.createElement("span");
+    swatch.className = "legend-swatch";
+    swatch.style.background = "#f59e0b";
+    const label = document.createElement("span");
+    const flexCount = Array.isArray(flexSelection.residues) ? flexSelection.residues.length : 0;
+    label.textContent = flexCount > 0 ? `Flex residues (${flexCount})` : "Flex residues";
+    chip.appendChild(swatch);
+    chip.appendChild(label);
+    els.interactionLegend.appendChild(chip);
+  }
 }
 
 // =====================================================
@@ -2181,7 +2467,7 @@ async function loadResultStructure(result, originalReceptorPath) {
     }
     const component = await stage.loadFile(blob, { ext: "pdb" });
     comp = component;
-    representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, residueSearch: null, highlightedResidue: null };
+    representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, residueSearch: null, flexResidueSearch: null, highlightedResidue: null };
     selectedAtomData = null;
     externalGridSelectionData = appState.selectedReceptor
       ? (gridSelectionMetaPerReceptor[appState.selectedReceptor] || null)
@@ -2308,6 +2594,7 @@ function createGridboxForSelection() {
     setGridboxSliders();
     showGridControlsPanel();
     applyGridbox();
+    dispatchFlexSelectionContext("gridbox-update");
     return;
   }
 
@@ -2342,33 +2629,35 @@ function createGridboxForSelection() {
     showGridControlsPanel();
     applyGridbox();
     updateGridSelectionInfo();
-    return;
-  }
-
-  if (externalGridSelectionData?.label) {
-    const activeGrid = gridboxData || (
-      appState.selectedReceptor && gridDataPerReceptor[appState.selectedReceptor]
-        ? { ...gridDataPerReceptor[appState.selectedReceptor] }
-        : null
-    );
-    if (!activeGrid) {
-      alert("No pocket gridbox is available for the current selection.");
-      return;
-    }
-    gridboxData = { ...activeGrid };
-    if (appState.selectedReceptor) {
-      gridDataPerReceptor[appState.selectedReceptor] = { ...gridboxData };
-      refreshReceptorSummary();
-    }
-    setGridboxSliders();
-    showGridControlsPanel();
-    applyGridbox();
-    updateGridSelectionInfo();
-    scheduleUIStateSave();
+    dispatchFlexSelectionContext("gridbox-update");
     return;
   }
 
   if (!selectedLigandData) {
+    if (externalGridSelectionData?.label) {
+      const activeGrid = gridboxData || (
+        appState.selectedReceptor && gridDataPerReceptor[appState.selectedReceptor]
+          ? { ...gridDataPerReceptor[appState.selectedReceptor] }
+          : null
+      );
+      if (!activeGrid) {
+        alert("No pocket gridbox is available for the current selection.");
+        return;
+      }
+      gridboxData = { ...activeGrid };
+      if (appState.selectedReceptor) {
+        gridDataPerReceptor[appState.selectedReceptor] = { ...gridboxData };
+        refreshReceptorSummary();
+      }
+      setGridboxSliders();
+      showGridControlsPanel();
+      applyGridbox();
+      updateGridSelectionInfo();
+      dispatchFlexSelectionContext("gridbox-update");
+      scheduleUIStateSave();
+      return;
+    }
+
     alert("Select a ligand from table or click an atom in viewer.");
     return;
   }
@@ -2446,6 +2735,7 @@ function createGridboxForSelection() {
   setGridboxSliders();
   showGridControlsPanel();
   applyGridbox();
+  dispatchFlexSelectionContext("gridbox-update");
 }
 
 function setGridboxSliders() {
@@ -2547,6 +2837,7 @@ function updateGridboxData() {
 
   updateGridboxInfo();
   applyGridbox();
+  dispatchFlexSelectionContext("gridbox-update");
 }
 
 function applyGridbox() {
@@ -2626,6 +2917,7 @@ function applyExternalGridbox(grid, options = {}) {
   }
   applyGridbox();
   restoreExternalGridSelection(targetPdbId);
+  dispatchFlexSelectionContext("external-gridbox");
   scheduleUIStateSave();
 }
 
@@ -2645,6 +2937,21 @@ window.DockUPGridSelectionSearchBridge = {
   setResidueSelection: (selection, options) => applyResidueSearchSelection(selection, options || {}),
   clearResidueSelection: (options) => clearResidueSearchSelection(options || {}),
   getResidueSelection: () => (residueSearchSelectionData ? { ...residueSearchSelectionData } : null),
+};
+
+window.DockUPFlexSelectionBridge = {
+  getSelectedContext: () => ({
+    pdbId: String(appState.selectedReceptor || "").trim().toUpperCase(),
+    chain: getSelectedChainForReceptor(appState.selectedReceptor),
+    hasGrid: !!(gridboxData || (appState.selectedReceptor && gridDataPerReceptor[appState.selectedReceptor])),
+  }),
+  getResidueCatalog: () => buildFlexibleResidueCatalog(),
+  setResidueSelection: (selection, options) => applyFlexResidueSearchSelection(selection, options || {}),
+  clearResidueSelection: (options) => clearFlexResidueSearchSelection(options || {}),
+  getResidueSelection: () => {
+    const current = getFlexSelectionData(appState.selectedReceptor);
+    return current ? { ...current } : null;
+  },
 };
 
 // =====================================================
@@ -2765,6 +3072,7 @@ async function restoreUIState() {
       normalizedSelection[pdbId] = {
         chain: String(row.chain || "all"),
         ligand_resname: String(row.ligand_resname || ""),
+        flex_residues: normalizeFlexResidueList(row.flex_residues || row.flex_residue_spec || []),
       };
     });
     appState.selectionMap = normalizedSelection;
@@ -2985,6 +3293,7 @@ async function renderReceptorSummary(rows) {
 
     chainSelect.addEventListener("click", (e) => e.stopPropagation());
     chainSelect.addEventListener("change", async (e) => {
+      const previousChain = getSelectedChainForReceptor(row.pdb_id);
       const selectedChain = setSelectedChainForReceptor(row.pdb_id, e.target.value);
       const previousLigand = String(appState.selectionMap?.[row.pdb_id]?.ligand_resname || "");
       const allowedLigands = appState.mode === "Redocking"
@@ -2998,6 +3307,9 @@ async function renderReceptorSummary(rows) {
       if (!appState.selectionMap[row.pdb_id]) appState.selectionMap[row.pdb_id] = {};
       appState.selectionMap[row.pdb_id].chain = selectedChain;
       appState.selectionMap[row.pdb_id].ligand_resname = nextLigand;
+      if (selectedChain !== previousChain) {
+        clearFlexResiduesForReceptor(row.pdb_id);
+      }
 
       // Send to backend
       await fetchJSON("/api/ligands/select", {
@@ -3012,6 +3324,10 @@ async function renderReceptorSummary(rows) {
       await refreshReceptorSummary();
       if (row.pdb_id === appState.selectedReceptor) {
         clearResidueSearchSelection({ refreshUI: false, reason: "chain-change" });
+        renderFlexResidueHighlight();
+        syncDockingModeUI();
+        renderDockingConfigSummary();
+        dispatchFlexSelectionContext("chain-change");
         await Promise.resolve(window.DockUPPocketFinder?.syncSelectedChain?.(row.pdb_id, selectedChain));
         await refreshViewer();
       }
@@ -3062,6 +3378,7 @@ async function renderReceptorSummary(rows) {
       const selectedLig = e.target.value;
 
       // Auto-select chain logic
+      const previousChain = chainSelect.value;
       let targetChain = chainSelect.value;
 
       if (selectedLig && selectedLig !== "all_set" && row.ligands_by_chain) {
@@ -3082,6 +3399,9 @@ async function renderReceptorSummary(rows) {
       if (!appState.selectionMap[row.pdb_id]) appState.selectionMap[row.pdb_id] = {};
       appState.selectionMap[row.pdb_id].ligand_resname = selectedLig;
       appState.selectionMap[row.pdb_id].chain = targetChain;
+      if (targetChain !== previousChain) {
+        clearFlexResiduesForReceptor(row.pdb_id);
+      }
 
       // Send to backend
       await fetchJSON("/api/ligands/select", {
@@ -3096,6 +3416,10 @@ async function renderReceptorSummary(rows) {
       await refreshReceptorSummary();
       if (row.pdb_id === appState.selectedReceptor) {
         clearResidueSearchSelection({ refreshUI: false, reason: "ligand-chain-change" });
+        renderFlexResidueHighlight();
+        syncDockingModeUI();
+        renderDockingConfigSummary();
+        dispatchFlexSelectionContext("chain-change");
         await Promise.resolve(window.DockUPPocketFinder?.syncSelectedChain?.(row.pdb_id, targetChain));
         await refreshViewer();
       }
@@ -3328,6 +3652,8 @@ async function selectReceptor(pdbId) {
       }
     }
     restoreExternalGridSelection(pdbId);
+    syncDockingModeUI();
+    renderDockingConfigSummary();
 
     await refreshReceptorSummary();
     await refreshViewer();
@@ -3501,7 +3827,7 @@ async function buildQueue() {
   const runCount = document.getElementById("runCount")?.value || 10;
   const padding = document.getElementById("gridPadding")?.value || 0;
   const activeSet = new Set(activeLigands || []);
-  const selectionMap = JSON.parse(JSON.stringify(appState.selectionMap || {}));
+  const selectionMap = normalizeSelectionMapState(JSON.parse(JSON.stringify(appState.selectionMap || {})));
   Object.keys(selectionMap).forEach((pdbId) => {
     const row = selectionMap[pdbId] || {};
     const lig = String(row.ligand_resname || row.ligand || "").trim();
@@ -3511,11 +3837,8 @@ async function buildQueue() {
       row.ligand = "";
       selectionMap[pdbId] = row;
     }
+    row.flex_residues = normalizeFlexResidueList(row.flex_residues || row.flex_residue_spec || []);
   });
-
-  // We need to send the current state of selections and grids
-  // appState.selectionMap contains { pdb_id: { chain, ligand_resname } }
-  // gridDataPerReceptor contains { pdb_id: { cx, cy, cz, sx, sy, sz } }
 
   const payload = {
     run_count: parseInt(runCount),
@@ -3616,17 +3939,17 @@ function renderQueueTable(queue) {
     // Table Header
     const tableHeader = document.createElement("div");
     tableHeader.className = "table-row header";
-    tableHeader.style.gridTemplateColumns = "0.5fr 0.4fr 1fr 1.2fr 0.5fr 0.4fr";
+    tableHeader.style.gridTemplateColumns = "0.5fr 0.4fr 1fr 1.2fr 0.55fr 0.4fr";
     tableHeader.style.borderBottom = "1px solid var(--border)";
     tableHeader.style.background = "var(--surface-1)";
-    tableHeader.innerHTML = "<div>PDB</div><div>Chain</div><div>Ligand</div><div>Grid (Center / Size)</div><div>Pad</div><div>Runs</div>";
+    tableHeader.innerHTML = "<div>PDB</div><div>Chain</div><div>Ligand</div><div>Grid (Center / Size)</div><div>Mode</div><div>Runs</div>";
     batchContainer.appendChild(tableHeader);
 
     // Rows
     items.forEach(item => {
       const row = document.createElement("div");
       row.className = "table-row";
-      row.style.gridTemplateColumns = "0.5fr 0.4fr 1fr 1.2fr 0.5fr 0.4fr";
+      row.style.gridTemplateColumns = "0.5fr 0.4fr 1fr 1.2fr 0.55fr 0.4fr";
       row.style.fontSize = "12px";
 
       // Ligand
@@ -3638,15 +3961,18 @@ function renderQueueTable(queue) {
         const g = item.grid_params;
         const c = `${formatNumber(g.cx, 1)},${formatNumber(g.cy, 1)},${formatNumber(g.cz, 1)}`;
         const s = `${formatNumber(g.sx, 1)},${formatNumber(g.sy, 1)},${formatNumber(g.sz, 1)}`;
-        gridDisplay = `C:[${c}] S:[${s}]`;
+        gridDisplay = `<div class="queue-grid-lines"><div>C:[${c}]</div><div>S:[${s}]</div></div>`;
       }
+      const dockingMode = normalizeDockingMode(item?.docking_config?.docking_mode || item?.docking_mode || "standard");
+      const modeLabel = dockingMode === "flexible" ? "Flexible" : "Standard";
+      const modeClass = dockingMode === "flexible" ? "queue-mode-chip is-flexible" : "queue-mode-chip";
 
       row.innerHTML = `
             <div>${item.pdb_id}</div>
             <div>${item.chain}</div>
             <div title="${ligDisplay}" style="overflow:hidden;text-overflow:ellipsis;">${ligDisplay}</div>
-            <div style="font-family:monospace;font-size:11px;">${gridDisplay}</div>
-            <div>${item.padding || 0}</div>
+            <div class="queue-grid-cell">${gridDisplay}</div>
+            <div><span class="${modeClass}">${modeLabel}</span></div>
             <div>${item.run_count || 1}</div>
         `;
       batchContainer.appendChild(row);
@@ -3972,6 +4298,14 @@ function bindEvents() {
   if (els.saveDockingConfigModal) {
     els.saveDockingConfigModal.addEventListener("click", () => {
       saveDockingConfigModal();
+    });
+  }
+
+  if (els.dockCfgDockingMode) {
+    els.dockCfgDockingMode.addEventListener("change", () => {
+      syncDockingModeUI();
+      renderDockingConfigSummary();
+      dispatchFlexSelectionContext("mode-change");
     });
   }
 
@@ -4305,9 +4639,17 @@ function bindEvents() {
     if (el) {
       el.addEventListener("change", async () => {
         if (el === els.viewerChain && appState.selectedReceptor && appState.mode !== "Results" && appState.mode !== "Report") {
+          const previousChain = getSelectedChainForReceptor(appState.selectedReceptor);
           const nextChain = setSelectedChainForReceptor(appState.selectedReceptor, els.viewerChain.value || "all");
           const currentLigand = String(appState.selectionMap?.[appState.selectedReceptor]?.ligand_resname || "");
+          if (nextChain !== previousChain) {
+            clearFlexResiduesForReceptor(appState.selectedReceptor);
+          }
           clearResidueSearchSelection({ refreshUI: false, reason: "viewer-chain-change" });
+          renderFlexResidueHighlight();
+          syncDockingModeUI();
+          renderDockingConfigSummary();
+          dispatchFlexSelectionContext("viewer-chain-change");
           await fetchJSON("/api/ligands/select", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -4393,7 +4735,7 @@ function bindEvents() {
       const paddingVal = document.getElementById("gridPadding")?.value || 0;
 
       const payload = {
-        selection_map: appState.selectionMap || {},
+        selection_map: normalizeSelectionMapState(appState.selectionMap || {}),
         grid_data: gridDataPerReceptor || {},
         docking_config: normalizeDockingConfig(appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
         run_count: parseInt(runCountVal),
@@ -4448,7 +4790,7 @@ function bindEvents() {
         if (data.error) throw new Error(data.error);
 
         // Restore client-side state
-        if (data.selection_map) appState.selectionMap = data.selection_map;
+        if (data.selection_map) appState.selectionMap = normalizeSelectionMapState(data.selection_map);
         if (data.grid_data) gridDataPerReceptor = data.grid_data;
         if (data.queue) {
           appState.queueCount = data.queue.length;
@@ -4460,6 +4802,7 @@ function bindEvents() {
           applyAdvancedDockingConfigToModal(appState.dockingConfig);
           renderDockingConfigSummary();
         }
+        syncDockingModeUI();
 
         // Auto-switch mode if present in config (it's in the first row of General sheet usually, but backend might not return it explicitly in JSON response unless we add it)
         // Wait, the backend load_config updates STATE["mode"]. We should fetch the current mode from backend or trust the backend response if we update it.

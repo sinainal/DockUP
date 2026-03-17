@@ -78,6 +78,75 @@ def to_optional_float(
     return val
 
 
+def normalize_docking_mode(value: Any) -> str:
+    """Return the supported docking mode string."""
+    mode = str(value or "").strip().lower()
+    return "flexible" if mode == "flexible" else "standard"
+
+
+def parse_flex_residue_spec(raw: Any) -> list[dict[str, str]]:
+    """Parse ``A:114,A:118`` style specs into residue rows."""
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    rows: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for chunk in text.split(","):
+        token = str(chunk or "").strip()
+        if not token:
+            continue
+        parts = [part.strip() for part in token.split(":") if str(part or "").strip()]
+        if len(parts) < 2:
+            continue
+        chain = parts[0]
+        resno = parts[1]
+        resname = parts[2].upper() if len(parts) > 2 else ""
+        key = (chain, resno, resname)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({"chain": chain, "resno": resno, "resname": resname})
+    return rows
+
+
+def normalize_flex_residue_list(raw: Any) -> list[dict[str, str]]:
+    """Normalize flex residue rows from list/dict/string input."""
+    if isinstance(raw, str):
+        return parse_flex_residue_spec(raw)
+    if not isinstance(raw, list):
+        return []
+    rows: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in raw:
+        if isinstance(item, str):
+            candidates = parse_flex_residue_spec(item)
+        elif isinstance(item, dict):
+            chain = str(item.get("chain") or "").strip()
+            resno = str(item.get("resno") or item.get("resid") or item.get("residue_number") or "").strip()
+            resname = str(item.get("resname") or item.get("residue_name") or "").strip().upper()
+            candidates = [{"chain": chain, "resno": resno, "resname": resname}] if chain and resno else []
+        else:
+            candidates = []
+        for row in candidates:
+            chain = str(row.get("chain") or "").strip()
+            resno = str(row.get("resno") or "").strip()
+            resname = str(row.get("resname") or "").strip().upper()
+            if not chain or not resno:
+                continue
+            key = (chain, resno, resname)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({"chain": chain, "resno": resno, "resname": resname})
+    return rows
+
+
+def build_flex_residue_spec(rows: Any) -> str:
+    """Serialize normalized flex residue rows into a Meeko/Vina residue spec."""
+    normalized = normalize_flex_residue_list(rows)
+    return ",".join(f"{row['chain']}:{row['resno']}" for row in normalized if row.get("chain") and row.get("resno"))
+
+
 # ---------------------------------------------------------------------------
 # Docking configuration normalisation
 # ---------------------------------------------------------------------------
@@ -87,6 +156,7 @@ def normalize_docking_config(raw: Any) -> dict[str, Any]:
     source = raw if isinstance(raw, dict) else {}
     defaults = dict(DOCKING_CONFIG_DEFAULTS)
     cfg: dict[str, Any] = {
+        "docking_mode": normalize_docking_mode(source.get("docking_mode", defaults.get("docking_mode", "standard"))),
         "pdb2pqr_ph": defaults["pdb2pqr_ph"],
         "pdb2pqr_ff": str(source.get("pdb2pqr_ff", defaults["pdb2pqr_ff"]) or defaults["pdb2pqr_ff"]).strip() or defaults["pdb2pqr_ff"],
         "pdb2pqr_ffout": str(source.get("pdb2pqr_ffout", defaults["pdb2pqr_ffout"]) or defaults["pdb2pqr_ffout"]).strip() or defaults["pdb2pqr_ffout"],

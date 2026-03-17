@@ -1,0 +1,45 @@
+.docking-config-modal-card {
+  width: min(920px, 96vw);
+}
+
+.dockcfg-flex-block {
+  margin: 4px 0 12px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(255, 255, 255, 0.98));
+}
+
+.dockcfg-flex-block-head {
+  margin-bottom: 10px;
+}
+
+.dockcfg-flex-shell {
+  position: relative;
+  width: 100%;
+}
+
+.dockcfg-flex-shell .grid-selection-info {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.dockcfg-flex-shell .grid-selection-info.is-residue {
+  border-color: #fdba74;
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.dockcfg-flex-search-panel {
+  position: static;
+  width: 100%;
+  margin-top: 10px;
+  box-shadow: none;
+  background: #ffffff;
+  backdrop-filter: none;
+}
+
+.dockcfg-flex-search-panel[hidden] {
+  display: none !important;
+}

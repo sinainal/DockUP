@@ -31,7 +31,7 @@ else
   exit 2
 fi
 
-[ $# -ge 3 ] || { echo "Usage: $0 <PDBID> <CHAIN> <LIGAND_RESNAME> [--lig_spec path_to_sdf] [--pdb_file path_to_receptor.pdb] [--grid_pad value|x,y,z] [--grid_file path] [--pdb2pqr_ph value] [--pdb2pqr_ff name] [--pdb2pqr_ffout name] [--pdb2pqr_nodebump 1|0] [--pdb2pqr_keep_chain 1|0] [--mkrec_allow_bad_res 1|0] [--mkrec_default_altloc A] [--vina_exhaustiveness N] [--vina_num_modes N] [--vina_energy_range E] [--vina_cpu N] [--vina_seed N]"; exit 1; }
+[ $# -ge 3 ] || { echo "Usage: $0 <PDBID> <CHAIN> <LIGAND_RESNAME> [--lig_spec path_to_sdf] [--pdb_file path_to_receptor.pdb] [--grid_pad value|x,y,z] [--grid_file path] [--flexres A:114[,A:118]] [--pdb2pqr_ph value] [--pdb2pqr_ff name] [--pdb2pqr_ffout name] [--pdb2pqr_nodebump 1|0] [--pdb2pqr_keep_chain 1|0] [--mkrec_allow_bad_res 1|0] [--mkrec_default_altloc A] [--vina_exhaustiveness N] [--vina_num_modes N] [--vina_energy_range E] [--vina_cpu N] [--vina_seed N]"; exit 1; }
 PDB=$1
 CHAIN=$2
 LIGAND_RESNAME=$3
@@ -53,6 +53,7 @@ VINA_NUM_MODES=""
 VINA_ENERGY_RANGE=""
 VINA_CPU=""
 VINA_SEED=""
+FLEXRES=""
 if [ "$#" -gt 3 ]; then
   # shift first three positional args then parse
   shift 3
@@ -70,6 +71,8 @@ if [ "$#" -gt 3 ]; then
         GRID_PADDING="$2"; shift 2;;
       --grid_file)
         GRID_FILE="$2"; shift 2;;
+      --flexres)
+        FLEXRES="$2"; shift 2;;
       --pdb2pqr_ph)
         PDB2PQR_PH="$2"; shift 2;;
       --pdb2pqr_ff)
@@ -439,11 +442,12 @@ fi
 read CX CY CZ <<<$(awk -F '=' '/center_[xyz]/{gsub(/[[:space:]]/,"",$2);printf "%s ",$2}' "$GRIDBOX")
 read SX SY SZ <<<$(awk -F '=' '/size_[xyz]/{gsub(/[[:space:]]/,"",$2);printf "%s ",$2}'  "$GRIDBOX")
 
-#──────────────── 5. Receptor PDBQT (tek adım) ──────────────────────
+#──────────────── 5. Receptor PDBQT (rigid or flex split) ──────────────────────
+RIGID_RECEPTOR_PDBQT="${PDB}_receptor.pdbqt"
+FLEX_RECEPTOR_PDBQT=""
 mk_prepare_rec_cmd=(
   "$MK_PREP_REC"
   --read_pdb "${PDB}_rec_raw.pdb"
-  --write_pdbqt "${PDB}_receptor.pdbqt"
   --box_center "$CX" "$CY" "$CZ"
   --box_size "$SX" "$SY" "$SZ"
 )
@@ -453,10 +457,21 @@ fi
 if [ -n "$MKREC_DEFAULT_ALTLOC" ]; then
   mk_prepare_rec_cmd+=(--default_altloc "$MKREC_DEFAULT_ALTLOC")
 fi
+if [ -n "$FLEXRES" ]; then
+  mk_prepare_rec_cmd+=(-o "${PDB}" -p -j -f "$FLEXRES")
+  RIGID_RECEPTOR_PDBQT="${PDB}_rigid.pdbqt"
+  FLEX_RECEPTOR_PDBQT="${PDB}_flex.pdbqt"
+else
+  mk_prepare_rec_cmd+=(--write_pdbqt "${RIGID_RECEPTOR_PDBQT}")
+fi
 if ! "${mk_prepare_rec_cmd[@]}"; then
+  if [ -n "$FLEXRES" ]; then
+    echo "Error: flexible receptor preparation failed for residues: $FLEXRES" >&2
+    exit 1
+  fi
   echo "Warning: mk_prepare_receptor.py failed; attempting OpenBabel fallback" >&2
   if command -v obabel >/dev/null 2>&1; then
-    if ! obabel -ipdb "${PDB}_rec_raw.pdb" -opdbqt -O "${PDB}_receptor.pdbqt" --partialcharge gasteiger -p "$PDB2PQR_PH"; then
+    if ! obabel -ipdb "${PDB}_rec_raw.pdb" -opdbqt -O "${RIGID_RECEPTOR_PDBQT}" --partialcharge gasteiger -p "$PDB2PQR_PH"; then
       echo "Error: OpenBabel receptor preparation fallback failed" >&2
       exit 1
     fi
@@ -521,12 +536,15 @@ fi
 #──────────────── 7. Docking – AutoDock Vina ────────────────────────
 vina_cmd=(
   "$VINA_BIN"
-  --receptor "${PDB}_receptor.pdbqt"
+  --receptor "${RIGID_RECEPTOR_PDBQT}"
   --ligand "${PDB}_ligand.pdbqt"
   --config "$GRIDBOX"
   --exhaustiveness "$VINA_EXHAUSTIVENESS"
   --out "${PDB}_out_vina.pdbqt"
 )
+if [ -n "$FLEX_RECEPTOR_PDBQT" ]; then
+  vina_cmd+=(--flex "${FLEX_RECEPTOR_PDBQT}")
+fi
 if [ -n "$VINA_NUM_MODES" ]; then
   vina_cmd+=(--num_modes "$VINA_NUM_MODES")
 fi
@@ -543,7 +561,13 @@ fi
 
 #──────────────── 8. Çıktıları klasöre taşı ─────────────────────────
 mkdir -p "$OUTDIR"
-mv "${PDB}_receptor.pdbqt"      "$OUTDIR/"
+mv "${RIGID_RECEPTOR_PDBQT}"      "$OUTDIR/"
+if [ -n "$FLEX_RECEPTOR_PDBQT" ]; then
+  mv "${FLEX_RECEPTOR_PDBQT}" "$OUTDIR/"
+fi
+if [ -f "${PDB}.json" ]; then
+  mv "${PDB}.json" "$OUTDIR/"
+fi
 mv "${PDB}_ligand.pdbqt"   "$OUTDIR/"
 mv "${PDB}_out_vina.pdbqt" "$OUTDIR/"
 mv "$GRIDBOX"              "$OUTDIR/"

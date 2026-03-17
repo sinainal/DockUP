@@ -37,6 +37,7 @@ KIND_ORDER: tuple[str, ...] = (
 )
 
 DOCKING_CONFIG_DEFAULTS: dict[str, Any] = {
+    "docking_mode": "standard",
     "pdb2pqr_ph": 7.4,
     "pdb2pqr_ff": "AMBER",
     "pdb2pqr_ffout": "AMBER",
@@ -123,8 +124,41 @@ def _normalize_receptor_id(raw: Any) -> str:
     return str(raw or "").strip().upper()
 
 
-def _normalize_selection_map(raw_map: Any) -> dict[str, dict[str, str]]:
-    normalized: dict[str, dict[str, str]] = {}
+def _normalize_flex_residue_rows(raw: Any) -> list[dict[str, str]]:
+    if isinstance(raw, str):
+        values = [part.strip() for part in raw.split(",") if part.strip()]
+    elif isinstance(raw, list):
+        values = raw
+    else:
+        return []
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in values:
+        if isinstance(item, str):
+            parts = [part.strip() for part in item.split(":") if part.strip()]
+            if len(parts) < 2:
+                continue
+            chain = parts[0]
+            resno = parts[1]
+            resname = parts[2].upper() if len(parts) > 2 else ""
+        elif isinstance(item, dict):
+            chain = str(item.get("chain") or "").strip()
+            resno = str(item.get("resno") or item.get("resid") or "").strip()
+            resname = str(item.get("resname") or item.get("residue_name") or "").strip().upper()
+        else:
+            continue
+        if not chain or not resno:
+            continue
+        key = (chain, resno, resname)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({"chain": chain, "resno": resno, "resname": resname})
+    return normalized
+
+
+def _normalize_selection_map(raw_map: Any) -> dict[str, dict[str, Any]]:
+    normalized: dict[str, dict[str, Any]] = {}
     if not isinstance(raw_map, dict):
         return normalized
     for raw_key, raw_val in raw_map.items():
@@ -135,6 +169,7 @@ def _normalize_selection_map(raw_map: Any) -> dict[str, dict[str, str]]:
         normalized[pdb_id] = {
             "chain": str(source.get("chain", "all") or "all"),
             "ligand_resname": str(source.get("ligand_resname", "") or ""),
+            "flex_residues": _normalize_flex_residue_rows(source.get("flex_residues") or source.get("flex_residue_spec") or []),
         }
     return normalized
 
@@ -249,14 +284,14 @@ def load_state_cache() -> None:
     known_ids = {item.get("pdb_id", "") for item in cached_meta}
     if known_ids:
         STATE["selection_map"] = {
-            pid: STATE["selection_map"].get(pid, {"chain": "all", "ligand_resname": ""})
+            pid: STATE["selection_map"].get(pid, {"chain": "all", "ligand_resname": "", "flex_residues": []})
             for pid in known_ids
             if pid
         }
     else:
         STATE["selection_map"] = {}
     for pdb_id in known_ids:
-        STATE["selection_map"].setdefault(pdb_id, {"chain": "all", "ligand_resname": ""})
+        STATE["selection_map"].setdefault(pdb_id, {"chain": "all", "ligand_resname": "", "flex_residues": []})
     if STATE["receptor_meta"]:
         selected = _normalize_receptor_id(STATE.get("selected_receptor", ""))
         if selected not in known_ids:

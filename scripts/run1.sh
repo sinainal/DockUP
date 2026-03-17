@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[ $# -ge 3 ] || { echo "Usage: $0 <PDBID> <CHAIN> <LIGAND_RESNAME> [--lig_spec /path/to_ligand.sdf] [--pdb_file /path/to/receptor.pdb] [--grid_pad value|x,y,z] [--grid_file path_to_gridbox.txt] [--run_id N] [--out_root /path/to/output_root] [--pdb2pqr_ph value] [--pdb2pqr_ff name] [--pdb2pqr_ffout name] [--pdb2pqr_nodebump 1|0] [--pdb2pqr_keep_chain 1|0] [--mkrec_allow_bad_res 1|0] [--mkrec_default_altloc A] [--vina_exhaustiveness N] [--vina_num_modes N] [--vina_energy_range E] [--vina_cpu N] [--vina_seed N]"; exit 1; }
+[ $# -ge 3 ] || { echo "Usage: $0 <PDBID> <CHAIN> <LIGAND_RESNAME> [--lig_spec /path/to_ligand.sdf] [--pdb_file /path/to/receptor.pdb] [--grid_pad value|x,y,z] [--grid_file path_to_gridbox.txt] [--flexres A:114[,A:118]] [--run_id N] [--out_root /path/to/output_root] [--pdb2pqr_ph value] [--pdb2pqr_ff name] [--pdb2pqr_ffout name] [--pdb2pqr_nodebump 1|0] [--pdb2pqr_keep_chain 1|0] [--mkrec_allow_bad_res 1|0] [--mkrec_default_altloc A] [--vina_exhaustiveness N] [--vina_num_modes N] [--vina_energy_range E] [--vina_cpu N] [--vina_seed N]"; exit 1; }
 
 # ── Environment Discovery ───────────────────────────────────────────────────
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -13,6 +13,23 @@ fi
 # Determine the best Python to use
 DOCKUP_PYTHON="${DOCKUP_PYTHON:-python3}"
 DOCKUP_PYMOL_PYTHON="${DOCKUP_PYMOL_PYTHON:-$DOCKUP_PYTHON}"
+DOCKUP_BIN_DIR=""
+if [ -x "$DOCKUP_PYTHON" ]; then
+  DOCKUP_BIN_DIR=$(dirname "$DOCKUP_PYTHON")
+  export PATH="$DOCKUP_BIN_DIR:$PATH"
+fi
+MK_EXPORT_BIN="mk_export.py"
+if [ -n "$DOCKUP_BIN_DIR" ] && [ -x "$DOCKUP_BIN_DIR/mk_export.py" ]; then
+  MK_EXPORT_BIN="$DOCKUP_BIN_DIR/mk_export.py"
+fi
+PLIP_CMD=()
+if [ -n "$DOCKUP_BIN_DIR" ] && [ -x "$DOCKUP_BIN_DIR/plip" ]; then
+  PLIP_CMD=("$DOCKUP_BIN_DIR/plip")
+elif "$DOCKUP_PYTHON" -c "import plip" >/dev/null 2>&1; then
+  PLIP_CMD=("$DOCKUP_PYTHON" -m plip.plipcmd)
+elif command -v plip >/dev/null 2>&1; then
+  PLIP_CMD=("$(command -v plip)")
+fi
 export DOCKUP_PYTHON
 export DOCKUP_PYMOL_PYTHON
 
@@ -26,6 +43,7 @@ OUTDIR=""
 LOG=""
 BEST_AFF_VAL=""
 RMSD_VAL=""
+FLEXRES=""
 
 # Normalize optional path arguments so they remain valid after switching to tmpdir
 shifted_args=("$@")
@@ -92,6 +110,9 @@ while [ "$idx" -lt "${#shifted_args[@]}" ]; do
       ;;
     --lig_spec|--lig-spec)
       LIG_SPEC_PATH="${shifted_args[$((idx + 1))]:-}"
+      ;;
+    --flexres)
+      FLEXRES="${shifted_args[$((idx + 1))]:-}"
       ;;
   esac
   dock_args+=("$arg")
@@ -163,10 +184,110 @@ shopt -u dotglob
 
 # locate vina output once (used for pose extraction + RMSD)
 vina_out=$(find "$OUTDIR" -maxdepth 2 -name "${PDB}_out_vina.pdbqt" -print -quit || true)
+meeko_receptor_json=$(find "$OUTDIR" -maxdepth 2 -name "${PDB}.json" -print -quit || true)
+pose_sdf="$OUTDIR/${PDB}_pose.sdf"
+exported_receptor_pdb="$OUTDIR/${PDB}_rec_docked.pdb"
+plip_receptor_pdb="$OUTDIR/${PDB}_rec_raw.pdb"
+
+convert_sdf_to_pose_pdb() {
+  local sdf_path="$1"
+  local pdb_path="$2"
+  "$DOCKUP_PYTHON" - "$sdf_path" "$pdb_path" <<'PY' >/dev/null 2>&1
+import sys
+from pathlib import Path
+
+from rdkit import Chem
+
+sdf_path = Path(sys.argv[1])
+pdb_path = Path(sys.argv[2])
+
+supplier = Chem.SDMolSupplier(str(sdf_path), removeHs=False)
+mol = next((mol for mol in supplier if mol is not None), None)
+if mol is None:
+    raise SystemExit(1)
+
+conf = mol.GetConformer()
+lines = []
+serial = 1
+for atom in mol.GetAtoms():
+    if atom.GetAtomicNum() == 1:
+        continue
+    pos = conf.GetAtomPosition(atom.GetIdx())
+    name = atom.GetSymbol()
+    elem = atom.GetSymbol().upper()
+    lines.append(
+        f"HETATM{serial:5d} {name:<4} UNL L   1    "
+        f"{pos.x:8.3f}{pos.y:8.3f}{pos.z:8.3f}  1.00  0.00           {elem:>2}"
+    )
+    serial += 1
+
+pdb_path.write_text("\n".join(lines) + "\nEND\n")
+PY
+}
+
+build_complex_pdb() {
+  local receptor_pdb="$1"
+  local ligand_pdb="$2"
+  local out_pdb="$3"
+  local strip_receptor_hetatm="${4:-0}"
+  "$DOCKUP_PYTHON" - "$receptor_pdb" "$ligand_pdb" "$out_pdb" "$strip_receptor_hetatm" <<'PY' >/dev/null 2>&1
+import sys
+from pathlib import Path
+
+rec = Path(sys.argv[1])
+lig = Path(sys.argv[2])
+out = Path(sys.argv[3])
+strip_receptor_hetatm = sys.argv[4] == "1"
+
+def read_atoms(path, include_hetatm=True):
+    lines = []
+    with path.open() as handle:
+        for line in handle:
+            if line.startswith("ATOM"):
+                element = (line[76:78].strip() or line[12:16].strip()[:1]).upper()
+                if element == "H":
+                    continue
+                lines.append(line.rstrip())
+                continue
+            if include_hetatm and line.startswith("HETATM"):
+                element = (line[76:78].strip() or line[12:16].strip()[:1]).upper()
+                if element == "H":
+                    continue
+                lines.append(line.rstrip())
+    return lines
+
+rec_lines = read_atoms(rec, include_hetatm=not strip_receptor_hetatm)
+lig_lines = read_atoms(lig, include_hetatm=True)
+if not rec_lines or not lig_lines:
+    raise SystemExit(1)
+
+out.write_text("\n".join(rec_lines + lig_lines) + "\nEND\n")
+PY
+}
+
+if [ -n "$FLEXRES" ] && [ -n "$vina_out" ] && [ -f "$vina_out" ] && [ -f "$meeko_receptor_json" ]; then
+  export_log="$OUTDIR/meeko_export.log"
+  if "$MK_EXPORT_BIN" "$vina_out" -j "$meeko_receptor_json" -s "$pose_sdf" -p "$exported_receptor_pdb" >"$export_log" 2>&1; then
+    if [ -f "$pose_sdf" ] && convert_sdf_to_pose_pdb "$pose_sdf" "$OUTDIR/${PDB}_pose.pdb"; then
+      :
+    else
+      echo "Warning: flexible pose export conversion failed; see $export_log" | tee -a "$LOG"
+    fi
+    if [ -f "$exported_receptor_pdb" ]; then
+      :
+    else
+      echo "Warning: flexible receptor export missing after mk_export; see $export_log" | tee -a "$LOG"
+    fi
+  else
+    echo "Warning: flexible docking export failed; see $export_log" | tee -a "$LOG"
+  fi
+elif [ -n "$FLEXRES" ]; then
+  echo "Warning: flexible docking export skipped because receptor JSON or vina output is missing." | tee -a "$LOG"
+fi
 
 # prepare docked pose PDB (for PLIP/interaction map)
 pose_pdb="$OUTDIR/${PDB}_pose.pdb"
-if [ -n "$vina_out" ] && [ -f "$vina_out" ]; then
+if [ ! -f "$pose_pdb" ] && [ -n "$vina_out" ] && [ -f "$vina_out" ]; then
   "$DOCKUP_PYTHON" - "$vina_out" "$pose_pdb" <<'PY' >/dev/null 2>&1 || true
 import sys
 from pathlib import Path
@@ -214,46 +335,28 @@ fi
 
 # build receptor+ligand complex for PLIP
 complex_pdb="$OUTDIR/${PDB}_complex.pdb"
-if [ -f "$OUTDIR/${PDB}_rec_raw.pdb" ] && [ -f "$pose_pdb" ]; then
-  "$DOCKUP_PYTHON" - "$OUTDIR/${PDB}_rec_raw.pdb" "$pose_pdb" "$complex_pdb" <<'PY' >/dev/null 2>&1 || true
-import sys
-from pathlib import Path
-
-rec = Path(sys.argv[1])
-lig = Path(sys.argv[2])
-out = Path(sys.argv[3])
-
-def read_atoms(path):
-    lines = []
-    with path.open() as handle:
-        for line in handle:
-            if line.startswith(("ATOM", "HETATM")):
-                lines.append(line.rstrip())
-    return lines
-
-rec_lines = read_atoms(rec)
-lig_lines = read_atoms(lig)
-if not rec_lines or not lig_lines:
-    raise SystemExit(0)
-
-out.write_text("\n".join(rec_lines + lig_lines) + "\nEND\n")
-PY
+if [ -f "$plip_receptor_pdb" ] && [ -f "$pose_pdb" ]; then
+  if [ -n "$FLEXRES" ]; then
+    build_complex_pdb "$plip_receptor_pdb" "$pose_pdb" "$complex_pdb" "1" || true
+  else
+    build_complex_pdb "$plip_receptor_pdb" "$pose_pdb" "$complex_pdb" "0" || true
+  fi
 fi
 
 # run PLIP + interaction map generation (best-effort)
 if [ -f "$complex_pdb" ]; then
-  if command -v plip >/dev/null 2>&1; then
+  if [ "${#PLIP_CMD[@]}" -gt 0 ]; then
     plip_dir="$OUTDIR/plip"
     mkdir -p "$plip_dir"
     plip_log="$plip_dir/plip.log"
     map_log="$plip_dir/interaction_map.log"
-    if plip -f "$complex_pdb" -o "$plip_dir" -x -q --name report >"$plip_log" 2>&1; then
+    if "${PLIP_CMD[@]}" -f "$complex_pdb" -o "$plip_dir" -x -q --name report >"$plip_log" 2>&1; then
       if [ -f "$plip_dir/report.xml" ]; then
         if ! "$DOCKUP_PYTHON" "$script_dir/build_interaction_map.py" \
           --report "$plip_dir/report.xml" \
           --complex "$complex_pdb" \
           --pose "$pose_pdb" \
-          --receptor "$OUTDIR/${PDB}_rec_raw.pdb" \
+          --receptor "$plip_receptor_pdb" \
           --output "$OUTDIR" >"$map_log" 2>&1; then
           echo "Warning: interaction map generation failed; see $map_log" | tee -a "$LOG"
         fi
@@ -319,8 +422,10 @@ Chem.MolToPDBFile(mol, r"$rmsd_dir/ligand.pdb")
 PY
   fi
 
-  # locate vina output (typically inside ${PDB}_results/) and convert first model to PDB
-  if [ -n "$vina_out" ] && [ -f "$vina_out" ]; then
+  # Prefer exported pose PDB when available; otherwise convert first Vina model.
+  if [ -f "$pose_pdb" ]; then
+    cp -f "$pose_pdb" "$rmsd_dir/docked.pdb"
+  elif [ -n "$vina_out" ] && [ -f "$vina_out" ]; then
     "$DOCKUP_PYTHON" - "$vina_out" "$rmsd_dir/docked.pdb" <<'PY' >/dev/null 2>&1 || true
 import sys
 from pathlib import Path
@@ -370,10 +475,10 @@ PY
     fi
   fi
   # create PyMOL scene with receptor, reference ligand, and docked pose
-  if [ -f "$OUTDIR/${PDB}_rec_raw.pdb" ] && [ -f "$rmsd_dir/ligand.pdb" ] && [ -f "$rmsd_dir/docked.pdb" ]; then
+  if [ -f "$plip_receptor_pdb" ] && [ -f "$rmsd_dir/ligand.pdb" ] && [ -f "$rmsd_dir/docked.pdb" ]; then
     pse_dir="$OUTDIR/${PDB}_results"
     mkdir -p "$pse_dir"
-    PSE_REC="$OUTDIR/${PDB}_rec_raw.pdb" \
+    PSE_REC="$plip_receptor_pdb" \
     PSE_REF="$rmsd_dir/ligand.pdb" \
     PSE_DOCK="$rmsd_dir/docked.pdb" \
     PSE_OUT="$pse_dir/${PDB}_poses.pse" \
@@ -422,12 +527,13 @@ fi
 
 rm -f "$OUTDIR/stats.json"
 
-BEST_AFF_ENV="$BEST_AFF_VAL" RMSD_ENV="$RMSD_VAL" OUTDIR_ENV="$OUTDIR" "$DOCKUP_PYTHON" - <<'PY'
+BEST_AFF_ENV="$BEST_AFF_VAL" RMSD_ENV="$RMSD_VAL" OUTDIR_ENV="$OUTDIR" FLEXRES_ENV="$FLEXRES" "$DOCKUP_PYTHON" - <<'PY'
 import json, os
 
 outdir = os.environ['OUTDIR_ENV']
 best = os.environ.get('BEST_AFF_ENV') or None
 rmsd = os.environ.get('RMSD_ENV') or None
+flexres = os.environ.get('FLEXRES_ENV') or ""
 
 def to_float(value):
     if value in (None, '', 'null'):
@@ -440,6 +546,8 @@ def to_float(value):
 result_entry = {
     'best_affinity': to_float(best),
     'rmsd': to_float(rmsd),
+    'docking_mode': 'flexible' if flexres else 'standard',
+    'flex_residues': [item.strip() for item in flexres.split(',') if item.strip()],
 }
 
 results = {os.path.basename(outdir): result_entry}

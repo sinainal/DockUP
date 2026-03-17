@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 from .. import state as runtime_state
 from ..config import BASE, DATA_DIR, DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR
 from ..helpers import (
+    normalize_flex_residue_list,
     normalize_docking_config,
     relative_to_base,
     resolve_dock_directory,
@@ -149,10 +150,13 @@ def _normalize_receptor_state() -> None:
         normalized_selection[pdb_id] = {
             "chain": str(source_sel.get("chain", "all") or "all"),
             "ligand_resname": str(source_sel.get("ligand_resname", "") or ""),
+            "flex_residues": normalize_flex_residue_list(
+                source_sel.get("flex_residues") or source_sel.get("flex_residue_spec") or []
+            ),
         }
 
     for item in normalized_meta:
-        normalized_selection.setdefault(item["pdb_id"], {"chain": "all", "ligand_resname": ""})
+        normalized_selection.setdefault(item["pdb_id"], {"chain": "all", "ligand_resname": "", "flex_residues": []})
 
     STATE["receptor_meta"] = normalized_meta
     STATE["selection_map"] = normalized_selection
@@ -313,6 +317,7 @@ def api_state() -> JSONResponse:
         "selected_receptor": STATE["selected_receptor"],
         "selected_ligand": STATE["selected_ligand"],
         "selected_chain": STATE["selected_chain"],
+        "selection_map": STATE.get("selection_map", {}),
         "active_ligands": STATE.get("active_ligands", []),
         "grid_file_path": STATE["grid_file_path"],
         "queue_count": len(STATE["queue"]),
@@ -601,9 +606,11 @@ def ligand_select(payload: SelectLigandPayload) -> JSONResponse:
     pdb_id = _normalize_receptor_id(payload.pdb_id)
     if pdb_id not in STATE.get("selection_map", {}):
         STATE["selection_map"][pdb_id] = {}
+    existing = STATE["selection_map"].get(pdb_id, {})
     STATE["selection_map"][pdb_id] = {
         "chain": payload.chain,
         "ligand_resname": payload.ligand,
+        "flex_residues": normalize_flex_residue_list(existing.get("flex_residues") or existing.get("flex_residue_spec") or []),
     }
     if pdb_id == STATE.get("selected_receptor"):
         STATE["selected_chain"] = payload.chain
@@ -666,12 +673,15 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
             normalized_incoming[pdb_id] = {
                 "chain": str(sel.get("chain", "all") or "all"),
                 "ligand_resname": str(sel.get("ligand_resname") or sel.get("ligand") or ""),
+                "flex_residues": normalize_flex_residue_list(
+                    sel.get("flex_residues") or sel.get("flex_residue_spec") or []
+                ),
             }
         for meta in STATE.get("receptor_meta", []):
             pid = _normalize_receptor_id(meta.get("pdb_id"))
             if not pid:
                 continue
-            normalized_incoming.setdefault(pid, {"chain": "all", "ligand_resname": ""})
+            normalized_incoming.setdefault(pid, {"chain": "all", "ligand_resname": "", "flex_residues": []})
         STATE["selection_map"] = normalized_incoming
         selected = _normalize_receptor_id(STATE.get("selected_receptor", ""))
         if selected and selected in STATE["selection_map"]:
@@ -720,79 +730,9 @@ def run_start(payload: RunStartPayload = RunStartPayload()) -> JSONResponse:
             return JSONResponse({"error": "Run already in progress."}, status_code=409)
         if not STATE["queue"]:
             return JSONResponse({"error": "Queue is empty."}, status_code=400)
-        manifest_path = DOCK_DIR / "manifest.tsv"
-        with manifest_path.open("w", encoding="utf-8") as handle:
-            for row in STATE["queue"]:
-                row_cfg = normalize_docking_config(row.get("docking_config") or STATE.get("docking_config") or {})
-                ligand_val = (
-                    row.get("ligand_resname")
-                    or row.get("ligand_name")
-                    or row.get("ligand")
-                    or ""
-                )
-                values = [
-                    row.get("pdb_id", ""),
-                    row.get("chain", ""),
-                    ligand_val,
-                    row.get("lig_spec", ""),
-                    row.get("pdb_file", ""),
-                    row.get("grid_pad", ""),
-                    row.get("grid_file", ""),
-                    row.get("force_run_id", ""),
-                    *config_to_manifest_values(row_cfg),
-                ]
-                values = [
-                    "__EMPTY__" if v is None or str(v) == "" else str(v)
-                    for v in values
-                ]
-                handle.write("\t".join(values) + "\n")
+        manifest_path = write_manifest(STATE["queue"], DOCK_DIR / "manifest.tsv")
         total_runs = sum(int(row.get("run_count") or 1) for row in STATE["queue"]) or 0
-        preview_cmd = ""
-        if STATE["queue"]:
-            first = STATE["queue"][0]
-            ligand_val = (
-                first.get("ligand_resname")
-                or first.get("ligand_name")
-                or first.get("ligand")
-                or ""
-            )
-            run_id_arg = "1"
-            forced_run_id = first.get("force_run_id")
-            if forced_run_id not in (None, "", "__EMPTY__"):
-                try:
-                    run_id_arg = str(int(forced_run_id))
-                except (TypeError, ValueError):
-                    run_id_arg = "1"
-
-            args = [
-                str(first.get("pdb_id", "")),
-                str(first.get("chain", "")),
-                str(ligand_val),
-                "--run_id",
-                run_id_arg,
-            ]
-            def _nonempty(val: str) -> bool:
-                return bool(val) and val != "__EMPTY__"
-
-            lig_spec = str(first.get("lig_spec", ""))
-            pdb_file = str(first.get("pdb_file", ""))
-            grid_pad = str(first.get("grid_pad", ""))
-            grid_file = str(first.get("grid_file", ""))
-            out_root = str(STATE.get("out_root", ""))
-
-            if _nonempty(lig_spec):
-                args += ["--lig_spec", lig_spec]
-            if _nonempty(pdb_file):
-                args += ["--pdb_file", pdb_file]
-            if _nonempty(grid_pad):
-                args += ["--grid_pad", grid_pad]
-            if _nonempty(grid_file):
-                args += ["--grid_file", grid_file]
-            if _nonempty(out_root):
-                args += ["--out_root", out_root]
-            append_docking_config_args(args, first.get("docking_config") or STATE.get("docking_config") or {})
-
-            preview_cmd = f"{BASE / 'scripts' / 'run1.sh'} " + " ".join(args)
+        preview_cmd = build_preview_command(STATE["queue"], str(STATE.get("out_root") or ""))
 
         session = register_run_session(
             STATE["out_root"],
@@ -862,6 +802,8 @@ def _prepare_resume_queue(item_id: str, replace_queue: bool = True) -> tuple[lis
                 "run_count": 1,
                 "force_run_id": int(item.get("force_run_id") or 1),
                 "docking_config": normalize_docking_config(item.get("docking_config") or STATE.get("docking_config") or {}),
+                "flex_residues": normalize_flex_residue_list(item.get("flex_residues") or item.get("flex_residue_spec") or []),
+                "flex_residue_spec": str(item.get("flex_residue_spec") or ""),
             }
         )
     if not queue_rows:
@@ -945,69 +887,10 @@ def run_recent_continue(payload: dict[str, Any]) -> JSONResponse:
         if not queue_rows:
             raise HTTPException(status_code=400, detail="No resume queue rows prepared.")
 
-        manifest_path = DOCK_DIR / "manifest.tsv"
-        with manifest_path.open("w", encoding="utf-8") as handle:
-            for row in STATE["queue"]:
-                row_cfg = normalize_docking_config(row.get("docking_config") or STATE.get("docking_config") or {})
-                ligand_val = (
-                    row.get("ligand_resname")
-                    or row.get("ligand_name")
-                    or row.get("ligand")
-                    or ""
-                )
-                values = [
-                    row.get("pdb_id", ""),
-                    row.get("chain", ""),
-                    ligand_val,
-                    row.get("lig_spec", ""),
-                    row.get("pdb_file", ""),
-                    row.get("grid_pad", ""),
-                    row.get("grid_file", ""),
-                    row.get("force_run_id", ""),
-                    *config_to_manifest_values(row_cfg),
-                ]
-                values = ["__EMPTY__" if v is None or str(v) == "" else str(v) for v in values]
-                handle.write("\t".join(values) + "\n")
+        manifest_path = write_manifest(STATE["queue"], DOCK_DIR / "manifest.tsv")
 
         total_runs = len(STATE["queue"])
-        preview_cmd = ""
-        if STATE["queue"]:
-            first = STATE["queue"][0]
-            ligand_val = (
-                first.get("ligand_resname")
-                or first.get("ligand_name")
-                or first.get("ligand")
-                or ""
-            )
-            run_id_arg = str(int(first.get("force_run_id") or 1))
-            args = [
-                str(first.get("pdb_id", "")),
-                str(first.get("chain", "")),
-                str(ligand_val),
-                "--run_id",
-                run_id_arg,
-            ]
-            def _nonempty(val: str) -> bool:
-                return bool(val) and val != "__EMPTY__"
-
-            lig_spec = str(first.get("lig_spec", ""))
-            pdb_file = str(first.get("pdb_file", ""))
-            grid_pad = str(first.get("grid_pad", ""))
-            grid_file = str(first.get("grid_file", ""))
-            out_root = str(STATE.get("out_root", ""))
-
-            if _nonempty(lig_spec):
-                args += ["--lig_spec", lig_spec]
-            if _nonempty(pdb_file):
-                args += ["--pdb_file", pdb_file]
-            if _nonempty(grid_pad):
-                args += ["--grid_pad", grid_pad]
-            if _nonempty(grid_file):
-                args += ["--grid_file", grid_file]
-            if _nonempty(out_root):
-                args += ["--out_root", out_root]
-            append_docking_config_args(args, first.get("docking_config") or STATE.get("docking_config") or {})
-            preview_cmd = f"{BASE / 'scripts' / 'run1.sh'} " + " ".join(args)
+        preview_cmd = build_preview_command(STATE["queue"], str(STATE.get("out_root") or ""))
 
         selected = meta.get("selected") if isinstance(meta, dict) else {}
         source_session_id = str((selected or {}).get("id") or "")

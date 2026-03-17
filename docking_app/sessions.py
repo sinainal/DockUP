@@ -339,6 +339,7 @@ def scan_recent_incomplete_rows(
             grid_pad = str(mrow.get("grid_pad") or "").strip()
             grid_file = str(mrow.get("grid_file") or "").strip()
             forced_run = str(mrow.get("force_run_id") or "").strip()
+            flex_residue_spec = str(mrow.get("flex_residue_spec") or "").strip()
             row_cfg = normalize_docking_config(
                 mrow.get("docking_config") or STATE.get("docking_config") or {}
             )
@@ -373,6 +374,8 @@ def scan_recent_incomplete_rows(
                     "padding": grid_pad,
                     "run_count": 1,
                     "force_run_id": rid,
+                    "flex_residues": list(mrow.get("flex_residues") or []),
+                    "flex_residue_spec": flex_residue_spec,
                     "docking_config": row_cfg,
                 }
 

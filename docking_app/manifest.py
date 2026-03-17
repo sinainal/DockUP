@@ -14,7 +14,9 @@ from typing import Any
 
 from .config import BASE, DOCK_DIR, WORKSPACE_DIR
 from .helpers import (
+    build_flex_residue_spec,
     normalize_docking_config,
+    normalize_flex_residue_list,
     read_json,
     relative_to_base,
     restore_manifest_value,
@@ -45,6 +47,7 @@ def config_to_manifest_values(cfg: dict[str, Any]) -> list[str]:
         "1" if normalized.get("pdb2pqr_keep_chain") else "0",
         "1" if normalized.get("mkrec_allow_bad_res") else "0",
         str(normalized.get("mkrec_default_altloc", "")),
+        str(normalized.get("docking_mode", "standard")),
         str(normalized.get("vina_exhaustiveness", "")),
         "" if normalized.get("vina_num_modes") is None else str(normalized.get("vina_num_modes")),
         "" if normalized.get("vina_energy_range") is None else str(normalized.get("vina_energy_range")),
@@ -57,18 +60,19 @@ def manifest_values_to_config(cols: list[str]) -> dict[str, Any]:
     """Deserialise TSV column strings back into a docking config dict."""
     return normalize_docking_config(
         {
-            "pdb2pqr_ph": restore_manifest_value(cols[8] if len(cols) > 8 else ""),
-            "pdb2pqr_ff": restore_manifest_value(cols[9] if len(cols) > 9 else ""),
-            "pdb2pqr_ffout": restore_manifest_value(cols[10] if len(cols) > 10 else ""),
-            "pdb2pqr_nodebump": restore_manifest_value(cols[11] if len(cols) > 11 else ""),
-            "pdb2pqr_keep_chain": restore_manifest_value(cols[12] if len(cols) > 12 else ""),
-            "mkrec_allow_bad_res": restore_manifest_value(cols[13] if len(cols) > 13 else ""),
-            "mkrec_default_altloc": restore_manifest_value(cols[14] if len(cols) > 14 else ""),
-            "vina_exhaustiveness": restore_manifest_value(cols[15] if len(cols) > 15 else ""),
-            "vina_num_modes": restore_manifest_value(cols[16] if len(cols) > 16 else ""),
-            "vina_energy_range": restore_manifest_value(cols[17] if len(cols) > 17 else ""),
-            "vina_cpu": restore_manifest_value(cols[18] if len(cols) > 18 else ""),
-            "vina_seed": restore_manifest_value(cols[19] if len(cols) > 19 else ""),
+            "pdb2pqr_ph": restore_manifest_value(cols[9] if len(cols) > 9 else ""),
+            "pdb2pqr_ff": restore_manifest_value(cols[10] if len(cols) > 10 else ""),
+            "pdb2pqr_ffout": restore_manifest_value(cols[11] if len(cols) > 11 else ""),
+            "pdb2pqr_nodebump": restore_manifest_value(cols[12] if len(cols) > 12 else ""),
+            "pdb2pqr_keep_chain": restore_manifest_value(cols[13] if len(cols) > 13 else ""),
+            "mkrec_allow_bad_res": restore_manifest_value(cols[14] if len(cols) > 14 else ""),
+            "mkrec_default_altloc": restore_manifest_value(cols[15] if len(cols) > 15 else ""),
+            "docking_mode": restore_manifest_value(cols[16] if len(cols) > 16 else ""),
+            "vina_exhaustiveness": restore_manifest_value(cols[17] if len(cols) > 17 else ""),
+            "vina_num_modes": restore_manifest_value(cols[18] if len(cols) > 18 else ""),
+            "vina_energy_range": restore_manifest_value(cols[19] if len(cols) > 19 else ""),
+            "vina_cpu": restore_manifest_value(cols[20] if len(cols) > 20 else ""),
+            "vina_seed": restore_manifest_value(cols[21] if len(cols) > 21 else ""),
         }
     )
 
@@ -118,7 +122,7 @@ def parse_manifest_rows(manifest_path: Path) -> list[dict[str, str]]:
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         cols = line.split("\t")
-        cols += [""] * max(0, 20 - len(cols))
+        cols += [""] * max(0, 22 - len(cols))
         cfg = manifest_values_to_config(cols)
         rows.append(
             {
@@ -130,6 +134,8 @@ def parse_manifest_rows(manifest_path: Path) -> list[dict[str, str]]:
                 "grid_pad": restore_manifest_value(cols[5]),
                 "grid_file": restore_manifest_value(cols[6]),
                 "force_run_id": restore_manifest_value(cols[7]),
+                "flex_residue_spec": restore_manifest_value(cols[8]),
+                "flex_residues": normalize_flex_residue_list(restore_manifest_value(cols[8])),
                 "docking_config": cfg,
             }
         )
@@ -168,6 +174,7 @@ def write_manifest(queue: list[dict[str, Any]], manifest_path: Path | None = Non
                 row.get("grid_pad", ""),
                 row.get("grid_file", ""),
                 row.get("force_run_id", ""),
+                row.get("flex_residue_spec", "") or build_flex_residue_spec(row.get("flex_residues") or []),
                 *config_to_manifest_values(row_cfg),
             ]
             values = [
@@ -219,6 +226,7 @@ def build_preview_command(
     pdb_file = str(first.get("pdb_file", ""))
     grid_pad = str(first.get("grid_pad", ""))
     grid_file = str(first.get("grid_file", ""))
+    flex_residue_spec = str(first.get("flex_residue_spec", "") or build_flex_residue_spec(first.get("flex_residues") or []))
 
     if _nonempty(lig_spec):
         args += ["--lig_spec", lig_spec]
@@ -228,6 +236,8 @@ def build_preview_command(
         args += ["--grid_pad", grid_pad]
     if _nonempty(grid_file):
         args += ["--grid_file", grid_file]
+    if _nonempty(flex_residue_spec):
+        args += ["--flexres", flex_residue_spec]
     if _nonempty(out_root):
         args += ["--out_root", out_root]
     append_docking_config_args(

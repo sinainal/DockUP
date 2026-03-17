@@ -10,7 +10,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..config import BASE, DOCK_DIR, RECEPTOR_DIR
-from ..helpers import normalize_docking_config, read_json, write_json
+from ..helpers import build_flex_residue_spec, normalize_docking_config, normalize_flex_residue_list, read_json, write_json
 from ..services import _existing_files, _init_selection_map, _load_receptor_meta, _normalize_receptor_id
 from ..state import DOCKING_CONFIG_DEFAULTS, STATE
 
@@ -52,6 +52,8 @@ def save_config(payload: dict[str, Any]) -> StreamingResponse:
             "grid_size_z": grid.get("sz"),
             "run_count": global_runs, # Saving global setting for reference
             "padding": global_pad,     # Saving global setting for reference
+            "docking_mode": docking_cfg.get("docking_mode"),
+            "flex_residues": build_flex_residue_spec(sel.get("flex_residues") or sel.get("flex_residue_spec") or []),
             "pdb2pqr_ph": docking_cfg.get("pdb2pqr_ph"),
             "pdb2pqr_ff": docking_cfg.get("pdb2pqr_ff"),
             "pdb2pqr_ffout": docking_cfg.get("pdb2pqr_ffout"),
@@ -116,7 +118,8 @@ def load_config(file: UploadFile = File(...)) -> JSONResponse:
                 # Selection
                 selection_map[pdb_id] = {
                     "chain": str(row["chain"]) if pd.notna(row["chain"]) else "all",
-                    "ligand_resname": str(row["ligand"]) if pd.notna(row["ligand"]) else ""
+                    "ligand_resname": str(row["ligand"]) if pd.notna(row["ligand"]) else "",
+                    "flex_residues": normalize_flex_residue_list(row.get("flex_residues") if pd.notna(row.get("flex_residues")) else []),
                 }
                 
                 # Grid
@@ -145,6 +148,7 @@ def load_config(file: UploadFile = File(...)) -> JSONResponse:
 
                 loaded_docking_config = normalize_docking_config(
                     {
+                        "docking_mode": first_row.get("docking_mode"),
                         "pdb2pqr_ph": first_row.get("pdb2pqr_ph"),
                         "pdb2pqr_ff": first_row.get("pdb2pqr_ff"),
                         "pdb2pqr_ffout": first_row.get("pdb2pqr_ffout"),
