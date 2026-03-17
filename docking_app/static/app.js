@@ -571,7 +571,7 @@ function setCurrentResultFlexSelection(result = null) {
 }
 
 function getActiveFlexSelectionData() {
-  if ((appState.mode === "Results" || appState.mode === "Report") && currentResultFlexSelectionData) {
+  if (appState.mode === "Results" || appState.mode === "Report") {
     return currentResultFlexSelectionData;
   }
   return getFlexSelectionData(appState.selectedReceptor);
@@ -4132,7 +4132,8 @@ function bindEvents() {
       if (mode === appState.mode) return;
 
       const goingToResults = mode === "Results";
-      if (!goingToResults) {
+      const leavingResultsLikeMode = appState.mode === "Results" || appState.mode === "Report";
+      if (!goingToResults && !leavingResultsLikeMode) {
         // Clear configuration but keep receptors when switching docking modes
         appState.selectionMap = {};
         gridDataPerReceptor = {};
@@ -4144,6 +4145,9 @@ function bindEvents() {
         body: JSON.stringify({ mode: mode }),
       });
       appState.mode = mode;
+      if (mode !== "Results" && mode !== "Report") {
+        setCurrentResultFlexSelection(null);
+      }
       updateModeUI();
       scheduleUIStateSave();
 
