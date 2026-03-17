@@ -56,6 +56,8 @@ let hoverHandlerBound = false;
 let atomClickHandlerBound = false;
 let resultPoseByPdb = new Map();
 let currentResultPdbKey = "";
+let currentResultFlexSelectionData = null;
+let currentResultDockingMode = "standard";
 let viewerPoseSyncBound = false;
 let applyingProgrammaticResultPose = false;
 
@@ -210,6 +212,7 @@ function initElements() {
   els.showDockedLigand = document.getElementById("showDockedLigand");
   els.showInteractions = document.getElementById("showInteractions");
   els.showSticks = document.getElementById("showSticks");
+  els.showFlexResidues = document.getElementById("showFlexResidues");
   els.showGrid = document.getElementById("showGrid");
   els.interactionLegend = document.getElementById("interactionLegend");
   els.interactionHover = document.getElementById("interactionHover");
@@ -479,7 +482,10 @@ function computeResidueSelectionLabel(rows) {
   if (!normalized.length) return "";
   if (normalized.length === 1) {
     const row = normalized[0];
-    return row.chain ? `${row.resname || "RES"}_${row.chain}${row.resno}` : `${row.resname || "RES"}_${row.resno}`;
+    if (row.resname) {
+      return row.chain ? `${row.resname}_${row.chain}${row.resno}` : `${row.resname}_${row.resno}`;
+    }
+    return row.chain ? `${row.chain}:${row.resno}` : `${row.resno}`;
   }
   const resnames = new Set(normalized.map((row) => row.resname).filter(Boolean));
   if (resnames.size === 1) {
@@ -494,6 +500,17 @@ function buildResidueSelectionString(rows) {
     .map((row) => residueSelection(row.resno, row.chain !== "_" ? row.chain : ""))
     .filter(Boolean)
     .join(" or ");
+}
+
+function buildFlexSelectionData(rows) {
+  const normalized = normalizeFlexResidueList(rows);
+  if (!normalized.length) return null;
+  return {
+    label: computeResidueSelectionLabel(normalized),
+    selection: buildResidueSelectionString(normalized),
+    residues: normalized.map((row) => ({ ...row })),
+    spec: buildFlexResidueSpec(normalized),
+  };
 }
 
 function ensureSelectionMapEntry(pdbId) {
@@ -543,14 +560,21 @@ function clearFlexResiduesForReceptor(pdbId) {
 }
 
 function getFlexSelectionData(pdbId = appState.selectedReceptor) {
-  const rows = getFlexResiduesForReceptor(pdbId);
-  if (!rows.length) return null;
-  return {
-    label: computeResidueSelectionLabel(rows),
-    selection: buildResidueSelectionString(rows),
-    residues: rows.map((row) => ({ ...row })),
-    spec: buildFlexResidueSpec(rows),
-  };
+  return buildFlexSelectionData(getFlexResiduesForReceptor(pdbId));
+}
+
+function setCurrentResultFlexSelection(result = null) {
+  currentResultDockingMode = normalizeDockingMode(result?.docking_mode || "standard");
+  currentResultFlexSelectionData = buildFlexSelectionData(
+    result?.flex_residues || result?.flex_residue_spec || []
+  );
+}
+
+function getActiveFlexSelectionData() {
+  if ((appState.mode === "Results" || appState.mode === "Report") && currentResultFlexSelectionData) {
+    return currentResultFlexSelectionData;
+  }
+  return getFlexSelectionData(appState.selectedReceptor);
 }
 
 function getSelectedChainForReceptor(pdbId = appState.selectedReceptor) {
@@ -1542,8 +1566,8 @@ function renderFlexResidueHighlight() {
     try { comp.removeRepresentation(representations.flexResidueSearch); } catch (e) { }
     representations.flexResidueSearch = null;
   }
-  const selection = getFlexSelectionData(appState.selectedReceptor);
-  if (!comp || !selection?.selection) return;
+  const selection = getActiveFlexSelectionData();
+  if (!comp || !selection?.selection || !els.showFlexResidues?.checked) return;
   try {
     representations.flexResidueSearch = comp.addRepresentation("licorice", {
       sele: selection.selection,
@@ -2024,7 +2048,7 @@ function renderInteractionHighlights() {
 function renderInteractionLegend() {
   if (!els.interactionLegend) return;
   const types = Object.keys(interactionResiduesByType);
-  const flexSelection = getFlexSelectionData();
+  const flexSelection = getActiveFlexSelectionData();
   if (!types.length && !flexSelection) {
     els.interactionLegend.innerHTML = "";
     els.interactionLegend.style.display = "none";
@@ -2056,6 +2080,7 @@ function renderInteractionLegend() {
     const label = document.createElement("span");
     const flexCount = Array.isArray(flexSelection.residues) ? flexSelection.residues.length : 0;
     label.textContent = flexCount > 0 ? `Flex residues (${flexCount})` : "Flex residues";
+    chip.title = String(flexSelection.spec || flexSelection.label || "Flex residues");
     chip.appendChild(swatch);
     chip.appendChild(label);
     els.interactionLegend.appendChild(chip);
@@ -2182,6 +2207,7 @@ function renderResultsTable() {
       item.addEventListener("click", () => {
         els.resultsTable.querySelectorAll(".table-row:not(.header)").forEach(r => r.classList.remove("selected"));
         item.classList.add("selected");
+        setCurrentResultFlexSelection(null);
         renderResultDetail({ ...row, view: "average" });
         renderResidueTable([]);
         interactionResiduesByType = {};
@@ -2336,10 +2362,12 @@ function highlightInteractionBond(inter, selectedIdx) {
 function renderResultDetail(result) {
   if (!els.resultDetail) return;
   if (!result) {
+    setCurrentResultFlexSelection(null);
     els.resultDetail.innerHTML = '<div class="helper">Select a run from the table to preview details.</div>';
     return;
   }
   if (result.view === "average") {
+    setCurrentResultFlexSelection(null);
     els.resultDetail.innerHTML = `
       <div class="result-detail-grid">
         <div class="result-detail-item">
@@ -2373,6 +2401,10 @@ function renderResultDetail(result) {
   els.resultDetail.innerHTML = `
     <div class="result-detail-grid">
       <div class="result-detail-item">
+        <div class="result-detail-label">Mode</div>
+        <div class="result-detail-value">${normalizeDockingMode(result.docking_mode || "standard") === "flexible" ? "Flexible" : "Standard"}</div>
+      </div>
+      <div class="result-detail-item">
         <div class="result-detail-label">PDB</div>
         <div class="result-detail-value">${result.pdb_id || "-"}</div>
       </div>
@@ -2405,6 +2437,10 @@ function renderResultDetail(result) {
         <div class="result-detail-value">${result.residue_count ?? "-"}</div>
       </div>
       <div class="result-detail-item">
+        <div class="result-detail-label">Flex Residues</div>
+        <div class="result-detail-value">${(normalizeFlexResidueList(result.flex_residues || result.flex_residue_spec || []).map((row) => row.chain ? `${row.chain}:${row.resno}` : row.resno).join(", ")) || "-"}</div>
+      </div>
+      <div class="result-detail-item">
         <div class="result-detail-label">Folder</div>
         <div class="result-detail-value">${result.result_dir || "-"}</div>
       </div>
@@ -2421,6 +2457,10 @@ async function loadResultDetail(resultDir) {
     body: JSON.stringify({ result_dir: resultDir }),
   });
   const result = data.result || {};
+  setCurrentResultFlexSelection(result);
+  if (currentResultFlexSelectionData && els.showFlexResidues) {
+    els.showFlexResidues.checked = true;
+  }
   const interactions = data.interactions || [];
   renderResultDetail(result);
   const residues = data.residues || [];
@@ -3014,6 +3054,7 @@ function saveUIState() {
         showDockedLigand: Boolean(els.showDockedLigand?.checked),
         showInteractions: appState.mode === "Results" ? true : Boolean(els.showInteractions?.checked),
         showSticks: Boolean(els.showSticks?.checked),
+        showFlexResidues: Boolean(els.showFlexResidues?.checked),
         showGrid: Boolean(els.showGrid?.checked),
         fixedGridSize: String(els.fixedGridSize?.value || ""),
         testMode: Boolean(document.getElementById("testModeCheck")?.checked),
@@ -3110,6 +3151,7 @@ async function restoreUIState() {
     els.showInteractions.checked = appState.mode === "Results" ? true : Boolean(ui.showInteractions);
   }
   if (els.showSticks && ui.showSticks !== undefined) els.showSticks.checked = Boolean(ui.showSticks);
+  if (els.showFlexResidues && ui.showFlexResidues !== undefined) els.showFlexResidues.checked = Boolean(ui.showFlexResidues);
   if (els.showGrid && ui.showGrid !== undefined) els.showGrid.checked = Boolean(ui.showGrid);
   if (els.fixedGridSize && ui.fixedGridSize !== undefined) els.fixedGridSize.value = String(ui.fixedGridSize);
   const testModeEl = document.getElementById("testModeCheck");
@@ -3939,17 +3981,17 @@ function renderQueueTable(queue) {
     // Table Header
     const tableHeader = document.createElement("div");
     tableHeader.className = "table-row header";
-    tableHeader.style.gridTemplateColumns = "0.5fr 0.4fr 1fr 1.2fr 0.55fr 0.4fr";
+    tableHeader.style.gridTemplateColumns = "0.6fr 0.5fr 0.4fr 1fr 1.2fr 0.4fr";
     tableHeader.style.borderBottom = "1px solid var(--border)";
     tableHeader.style.background = "var(--surface-1)";
-    tableHeader.innerHTML = "<div>PDB</div><div>Chain</div><div>Ligand</div><div>Grid (Center / Size)</div><div>Mode</div><div>Runs</div>";
+    tableHeader.innerHTML = "<div>Mode</div><div>PDB</div><div>Chain</div><div>Ligand</div><div>Grid (Center / Size)</div><div>Runs</div>";
     batchContainer.appendChild(tableHeader);
 
     // Rows
     items.forEach(item => {
       const row = document.createElement("div");
       row.className = "table-row";
-      row.style.gridTemplateColumns = "0.5fr 0.4fr 1fr 1.2fr 0.55fr 0.4fr";
+      row.style.gridTemplateColumns = "0.6fr 0.5fr 0.4fr 1fr 1.2fr 0.4fr";
       row.style.fontSize = "12px";
 
       // Ligand
@@ -3965,14 +4007,13 @@ function renderQueueTable(queue) {
       }
       const dockingMode = normalizeDockingMode(item?.docking_config?.docking_mode || item?.docking_mode || "standard");
       const modeLabel = dockingMode === "flexible" ? "Flexible" : "Standard";
-      const modeClass = dockingMode === "flexible" ? "queue-mode-chip is-flexible" : "queue-mode-chip";
 
       row.innerHTML = `
+            <div class="queue-mode-text">${modeLabel}</div>
             <div>${item.pdb_id}</div>
             <div>${item.chain}</div>
             <div title="${ligDisplay}" style="overflow:hidden;text-overflow:ellipsis;">${ligDisplay}</div>
             <div class="queue-grid-cell">${gridDisplay}</div>
-            <div><span class="${modeClass}">${modeLabel}</span></div>
             <div>${item.run_count || 1}</div>
         `;
       batchContainer.appendChild(row);
@@ -4635,7 +4676,7 @@ function bindEvents() {
     });
   }
   // Viewer controls
-  [els.colorScheme, els.viewerChain, els.showSurface, els.showNativeLigand, els.showDockedLigand, els.showInteractions, els.showSticks].forEach((el) => {
+  [els.colorScheme, els.viewerChain, els.showSurface, els.showNativeLigand, els.showDockedLigand, els.showInteractions, els.showSticks, els.showFlexResidues].forEach((el) => {
     if (el) {
       el.addEventListener("change", async () => {
         if (el === els.viewerChain && appState.selectedReceptor && appState.mode !== "Results" && appState.mode !== "Report") {

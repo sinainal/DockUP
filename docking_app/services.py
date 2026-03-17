@@ -474,6 +474,8 @@ def _parse_results_folder(folder: Path) -> dict[str, Any] | None:
         payload = data.get(first_key, {}) or {}
     best_affinity = _safe_float(payload.get("best_affinity"))
     rmsd = _safe_float(payload.get("rmsd"))
+    docking_mode = normalize_docking_config({"docking_mode": payload.get("docking_mode")}).get("docking_mode", "standard")
+    flex_residues = normalize_flex_residue_list(payload.get("flex_residues") or payload.get("flex_residue_spec") or [])
 
     pdb_id = folder.name
     run_id = None
@@ -582,6 +584,8 @@ def _parse_results_folder(folder: Path) -> dict[str, Any] | None:
         "run_id": run_id,
         "best_affinity": best_affinity,
         "rmsd": rmsd,
+        "docking_mode": docking_mode,
+        "flex_residues": flex_residues,
         "ligand_resname": ligand_resname,
         "ligand_display_name": ligand_display,
         "ligand_chain": ligand_chain,
