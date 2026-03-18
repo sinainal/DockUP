@@ -591,6 +591,20 @@ function normalizeSelectionMapState(rawMap) {
   return next;
 }
 
+function hydrateGridDataFromQueue(queueRows = appState.queueData || []) {
+  const rows = Array.isArray(queueRows) ? queueRows : [];
+  if (!rows.length) return;
+  const next = { ...(gridDataPerReceptor || {}) };
+  rows.forEach((row) => {
+    const pdbId = String(row?.pdb_id || "").trim().toUpperCase();
+    if (!pdbId || next[pdbId]) return;
+    const grid = row?.grid_params;
+    if (!grid || typeof grid !== "object") return;
+    next[pdbId] = normalizeQueueGrid(grid);
+  });
+  gridDataPerReceptor = next;
+}
+
 function getFlexResiduesForReceptor(pdbId = appState.selectedReceptor) {
   const row = ensureSelectionMapEntry(pdbId);
   return row ? normalizeFlexResidueList(row.flex_residues || []) : [];
@@ -920,6 +934,8 @@ async function loadState() {
     appState.runStatus = data.run_status || "idle";
     appState.activeRunOutRoot = String(data.run_out_root || appState.activeRunOutRoot || "").trim();
     appState.dockingConfig = normalizeDockingConfig(data.docking_config || appState.dockingConfig || DEFAULT_DOCKING_CONFIG);
+    appState.resultsRootPath = String(data.results_root_path || appState.resultsRootPath || RESULTS_DOCK_ROOT).trim() || RESULTS_DOCK_ROOT;
+    hydrateGridDataFromQueue(appState.queueData);
 
     if (els.runCount) els.runCount.value = data.runs || 1;
     if (els.gridPad) els.gridPad.value = data.grid_pad || "";
@@ -930,8 +946,7 @@ async function loadState() {
       els.outRootName.value = data.out_root_name || "";
     }
     if (els.resultsRootPath) {
-      els.resultsRootPath.value = RESULTS_DOCK_ROOT;
-      appState.resultsRootPath = RESULTS_DOCK_ROOT;
+      els.resultsRootPath.value = appState.resultsRootPath || RESULTS_DOCK_ROOT;
     }
     applyAdvancedDockingConfigToModal(appState.dockingConfig);
     renderDockingConfigSummary();
@@ -3116,6 +3131,7 @@ function saveUIState() {
       gridSelectionMetaPerReceptor,
       dockingConfig: normalizeDockingConfig(appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
       ui: {
+        selectedQueueBatchId: String(appState.selectedQueueBatchId || ""),
         runCount: String(els.runCount?.value || ""),
         gridPadding: String(document.getElementById("gridPadding")?.value || ""),
         outRootPath: String(els.outRootPath?.value || ""),
@@ -3206,6 +3222,7 @@ async function restoreUIState() {
     gridSelectionMetaPerReceptor = savedGridSelectionMap;
   }
   appState.dockingConfig = normalizeDockingConfig(saved.dockingConfig || appState.dockingConfig || DEFAULT_DOCKING_CONFIG);
+  appState.selectedQueueBatchId = normalizeQueueBatchId(ui.selectedQueueBatchId || appState.selectedQueueBatchId);
 
   if (els.runCount && ui.runCount !== undefined) els.runCount.value = String(ui.runCount);
   const gridPaddingEl = document.getElementById("gridPadding");
@@ -3213,8 +3230,9 @@ async function restoreUIState() {
   if (els.outRootPath && ui.outRootPath !== undefined) els.outRootPath.value = String(ui.outRootPath);
   if (els.outRootName && ui.outRootName !== undefined) els.outRootName.value = String(ui.outRootName);
   if (els.resultsRootPath) {
-    els.resultsRootPath.value = RESULTS_DOCK_ROOT;
-    appState.resultsRootPath = RESULTS_DOCK_ROOT;
+    const restoredResultsRoot = String(ui.resultsRootPath || appState.resultsRootPath || RESULTS_DOCK_ROOT).trim() || RESULTS_DOCK_ROOT;
+    els.resultsRootPath.value = restoredResultsRoot;
+    appState.resultsRootPath = restoredResultsRoot;
   }
   if (els.reportRootPath && ui.reportRootPath !== undefined) els.reportRootPath.value = String(ui.reportRootPath);
   if (els.reportOutputPath && ui.reportOutputPath !== undefined) els.reportOutputPath.value = String(ui.reportOutputPath);
@@ -3238,6 +3256,8 @@ async function restoreUIState() {
   applyAdvancedDockingConfigToModal(appState.dockingConfig);
   renderDockingConfigSummary();
   updateModeUI();
+  renderQueueTable(appState.queueData);
+  updateQueueEditorUI();
   enforceResultsInteractionToggle();
 }
 
@@ -3821,6 +3841,7 @@ function clearQueueBatchSelection() {
   appState.selectedQueueBatchId = null;
   updateQueueEditorUI();
   renderQueueTable(appState.queueData || []);
+  scheduleUIStateSave();
 }
 
 function selectQueueBatch(batchId) {
@@ -3828,6 +3849,7 @@ function selectQueueBatch(batchId) {
   appState.selectedQueueBatchId = normalizedBatchId;
   updateQueueEditorUI();
   renderQueueTable(appState.queueData || []);
+  scheduleUIStateSave();
 }
 
 function normalizeQueueGrid(grid) {
@@ -4294,6 +4316,7 @@ async function buildQueue() {
   const runCount = document.getElementById("runCount")?.value || 10;
   const padding = document.getElementById("gridPadding")?.value || 0;
   const activeSet = new Set(activeLigands || []);
+  hydrateGridDataFromQueue(appState.queueData);
   const normalizedSelectionMap = normalizeSelectionMapState(JSON.parse(JSON.stringify(appState.selectionMap || {})));
   const selectionMap = {};
   Object.entries(normalizedSelectionMap).forEach(([pdbId, row]) => {
@@ -5449,7 +5472,7 @@ async function init() {
   await refreshLigands();
   await refreshReceptorSummary();
   await refreshViewer();
-  await refreshResultsDockFolders(RESULTS_DOCK_ROOT);
+  await refreshResultsDockFolders(appState.resultsRootPath || els.resultsRootPath?.value || RESULTS_DOCK_ROOT);
   if (appState.mode === "Results") {
     try {
       await scanResults();

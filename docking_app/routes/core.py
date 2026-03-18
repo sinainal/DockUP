@@ -681,11 +681,6 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
                     sel.get("flex_residues") or sel.get("flex_residue_spec") or []
                 ),
             }
-        for meta in STATE.get("receptor_meta", []):
-            pid = _normalize_receptor_id(meta.get("pdb_id"))
-            if not pid:
-                continue
-            normalized_incoming.setdefault(pid, {"chain": "all", "ligand_resname": "", "flex_residues": []})
         STATE["selection_map"] = normalized_incoming
         selected = _normalize_receptor_id(STATE.get("selected_receptor", ""))
         if selected and selected in STATE["selection_map"]:
