@@ -27,6 +27,8 @@ data/
 **/_run_sessions/
 **/.sessions/
 **/report_outputs/
+output/
+tests/.last_test_log.txt
 *.log
 
 # IDE / OS

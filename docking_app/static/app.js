@@ -67,6 +67,8 @@ let applyingProgrammaticResultPose = false;
 let refreshViewerRequestId = 0;
 let resultDetailRequestId = 0;
 let resultStructureRequestId = 0;
+let queueBatchModalDraft = null;
+let queueBatchModalActiveJobIndex = 0;
 
 const EXCLUDED_RESN = new Set([
   "HOH", "DOD", "WAT", "NA", "CL", "K", "MG", "CA", "ZN", "FE", "CU", "MN", "CO", "NI",
@@ -182,6 +184,43 @@ function initElements() {
   els.queueCount = document.getElementById("queueCount");
   els.queueEditorStatus = document.getElementById("queueEditorStatus");
   els.queueTable = document.getElementById("queueTable");
+  els.queueBatchModal = document.getElementById("queueBatchModal");
+  els.queueBatchModalTitle = document.getElementById("queueBatchModalTitle");
+  els.queueBatchModalSubtitle = document.getElementById("queueBatchModalSubtitle");
+  els.closeQueueBatchModal = document.getElementById("closeQueueBatchModal");
+  els.queueBatchModalSummary = document.getElementById("queueBatchModalSummary");
+  els.queueBatchOutputPath = document.getElementById("queueBatchOutputPath");
+  els.queueBatchOutputName = document.getElementById("queueBatchOutputName");
+  els.queueBatchRunCount = document.getElementById("queueBatchRunCount");
+  els.queueBatchJobList = document.getElementById("queueBatchJobList");
+  els.queueBatchJobTitle = document.getElementById("queueBatchJobTitle");
+  els.queueBatchJobMeta = document.getElementById("queueBatchJobMeta");
+  els.queueBatchJobPdb = document.getElementById("queueBatchJobPdb");
+  els.queueBatchJobChain = document.getElementById("queueBatchJobChain");
+  els.queueBatchJobLigand = document.getElementById("queueBatchJobLigand");
+  els.queueBatchGridCx = document.getElementById("queueBatchGridCx");
+  els.queueBatchGridCy = document.getElementById("queueBatchGridCy");
+  els.queueBatchGridCz = document.getElementById("queueBatchGridCz");
+  els.queueBatchGridSx = document.getElementById("queueBatchGridSx");
+  els.queueBatchGridSy = document.getElementById("queueBatchGridSy");
+  els.queueBatchGridSz = document.getElementById("queueBatchGridSz");
+  els.queueBatchDockingMode = document.getElementById("queueBatchDockingMode");
+  els.queueBatchPdb2pqrPh = document.getElementById("queueBatchPdb2pqrPh");
+  els.queueBatchVinaExhaustiveness = document.getElementById("queueBatchVinaExhaustiveness");
+  els.queueBatchPdb2pqrFf = document.getElementById("queueBatchPdb2pqrFf");
+  els.queueBatchPdb2pqrFfout = document.getElementById("queueBatchPdb2pqrFfout");
+  els.queueBatchMkrecDefaultAltloc = document.getElementById("queueBatchMkrecDefaultAltloc");
+  els.queueBatchVinaNumModes = document.getElementById("queueBatchVinaNumModes");
+  els.queueBatchVinaEnergyRange = document.getElementById("queueBatchVinaEnergyRange");
+  els.queueBatchVinaCpu = document.getElementById("queueBatchVinaCpu");
+  els.queueBatchVinaSeed = document.getElementById("queueBatchVinaSeed");
+  els.queueBatchPdb2pqrNodebump = document.getElementById("queueBatchPdb2pqrNodebump");
+  els.queueBatchPdb2pqrKeepChain = document.getElementById("queueBatchPdb2pqrKeepChain");
+  els.queueBatchMkrecAllowBadRes = document.getElementById("queueBatchMkrecAllowBadRes");
+  els.queueBatchFlexSection = document.getElementById("queueBatchFlexSection");
+  els.queueBatchFlexResidues = document.getElementById("queueBatchFlexResidues");
+  els.saveQueueBatchModal = document.getElementById("saveQueueBatchModal");
+  els.cancelQueueBatchModal = document.getElementById("cancelQueueBatchModal");
   els.openDockingConfigModal = document.getElementById("openDockingConfigModal");
   els.dockingConfigModal = document.getElementById("dockingConfigModal");
   els.closeDockingConfigModal = document.getElementById("closeDockingConfigModal");
@@ -3766,28 +3805,316 @@ function getQueueItemsForBatch(batchId, queue = appState.queueData || []) {
 function updateQueueEditorUI() {
   const batchId = normalizeQueueBatchId(appState.selectedQueueBatchId);
   if (els.buildQueue) {
-    els.buildQueue.textContent = batchId ? "Update Queue" : "Build queue";
+    els.buildQueue.textContent = "Build queue";
   }
   if (els.clearQueueSelection) {
     els.clearQueueSelection.style.display = batchId ? "" : "none";
   }
   if (els.queueEditorStatus) {
     els.queueEditorStatus.textContent = batchId
-      ? `Editing batch #${batchId}`
-      : "New queue build will append as a separate batch.";
+      ? `Selected batch #${batchId} will be used for Run queue. Use Edit Queue to modify it.`
+      : "New queue builds append as separate batches.";
   }
 }
 
-function clearQueueBatchSelection({ keepForm = true } = {}) {
+function clearQueueBatchSelection() {
   appState.selectedQueueBatchId = null;
-  appState.queueEditorReceptorIds = [];
   updateQueueEditorUI();
-  if (!keepForm) {
-    if (els.outRootName) els.outRootName.value = "";
-    if (els.outRootPath && !els.outRootPath.value) {
-      els.outRootPath.value = "data/dock";
+  renderQueueTable(appState.queueData || []);
+}
+
+function selectQueueBatch(batchId) {
+  const normalizedBatchId = normalizeQueueBatchId(batchId);
+  appState.selectedQueueBatchId = normalizedBatchId;
+  updateQueueEditorUI();
+  renderQueueTable(appState.queueData || []);
+}
+
+function normalizeQueueGrid(grid) {
+  const source = grid && typeof grid === "object" ? grid : {};
+  return {
+    cx: Number(source.cx) || 0,
+    cy: Number(source.cy) || 0,
+    cz: Number(source.cz) || 0,
+    sx: Number(source.sx) || 0,
+    sy: Number(source.sy) || 0,
+    sz: Number(source.sz) || 0,
+  };
+}
+
+function buildQueueGridPayload(grid, padding = 0) {
+  const source = normalizeQueueGrid(grid);
+  const pad = Number(padding) || 0;
+  const shrink = (value) => Math.max(0.1, Number(value || 0) - pad);
+  return {
+    cx: source.cx,
+    cy: source.cy,
+    cz: source.cz,
+    sx: shrink(source.sx),
+    sy: shrink(source.sy),
+    sz: shrink(source.sz),
+  };
+}
+
+function buildQueueBatchDraft(batchId) {
+  const items = getQueueItemsForBatch(batchId);
+  if (!items.length) return null;
+  const first = items[0] || {};
+  return {
+    batchId: normalizeQueueBatchId(batchId),
+    jobType: String(first.job_type || "Docking"),
+    runCount: Number(first.run_count) || 1,
+    padding: Number(first.padding ?? first.grid_pad ?? 0) || 0,
+    outRootPath: String(first.out_root_path || "data/dock"),
+    outRootName: String(first.out_root_name || ""),
+    dockingConfig: normalizeDockingConfig(first.docking_config || DEFAULT_DOCKING_CONFIG),
+    jobs: items.map((row, index) => ({
+      index,
+      pdbId: String(row?.pdb_id || "").trim().toUpperCase(),
+      chain: normalizeChainValue(row?.chain || "all"),
+      ligandName: String(row?.ligand_name || row?.ligand_resname || "").trim(),
+      ligandResname: String(row?.ligand_resname || row?.ligand_name || "").trim(),
+      grid: normalizeQueueGrid(row?.grid_params || {}),
+      flexResidues: normalizeFlexResidueList(row?.flex_residues || row?.flex_residue_spec || []),
+    })),
+  };
+}
+
+function applyQueueBatchDockingConfigToInputs(config) {
+  const cfg = normalizeDockingConfig(config || DEFAULT_DOCKING_CONFIG);
+  const setSelectValue = (el, value, fallback = "") => {
+    if (!el) return;
+    Array.from(el.querySelectorAll("option[data-dynamic='1']")).forEach((opt) => opt.remove());
+    const target = String(value ?? "").trim();
+    if (target && !Array.from(el.options).some((opt) => String(opt.value) === target)) {
+      const customOpt = document.createElement("option");
+      customOpt.value = target;
+      customOpt.textContent = `${target} (custom)`;
+      customOpt.setAttribute("data-dynamic", "1");
+      el.appendChild(customOpt);
     }
+    el.value = target || fallback;
+    if (!el.value && fallback) {
+      el.value = fallback;
+    }
+  };
+
+  if (els.queueBatchDockingMode) els.queueBatchDockingMode.value = cfg.docking_mode || "standard";
+  if (els.queueBatchPdb2pqrPh) els.queueBatchPdb2pqrPh.value = String(cfg.pdb2pqr_ph);
+  setSelectValue(els.queueBatchPdb2pqrFf, cfg.pdb2pqr_ff, "AMBER");
+  setSelectValue(els.queueBatchPdb2pqrFfout, cfg.pdb2pqr_ffout, "AMBER");
+  if (els.queueBatchPdb2pqrNodebump) els.queueBatchPdb2pqrNodebump.checked = Boolean(cfg.pdb2pqr_nodebump);
+  if (els.queueBatchPdb2pqrKeepChain) els.queueBatchPdb2pqrKeepChain.checked = Boolean(cfg.pdb2pqr_keep_chain);
+  if (els.queueBatchMkrecAllowBadRes) els.queueBatchMkrecAllowBadRes.checked = Boolean(cfg.mkrec_allow_bad_res);
+  setSelectValue(els.queueBatchMkrecDefaultAltloc, cfg.mkrec_default_altloc || "A", "A");
+  if (els.queueBatchVinaExhaustiveness) els.queueBatchVinaExhaustiveness.value = String(cfg.vina_exhaustiveness);
+  if (els.queueBatchVinaNumModes) els.queueBatchVinaNumModes.value = cfg.vina_num_modes === null ? "" : String(cfg.vina_num_modes);
+  if (els.queueBatchVinaEnergyRange) els.queueBatchVinaEnergyRange.value = cfg.vina_energy_range === null ? "" : String(cfg.vina_energy_range);
+  if (els.queueBatchVinaCpu) els.queueBatchVinaCpu.value = cfg.vina_cpu === null ? "" : String(cfg.vina_cpu);
+  if (els.queueBatchVinaSeed) els.queueBatchVinaSeed.value = cfg.vina_seed === null ? "" : String(cfg.vina_seed);
+}
+
+function readQueueBatchDockingConfigFromInputs() {
+  return normalizeDockingConfig({
+    docking_mode: els.queueBatchDockingMode?.value,
+    pdb2pqr_ph: els.queueBatchPdb2pqrPh?.value,
+    pdb2pqr_ff: els.queueBatchPdb2pqrFf?.value,
+    pdb2pqr_ffout: els.queueBatchPdb2pqrFfout?.value,
+    pdb2pqr_nodebump: !!els.queueBatchPdb2pqrNodebump?.checked,
+    pdb2pqr_keep_chain: !!els.queueBatchPdb2pqrKeepChain?.checked,
+    mkrec_allow_bad_res: !!els.queueBatchMkrecAllowBadRes?.checked,
+    mkrec_default_altloc: els.queueBatchMkrecDefaultAltloc?.value,
+    vina_exhaustiveness: els.queueBatchVinaExhaustiveness?.value,
+    vina_num_modes: els.queueBatchVinaNumModes?.value,
+    vina_energy_range: els.queueBatchVinaEnergyRange?.value,
+    vina_cpu: els.queueBatchVinaCpu?.value,
+    vina_seed: els.queueBatchVinaSeed?.value,
+  });
+}
+
+function syncQueueBatchModalDraftFromInputs() {
+  if (!queueBatchModalDraft) return;
+  queueBatchModalDraft.outRootPath = String(els.queueBatchOutputPath?.value || "data/dock").trim() || "data/dock";
+  queueBatchModalDraft.outRootName = String(els.queueBatchOutputName?.value || "").trim();
+  const runCount = Number(els.queueBatchRunCount?.value || queueBatchModalDraft.runCount || 1);
+  queueBatchModalDraft.runCount = Number.isFinite(runCount) && runCount > 0 ? Math.round(runCount) : 1;
+  queueBatchModalDraft.dockingConfig = readQueueBatchDockingConfigFromInputs();
+
+  const job = queueBatchModalDraft.jobs?.[queueBatchModalActiveJobIndex];
+  if (!job) return;
+  const readNum = (el, fallback) => {
+    const num = Number(el?.value);
+    return Number.isFinite(num) ? num : fallback;
+  };
+  job.grid = {
+    cx: readNum(els.queueBatchGridCx, job.grid.cx),
+    cy: readNum(els.queueBatchGridCy, job.grid.cy),
+    cz: readNum(els.queueBatchGridCz, job.grid.cz),
+    sx: Math.max(0.1, readNum(els.queueBatchGridSx, job.grid.sx)),
+    sy: Math.max(0.1, readNum(els.queueBatchGridSy, job.grid.sy)),
+    sz: Math.max(0.1, readNum(els.queueBatchGridSz, job.grid.sz)),
+  };
+  job.flexResidues = normalizeFlexResidueList(String(els.queueBatchFlexResidues?.value || ""));
+}
+
+function syncQueueBatchModalDockingModeUI() {
+  const mode = normalizeDockingMode(els.queueBatchDockingMode?.value || queueBatchModalDraft?.dockingConfig?.docking_mode || "standard");
+  if (els.queueBatchFlexSection) {
+    els.queueBatchFlexSection.style.display = mode === "flexible" ? "" : "none";
   }
+}
+
+function renderQueueBatchModalSummary() {
+  if (!els.queueBatchModalSummary || !queueBatchModalDraft) return;
+  const totalRuns = Math.max(1, queueBatchModalDraft.runCount) * Math.max(1, queueBatchModalDraft.jobs.length);
+  const chips = [
+    ["Batch", `#${queueBatchModalDraft.batchId}`],
+    ["Workflow", String(queueBatchModalDraft.jobType || "Docking")],
+    ["Jobs", String(queueBatchModalDraft.jobs.length)],
+    ["Total runs", String(totalRuns)],
+  ];
+  els.queueBatchModalSummary.innerHTML = chips
+    .map(([label, value]) => `<div class="queue-batch-summary-chip"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
+    .join("");
+}
+
+function renderQueueBatchModalJobList() {
+  if (!els.queueBatchJobList || !queueBatchModalDraft) return;
+  els.queueBatchJobList.innerHTML = "";
+  const jobs = Array.isArray(queueBatchModalDraft.jobs) ? queueBatchModalDraft.jobs : [];
+  jobs.forEach((job, index) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `queue-batch-job-button${index === queueBatchModalActiveJobIndex ? " active" : ""}`;
+    const ligandText = job.ligandName || "-";
+    const chipBits = [
+      `<span class="queue-batch-job-chip">${escapeHtml(job.chain)}</span>`,
+      `<span class="queue-batch-job-chip">${escapeHtml(formatNumber(job.grid.sx, 1))} x ${escapeHtml(formatNumber(job.grid.sy, 1))} x ${escapeHtml(formatNumber(job.grid.sz, 1))}</span>`,
+    ];
+    if (normalizeDockingMode(queueBatchModalDraft.dockingConfig?.docking_mode) === "flexible") {
+      chipBits.push(`<span class="queue-batch-job-chip">${escapeHtml(String(job.flexResidues.length || 0))} flex</span>`);
+    }
+    btn.innerHTML = `
+      <div class="queue-batch-job-button-title">
+        <span>${escapeHtml(job.pdbId || `Job ${index + 1}`)}</span>
+        <span>#${index + 1}</span>
+      </div>
+      <div class="queue-batch-job-button-subtitle">${escapeHtml(ligandText)}</div>
+      <div class="queue-batch-job-button-meta">${chipBits.join("")}</div>
+    `;
+    btn.addEventListener("click", () => {
+      syncQueueBatchModalDraftFromInputs();
+      queueBatchModalActiveJobIndex = index;
+      renderQueueBatchModal();
+    });
+    els.queueBatchJobList.appendChild(btn);
+  });
+}
+
+function renderQueueBatchModal() {
+  if (!queueBatchModalDraft) return;
+  if (els.queueBatchModalTitle) {
+    els.queueBatchModalTitle.textContent = `Edit Queue Batch #${queueBatchModalDraft.batchId}`;
+  }
+  if (els.queueBatchModalSubtitle) {
+    els.queueBatchModalSubtitle.textContent = "Adjust output, gridbox, docking settings, and flexible residues without touching the main docking form.";
+  }
+  if (els.queueBatchOutputPath) els.queueBatchOutputPath.value = queueBatchModalDraft.outRootPath || "data/dock";
+  if (els.queueBatchOutputName) els.queueBatchOutputName.value = queueBatchModalDraft.outRootName || "";
+  if (els.queueBatchRunCount) els.queueBatchRunCount.value = String(queueBatchModalDraft.runCount || 1);
+  applyQueueBatchDockingConfigToInputs(queueBatchModalDraft.dockingConfig);
+  syncQueueBatchModalDockingModeUI();
+  renderQueueBatchModalSummary();
+  renderQueueBatchModalJobList();
+
+  const jobs = Array.isArray(queueBatchModalDraft.jobs) ? queueBatchModalDraft.jobs : [];
+  if (!jobs.length) return;
+  if (queueBatchModalActiveJobIndex >= jobs.length) queueBatchModalActiveJobIndex = 0;
+  const job = jobs[queueBatchModalActiveJobIndex];
+  if (els.queueBatchJobTitle) {
+    els.queueBatchJobTitle.textContent = `${job.pdbId || "Job"} · ${job.chain || "all"}`;
+  }
+  if (els.queueBatchJobMeta) {
+    const flexCount = normalizeDockingMode(queueBatchModalDraft.dockingConfig?.docking_mode) === "flexible"
+      ? `${job.flexResidues.length} flex residue(s)`
+      : "Standard mode";
+    els.queueBatchJobMeta.textContent = `Job ${queueBatchModalActiveJobIndex + 1} of ${jobs.length} · ${flexCount}`;
+  }
+  if (els.queueBatchJobPdb) els.queueBatchJobPdb.value = job.pdbId || "";
+  if (els.queueBatchJobChain) els.queueBatchJobChain.value = job.chain || "all";
+  if (els.queueBatchJobLigand) els.queueBatchJobLigand.value = job.ligandName || job.ligandResname || "";
+  if (els.queueBatchGridCx) els.queueBatchGridCx.value = formatNumber(job.grid.cx, 1);
+  if (els.queueBatchGridCy) els.queueBatchGridCy.value = formatNumber(job.grid.cy, 1);
+  if (els.queueBatchGridCz) els.queueBatchGridCz.value = formatNumber(job.grid.cz, 1);
+  if (els.queueBatchGridSx) els.queueBatchGridSx.value = formatNumber(job.grid.sx, 1);
+  if (els.queueBatchGridSy) els.queueBatchGridSy.value = formatNumber(job.grid.sy, 1);
+  if (els.queueBatchGridSz) els.queueBatchGridSz.value = formatNumber(job.grid.sz, 1);
+  if (els.queueBatchFlexResidues) {
+    els.queueBatchFlexResidues.value = buildFlexResidueSpec(job.flexResidues);
+  }
+}
+
+function openQueueBatchModal(batchId) {
+  const draft = buildQueueBatchDraft(batchId);
+  if (!draft || !els.queueBatchModal) return;
+  queueBatchModalDraft = draft;
+  queueBatchModalActiveJobIndex = 0;
+  appState.selectedQueueBatchId = draft.batchId;
+  updateQueueEditorUI();
+  renderQueueTable(appState.queueData || []);
+  renderQueueBatchModal();
+  els.queueBatchModal.classList.add("active");
+}
+
+function closeQueueBatchModal() {
+  queueBatchModalDraft = null;
+  queueBatchModalActiveJobIndex = 0;
+  if (els.queueBatchModal) {
+    els.queueBatchModal.classList.remove("active");
+  }
+}
+
+async function saveQueueBatchModal() {
+  if (!queueBatchModalDraft) return;
+  syncQueueBatchModalDraftFromInputs();
+  const cfg = normalizeDockingConfig(queueBatchModalDraft.dockingConfig || DEFAULT_DOCKING_CONFIG);
+  const selectionMap = {};
+  const gridData = {};
+  (queueBatchModalDraft.jobs || []).forEach((job) => {
+    if (!job?.pdbId) return;
+    selectionMap[job.pdbId] = {
+      chain: normalizeChainValue(job.chain || "all"),
+      ligand_resname: String(job.ligandResname || job.ligandName || ""),
+      flex_residues: normalizeFlexResidueList(job.flexResidues || []),
+    };
+    gridData[job.pdbId] = buildQueueGridPayload(job.grid, queueBatchModalDraft.padding);
+  });
+
+  const payload = {
+    run_count: queueBatchModalDraft.runCount,
+    padding: queueBatchModalDraft.padding,
+    docking_config: cfg,
+    selection_map: selectionMap,
+    grid_data: gridData,
+    mode: queueBatchModalDraft.jobType || "Docking",
+    out_root_path: queueBatchModalDraft.outRootPath || "data/dock",
+    out_root_name: queueBatchModalDraft.outRootName || "",
+    replace_queue: false,
+    update_batch_id: parseInt(queueBatchModalDraft.batchId, 10),
+  };
+
+  const data = await fetchJSON("/api/queue/build", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  appState.queueData = Array.isArray(data.queue) ? data.queue : [];
+  appState.queueCount = data.queue_count || 0;
+  appState.selectedQueueBatchId = queueBatchModalDraft.batchId;
+  updateQueueCount();
+  updateQueueEditorUI();
+  renderQueueTable(appState.queueData);
+  closeQueueBatchModal();
 }
 
 async function setAppModeQuietly(mode) {
@@ -3801,57 +4128,6 @@ async function setAppModeQuietly(mode) {
     appState.mode = nextMode;
     updateModeUI();
   }
-}
-
-async function loadQueueBatchIntoEditor(batchId) {
-  const items = getQueueItemsForBatch(batchId);
-  if (!items.length) return;
-  const normalizedBatchId = normalizeQueueBatchId(batchId);
-  const first = items[0] || {};
-  const receptorIds = [...new Set(items.map((row) => String(row?.pdb_id || "").trim().toUpperCase()).filter(Boolean))];
-  appState.selectedQueueBatchId = normalizedBatchId;
-  appState.queueEditorReceptorIds = receptorIds;
-
-  if (document.getElementById("runCount")) {
-    document.getElementById("runCount").value = String(first.run_count || 1);
-  }
-  if (document.getElementById("gridPadding")) {
-    document.getElementById("gridPadding").value = String(first.padding ?? first.grid_pad ?? 0);
-  }
-  if (els.outRootPath) {
-    els.outRootPath.value = first.out_root_path || "data/dock";
-  }
-  if (els.outRootName) {
-    els.outRootName.value = first.out_root_name || "";
-  }
-
-  appState.dockingConfig = normalizeDockingConfig(first.docking_config || appState.dockingConfig || DEFAULT_DOCKING_CONFIG);
-  applyAdvancedDockingConfigToModal(appState.dockingConfig);
-  syncDockingModeUI();
-  renderDockingConfigSummary();
-
-  items.forEach((row) => {
-    const pdbId = String(row?.pdb_id || "").trim().toUpperCase();
-    if (!pdbId) return;
-    if (!appState.selectionMap) appState.selectionMap = {};
-    appState.selectionMap[pdbId] = {
-      chain: normalizeChainValue(row.chain || "all"),
-      ligand_resname: String(row.ligand_resname || row.ligand_name || ""),
-      flex_residues: normalizeFlexResidueList(row.flex_residues || row.flex_residue_spec || []),
-    };
-    if (row.grid_params && typeof row.grid_params === "object") {
-      gridDataPerReceptor[pdbId] = { ...row.grid_params };
-    }
-  });
-
-  await setAppModeQuietly(first.job_type === "Redocking" ? "Redocking" : "Docking");
-  await refreshReceptorSummary();
-  if (receptorIds.length) {
-    await selectReceptor(receptorIds[0]);
-  }
-  updateQueueEditorUI();
-  renderQueueTable(appState.queueData || []);
-  scheduleUIStateSave();
 }
 
 function renderRecentDockings(rows) {
@@ -4019,20 +4295,10 @@ async function buildQueue() {
   const padding = document.getElementById("gridPadding")?.value || 0;
   const activeSet = new Set(activeLigands || []);
   const normalizedSelectionMap = normalizeSelectionMapState(JSON.parse(JSON.stringify(appState.selectionMap || {})));
-  const selectedBatchId = normalizeQueueBatchId(appState.selectedQueueBatchId);
-  const queueEditorReceptorIds = selectedBatchId && (appState.queueEditorReceptorIds || []).length === 0
-    ? getQueueItemsForBatch(selectedBatchId, appState.queueData)
-        .map((row) => String(row?.pdb_id || "").trim().toUpperCase())
-        .filter(Boolean)
-    : (appState.queueEditorReceptorIds || []);
-  const receptorFilter = selectedBatchId
-    ? new Set(queueEditorReceptorIds.map((pdbId) => String(pdbId || "").trim().toUpperCase()).filter(Boolean))
-    : null;
   const selectionMap = {};
   Object.entries(normalizedSelectionMap).forEach(([pdbId, row]) => {
     const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
     if (!normalizedPdbId) return;
-    if (receptorFilter && !receptorFilter.has(normalizedPdbId)) return;
     selectionMap[normalizedPdbId] = { ...row };
   });
   Object.keys(selectionMap).forEach((pdbId) => {
@@ -4050,7 +4316,6 @@ async function buildQueue() {
   Object.entries(gridDataPerReceptor || {}).forEach(([pdbId, grid]) => {
     const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
     if (!normalizedPdbId || !grid || typeof grid !== "object") return;
-    if (receptorFilter && !receptorFilter.has(normalizedPdbId)) return;
     gridData[normalizedPdbId] = { ...grid };
   });
 
@@ -4065,9 +4330,7 @@ async function buildQueue() {
     out_root_name: document.getElementById("outRootName")?.value || "",
     replace_queue: false,
   };
-  if (selectedBatchId) {
-    payload.update_batch_id = parseInt(selectedBatchId, 10);
-  }
+  const previousBatchIds = new Set((appState.queueData || []).map((row) => normalizeQueueBatchId(row?.batch_id)).filter(Boolean));
 
   const data = await fetchJSON("/api/queue/build", {
     method: "POST",
@@ -4076,12 +4339,9 @@ async function buildQueue() {
   });
   appState.queueData = Array.isArray(data.queue) ? data.queue : [];
   appState.queueCount = data.queue_count || 0;
-  if (selectedBatchId) {
-    appState.selectedQueueBatchId = selectedBatchId;
-  } else {
-    appState.selectedQueueBatchId = null;
-    appState.queueEditorReceptorIds = [];
-  }
+  const nextBatchIds = [...new Set(appState.queueData.map((row) => normalizeQueueBatchId(row?.batch_id)).filter(Boolean))];
+  const appendedBatchIds = nextBatchIds.filter((batchId) => !previousBatchIds.has(batchId));
+  appState.selectedQueueBatchId = appendedBatchIds.length === 1 ? appendedBatchIds[0] : null;
   updateQueueCount();
   updateQueueEditorUI();
   renderQueueTable(appState.queueData);
@@ -4097,14 +4357,12 @@ function renderQueueTable(queue) {
 
   if (queueRows.length === 0) {
     appState.selectedQueueBatchId = null;
-    appState.queueEditorReceptorIds = [];
     updateQueueEditorUI();
     return;
   }
   const knownBatchIds = new Set(queueRows.map((row) => normalizeQueueBatchId(row?.batch_id)).filter(Boolean));
   if (appState.selectedQueueBatchId && !knownBatchIds.has(normalizeQueueBatchId(appState.selectedQueueBatchId))) {
     appState.selectedQueueBatchId = null;
-    appState.queueEditorReceptorIds = [];
   }
 
   // Group by batch_id
@@ -4163,8 +4421,6 @@ function renderQueueTable(queue) {
     meta.innerHTML = `
       <span>Path: <code>${escapeHtml(String(firstItem.out_root_path || "data/dock"))}</code></span>
       <span>Folder: <code>${escapeHtml(String(firstItem.out_root_name || ""))}</code></span>
-      <span>Runs: ${escapeHtml(String(firstItem.run_count || 1))}</span>
-      <span>Padding: ${escapeHtml(String(firstItem.padding ?? firstItem.grid_pad ?? 0))}</span>
     `;
     titleWrap.appendChild(title);
     titleWrap.appendChild(meta);
@@ -4180,9 +4436,9 @@ function renderQueueTable(queue) {
     editBtn.style.padding = "2px 8px";
     editBtn.style.fontSize = "11px";
     editBtn.style.height = "auto";
-    editBtn.addEventListener("click", async (event) => {
+    editBtn.addEventListener("click", (event) => {
       event.stopPropagation();
-      await loadQueueBatchIntoEditor(bid);
+      openQueueBatchModal(bid);
     });
 
     const delBtn = document.createElement("button");
@@ -4204,14 +4460,17 @@ function renderQueueTable(queue) {
         if (normalizeQueueBatchId(appState.selectedQueueBatchId) === normalizedBatchId) {
           clearQueueBatchSelection();
         }
+        if (queueBatchModalDraft && normalizeQueueBatchId(queueBatchModalDraft.batchId) === normalizedBatchId) {
+          closeQueueBatchModal();
+        }
         appState.queueCount = res.queue_count || 0;
         updateQueueCount();
         renderQueueTable(appState.queueData);
       }
     };
 
-    batchHeader.addEventListener("click", async () => {
-      await loadQueueBatchIntoEditor(bid);
+    batchHeader.addEventListener("click", () => {
+      selectQueueBatch(bid);
     });
     headerActions.appendChild(editBtn);
     headerActions.appendChild(delBtn);
@@ -4257,8 +4516,8 @@ function renderQueueTable(queue) {
             <div class="queue-grid-cell">${gridDisplay}</div>
             <div>${item.run_count || 1}</div>
         `;
-      row.addEventListener("click", async () => {
-        await loadQueueBatchIntoEditor(bid);
+      row.addEventListener("click", () => {
+        selectQueueBatch(bid);
       });
       batchContainer.appendChild(row);
     });
@@ -4560,6 +4819,47 @@ function bindEvents() {
   if (els.clearQueueSelection) {
     els.clearQueueSelection.addEventListener("click", () => {
       clearQueueBatchSelection();
+    });
+  }
+
+  if (els.closeQueueBatchModal) {
+    els.closeQueueBatchModal.addEventListener("click", () => {
+      closeQueueBatchModal();
+    });
+  }
+
+  if (els.cancelQueueBatchModal) {
+    els.cancelQueueBatchModal.addEventListener("click", () => {
+      closeQueueBatchModal();
+    });
+  }
+
+  if (els.saveQueueBatchModal) {
+    els.saveQueueBatchModal.addEventListener("click", async () => {
+      try {
+        await saveQueueBatchModal();
+      } catch (err) {
+        alert(err.message || "Failed to update queue batch.");
+      }
+    });
+  }
+
+  if (els.queueBatchDockingMode) {
+    els.queueBatchDockingMode.addEventListener("change", () => {
+      if (queueBatchModalDraft) {
+        syncQueueBatchModalDraftFromInputs();
+      }
+      syncQueueBatchModalDockingModeUI();
+      renderQueueBatchModalSummary();
+      renderQueueBatchModalJobList();
+    });
+  }
+
+  if (els.queueBatchModal) {
+    els.queueBatchModal.addEventListener("click", (event) => {
+      if (event.target === els.queueBatchModal) {
+        closeQueueBatchModal();
+      }
     });
   }
 

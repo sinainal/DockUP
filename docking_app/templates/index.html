@@ -254,7 +254,7 @@
             </div>
             <div class="queue-row">
               <button class="primary" id="buildQueue">Build queue</button>
-              <button class="secondary" id="clearQueueSelection" type="button" style="display:none;">New Queue</button>
+              <button class="secondary" id="clearQueueSelection" type="button" style="display:none;">Clear Selection</button>
               <div class="queue-count" id="queueCount">0 entries</div>
               <div class="queue-editor-status" id="queueEditorStatus"></div>
             </div>
@@ -777,6 +777,198 @@
         <div class="report-root-editor-actions">
           <button class="primary" id="saveDockingConfigModal" type="button">Save Settings</button>
           <button class="secondary" id="cancelDockingConfigModal" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="queueBatchModal" class="report-modal" role="dialog" aria-modal="true" aria-labelledby="queueBatchModalTitle">
+    <div class="report-modal-card queue-batch-modal-card">
+      <div class="report-modal-header">
+        <div>
+          <div class="section-title" id="queueBatchModalTitle" style="margin-bottom: 2px;">Edit Queue Batch</div>
+          <div class="helper" id="queueBatchModalSubtitle">Review and update this queue without changing the main docking form.</div>
+        </div>
+        <button class="secondary" id="closeQueueBatchModal" type="button">Close</button>
+      </div>
+
+      <div class="queue-batch-modal-summary" id="queueBatchModalSummary"></div>
+
+      <div class="field-grid" style="margin-bottom: 10px;">
+        <div class="field" style="margin-bottom: 0;">
+          <label class="field-label">Output Path</label>
+          <input type="text" id="queueBatchOutputPath" placeholder="data/dock">
+        </div>
+        <div class="field" style="margin-bottom: 0;">
+          <label class="field-label">Folder Name</label>
+          <input type="text" id="queueBatchOutputName" placeholder="batch_name">
+        </div>
+        <div class="field" style="margin-bottom: 0;">
+          <label class="field-label">Run Count</label>
+          <input type="number" id="queueBatchRunCount" min="1" max="1000" step="1" value="1">
+        </div>
+      </div>
+
+      <div class="queue-batch-modal-layout">
+        <aside class="queue-batch-job-list">
+          <div class="queue-batch-job-list-title">Jobs In Batch</div>
+          <div id="queueBatchJobList"></div>
+        </aside>
+
+        <section class="queue-batch-detail">
+          <div class="queue-batch-detail-head">
+            <div>
+              <div class="section-title" id="queueBatchJobTitle" style="margin-bottom: 2px;">Job Details</div>
+              <div class="helper" id="queueBatchJobMeta">Select a queue job to inspect and edit.</div>
+            </div>
+          </div>
+
+          <div class="field-grid" style="margin-bottom: 10px;">
+            <div class="field" style="margin-bottom: 0;">
+              <label class="field-label">Receptor</label>
+              <input type="text" id="queueBatchJobPdb" readonly>
+            </div>
+            <div class="field" style="margin-bottom: 0;">
+              <label class="field-label">Chain</label>
+              <input type="text" id="queueBatchJobChain" readonly>
+            </div>
+            <div class="field" style="margin-bottom: 0;">
+              <label class="field-label">Ligand</label>
+              <input type="text" id="queueBatchJobLigand" readonly>
+            </div>
+          </div>
+
+          <div class="section" style="margin-bottom: 12px;">
+            <div class="section-title" style="margin-bottom: 10px;">Gridbox</div>
+            <div class="field-grid">
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Center X</label>
+                <input type="number" id="queueBatchGridCx" step="0.1">
+              </div>
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Center Y</label>
+                <input type="number" id="queueBatchGridCy" step="0.1">
+              </div>
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Center Z</label>
+                <input type="number" id="queueBatchGridCz" step="0.1">
+              </div>
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Size X</label>
+                <input type="number" id="queueBatchGridSx" min="0.1" step="0.1">
+              </div>
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Size Y</label>
+                <input type="number" id="queueBatchGridSy" min="0.1" step="0.1">
+              </div>
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Size Z</label>
+                <input type="number" id="queueBatchGridSz" min="0.1" step="0.1">
+              </div>
+            </div>
+          </div>
+
+          <div class="section" style="margin-bottom: 12px;">
+            <div class="section-title" style="margin-bottom: 10px;">Docking Settings</div>
+            <div class="field-grid" style="margin-bottom: 10px;">
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Docking Mode</label>
+                <select id="queueBatchDockingMode">
+                  <option value="standard">Standard</option>
+                  <option value="flexible">Flexible</option>
+                </select>
+              </div>
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">PDB2PQR pH</label>
+                <input type="number" id="queueBatchPdb2pqrPh" min="0" max="14" step="0.1" list="dockCfgPhPresets">
+              </div>
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Vina Exhaustiveness</label>
+                <input type="number" id="queueBatchVinaExhaustiveness" min="1" max="512" step="1" list="dockCfgExhaustivenessPresets">
+              </div>
+            </div>
+
+            <div class="field-grid" style="margin-bottom: 10px;">
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">PDB2PQR Forcefield</label>
+                <select id="queueBatchPdb2pqrFf">
+                  <option value="AMBER">AMBER</option>
+                  <option value="CHARMM">CHARMM</option>
+                  <option value="PARSE">PARSE</option>
+                  <option value="SWANSON">SWANSON</option>
+                  <option value="TYL06">TYL06</option>
+                  <option value="PEOEPB">PEOEPB</option>
+                </select>
+              </div>
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">PDB2PQR FF Out</label>
+                <select id="queueBatchPdb2pqrFfout">
+                  <option value="AMBER">AMBER</option>
+                  <option value="CHARMM">CHARMM</option>
+                  <option value="PARSE">PARSE</option>
+                  <option value="SWANSON">SWANSON</option>
+                  <option value="TYL06">TYL06</option>
+                  <option value="PEOEPB">PEOEPB</option>
+                </select>
+              </div>
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Default AltLoc</label>
+                <select id="queueBatchMkrecDefaultAltloc">
+                  <option value="A">A</option>
+                  <option value="B">B</option>
+                  <option value="C">C</option>
+                  <option value="D">D</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="field-grid" style="margin-bottom: 10px;">
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Vina Num Modes</label>
+                <input type="number" id="queueBatchVinaNumModes" min="1" max="200" step="1" placeholder="default" list="dockCfgNumModesPresets">
+              </div>
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Vina Energy Range</label>
+                <input type="number" id="queueBatchVinaEnergyRange" min="0" max="1000" step="0.5" placeholder="default" list="dockCfgEnergyRangePresets">
+              </div>
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Vina CPU</label>
+                <input type="number" id="queueBatchVinaCpu" min="1" max="512" step="1" placeholder="auto" list="dockCfgCpuPresets">
+              </div>
+            </div>
+
+            <div class="field-grid" style="margin-bottom: 10px;">
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Vina Seed</label>
+                <input type="number" id="queueBatchVinaSeed" min="0" step="1" placeholder="random">
+              </div>
+              <label class="field queue-batch-checkbox" style="margin-bottom: 0;">
+                <span class="field-label">Use --nodebump</span>
+                <input type="checkbox" id="queueBatchPdb2pqrNodebump" checked>
+              </label>
+              <label class="field queue-batch-checkbox" style="margin-bottom: 0;">
+                <span class="field-label">Use --keep-chain</span>
+                <input type="checkbox" id="queueBatchPdb2pqrKeepChain" checked>
+              </label>
+              <label class="field queue-batch-checkbox" style="margin-bottom: 0;">
+                <span class="field-label">Allow bad residues</span>
+                <input type="checkbox" id="queueBatchMkrecAllowBadRes" checked>
+              </label>
+            </div>
+
+            <div id="queueBatchFlexSection" class="field" style="margin-bottom: 0; display:none;">
+              <label class="field-label">Flexible Residues</label>
+              <textarea id="queueBatchFlexResidues" rows="3" placeholder="A:114,A:315"></textarea>
+              <div class="helper">Comma-separated residue spec. Example: <code>A:114,A:315</code></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="results-toolbar" style="margin-bottom: 0;">
+        <div class="report-root-editor-actions">
+          <button class="primary" id="saveQueueBatchModal" type="button">Save Queue Changes</button>
+          <button class="secondary" id="cancelQueueBatchModal" type="button">Cancel</button>
         </div>
       </div>
     </div>
