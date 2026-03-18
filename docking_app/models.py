@@ -29,6 +29,7 @@ class QueueBuildPayload(BaseModel):
 
 class RunStartPayload(BaseModel):
     is_test_mode: bool = False
+    batch_id: int | None = None
 
 
 class RenderPayload(BaseModel):

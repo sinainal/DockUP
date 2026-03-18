@@ -22,6 +22,9 @@ const appState = {
   dockingConfig: {},
   activeRunOutRoot: "",
   runElapsedSeconds: 0,
+  queueData: [],
+  selectedQueueBatchId: null,
+  queueEditorReceptorIds: [],
 };
 
 const DEFAULT_DOCKING_CONFIG = {
@@ -58,8 +61,12 @@ let resultPoseByPdb = new Map();
 let currentResultPdbKey = "";
 let currentResultFlexSelectionData = null;
 let currentResultDockingMode = "standard";
+let currentResultData = null;
 let viewerPoseSyncBound = false;
 let applyingProgrammaticResultPose = false;
+let refreshViewerRequestId = 0;
+let resultDetailRequestId = 0;
+let resultStructureRequestId = 0;
 
 const EXCLUDED_RESN = new Set([
   "HOH", "DOD", "WAT", "NA", "CL", "K", "MG", "CA", "ZN", "FE", "CU", "MN", "CO", "NI",
@@ -171,7 +178,9 @@ function initElements() {
   els.resultsCount = document.getElementById("resultsCount");
   els.resultDetail = document.getElementById("resultDetail");
   els.buildQueue = document.getElementById("buildQueue");
+  els.clearQueueSelection = document.getElementById("clearQueueSelection");
   els.queueCount = document.getElementById("queueCount");
+  els.queueEditorStatus = document.getElementById("queueEditorStatus");
   els.queueTable = document.getElementById("queueTable");
   els.openDockingConfigModal = document.getElementById("openDockingConfigModal");
   els.dockingConfigModal = document.getElementById("dockingConfigModal");
@@ -868,6 +877,7 @@ async function loadState() {
     }
     appState.gridFilePath = data.grid_file_path || "";
     appState.queueCount = data.queue_count || 0;
+    appState.queueData = Array.isArray(data.queue) ? data.queue : [];
     appState.runStatus = data.run_status || "idle";
     appState.activeRunOutRoot = String(data.run_out_root || appState.activeRunOutRoot || "").trim();
     appState.dockingConfig = normalizeDockingConfig(data.docking_config || appState.dockingConfig || DEFAULT_DOCKING_CONFIG);
@@ -889,6 +899,8 @@ async function loadState() {
     updateModeUI();
     updateGridPath();
     updateQueueCount();
+    renderQueueTable(appState.queueData);
+    updateQueueEditorUI();
     setRunStatus(appState.runStatus);
     updateRunMetrics({
       status: appState.runStatus,
@@ -1089,8 +1101,10 @@ function updateRepresentations() {
   const chainFilter = viewerChain !== "all" ? ` and :${viewerChain}` : "";
   const proteinSele = `protein and not hydrogen${chainFilter}`;
   const nativeLigandSele = `not polymer and not water and not ion and not hydrogen${chainFilter}`;
-  const dockedLigandSele = `resn UNL${chainFilter}`;
   const showResultsOnlyExtras = appState.mode === "Results";
+  const dockedLigandSele = showResultsOnlyExtras
+    ? findDockedLigandSelection(comp, currentResultData)
+    : "";
 
   // Clear old representations
   if (representations.cartoon) {
@@ -1152,8 +1166,8 @@ function updateRepresentations() {
     representations.nativeLigand = null;
   }
 
-  // Docked ligand (UNL) - Green color to distinguish from native
-  if (showResultsOnlyExtras && els.showDockedLigand?.checked) {
+  // Docked ligand - Green color to distinguish from native.
+  if (showResultsOnlyExtras && els.showDockedLigand?.checked && dockedLigandSele) {
     representations.dockedLigand = comp.addRepresentation("ball+stick", {
       sele: dockedLigandSele,
       colorScheme: "uniform",
@@ -1897,35 +1911,14 @@ async function refreshViewer() {
     return;
   }
   if (!initViewer()) return;
+  const requestId = ++refreshViewerRequestId;
 
   try {
     const data = await fetchJSON(`/api/receptors/${appState.selectedReceptor}`);
+    if (requestId !== refreshViewerRequestId) return;
     const effectiveChain = normalizeChainValue(data.selected_chain || getSelectedChainForReceptor(appState.selectedReceptor));
     appState.selectedChain = effectiveChain;
     updateViewerChainOptions(data.chains || [], effectiveChain);
-
-    // Remove old component
-    if (comp) {
-      stage.removeComponent(comp);
-      comp = null;
-    }
-
-    // Reset representations
-    representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, residueSearch: null, flexResidueSearch: null };
-    selectedLigandData = null;
-    selectedAtomData = null;
-    externalGridSelectionData = appState.selectedReceptor
-      ? (gridSelectionMetaPerReceptor[appState.selectedReceptor] || null)
-      : null;
-    updateSelectedAtomInfo();
-    updateGridSelectionInfo();
-    interactionResiduesByType = {};
-    interactionResidueInfo = {};
-    renderInteractionLegend();
-    if (nativeLigComp) {
-      try { stage.removeComponent(nativeLigComp); } catch (e) { }
-      nativeLigComp = null;
-    }
 
     // Load structure
     let loadPromise;
@@ -1937,7 +1930,33 @@ async function refreshViewer() {
     }
 
     const component = await loadPromise;
+    if (requestId !== refreshViewerRequestId) {
+      try { stage.removeComponent(component); } catch (e) { }
+      return;
+    }
+    const previousComp = comp;
+    const previousNativeLigComp = nativeLigComp;
     comp = component;
+
+    // Reset viewer state only after the new structure is ready.
+    representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, residueSearch: null, flexResidueSearch: null };
+    selectedLigandData = null;
+    selectedAtomData = null;
+    externalGridSelectionData = appState.selectedReceptor
+      ? (gridSelectionMetaPerReceptor[appState.selectedReceptor] || null)
+      : null;
+    updateSelectedAtomInfo();
+    updateGridSelectionInfo();
+    interactionResiduesByType = {};
+    interactionResidueInfo = {};
+    renderInteractionLegend();
+    if (previousComp) {
+      try { stage.removeComponent(previousComp); } catch (e) { }
+    }
+    if (previousNativeLigComp) {
+      try { stage.removeComponent(previousNativeLigComp); } catch (e) { }
+      nativeLigComp = null;
+    }
 
     // Add representations
     updateRepresentations();
@@ -2155,6 +2174,7 @@ async function scanResults() {
   appState.resultsData = data || { runs: [], averages: [] };
   appState.selectedResultDir = "";
   currentResultPdbKey = "";
+  currentResultData = null;
   const nextRoot = normalizePathForCompare(resolvedRoot);
   if (prevRoot !== nextRoot) {
     resultPoseByPdb = new Map();
@@ -2362,11 +2382,13 @@ function highlightInteractionBond(inter, selectedIdx) {
 function renderResultDetail(result) {
   if (!els.resultDetail) return;
   if (!result) {
+    currentResultData = null;
     setCurrentResultFlexSelection(null);
     els.resultDetail.innerHTML = '<div class="helper">Select a run from the table to preview details.</div>';
     return;
   }
   if (result.view === "average") {
+    currentResultData = null;
     setCurrentResultFlexSelection(null);
     els.resultDetail.innerHTML = `
       <div class="result-detail-grid">
@@ -2450,13 +2472,16 @@ function renderResultDetail(result) {
 
 async function loadResultDetail(resultDir) {
   if (!resultDir) return;
+  const requestId = ++resultDetailRequestId;
   enforceResultsInteractionToggle();
   const data = await fetchJSON("/api/results/detail", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ result_dir: resultDir }),
   });
+  if (requestId !== resultDetailRequestId) return;
   const result = data.result || {};
+  currentResultData = result;
   setCurrentResultFlexSelection(result);
   if (currentResultFlexSelectionData && els.showFlexResidues) {
     els.showFlexResidues.checked = true;
@@ -2486,13 +2511,19 @@ function buildResultFocusSelection(ligandSele) {
 }
 
 function getPdbResultKey(result) {
-  return String(result?.pdb_id || "").trim().toUpperCase();
+  const resultDir = String(result?.result_dir || "").trim();
+  if (resultDir) return resultDir;
+  const pdbId = String(result?.pdb_id || "").trim().toUpperCase();
+  const runId = String(result?.run_id || "").trim();
+  const ligand = String(result?.ligand_display_name || result?.ligand_resname || "").trim();
+  return [pdbId, runId, ligand].filter(Boolean).join("::");
 }
 
 async function loadResultStructure(result, originalReceptorPath) {
   const path = String(result?.complex_path || result?.pose_path || result?.receptor_path || "").trim();
   if (!path) return;
   if (!initViewer()) return;
+  const requestId = ++resultStructureRequestId;
   const pdbKey = getPdbResultKey(result);
   currentResultPdbKey = pdbKey || "";
   const cachedPose = pdbKey ? resultPoseByPdb.get(pdbKey) : null;
@@ -2501,27 +2532,14 @@ async function loadResultStructure(result, originalReceptorPath) {
     if (!resp.ok) return;
     const text = await resp.text();
     const blob = new Blob([text], { type: "text/plain" });
-    if (comp) {
-      stage.removeComponent(comp);
-      comp = null;
-    }
     const component = await stage.loadFile(blob, { ext: "pdb" });
-    comp = component;
-    representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, residueSearch: null, flexResidueSearch: null, highlightedResidue: null };
-    selectedAtomData = null;
-    externalGridSelectionData = appState.selectedReceptor
-      ? (gridSelectionMetaPerReceptor[appState.selectedReceptor] || null)
-      : null;
-    updateSelectedAtomInfo();
-    updateGridSelectionInfo();
-
-    // Remove old native ligand component
-    if (nativeLigComp) {
-      try {
-        stage.removeComponent(nativeLigComp);
-      } catch (e) { }
-      nativeLigComp = null;
+    if (requestId !== resultStructureRequestId) {
+      try { stage.removeComponent(component); } catch (e) { }
+      return;
     }
+    const previousComp = comp;
+    const previousNativeLigComp = nativeLigComp;
+    let nextNativeLigComp = null;
 
     // Load ORIGINAL receptor PDB (with native ligands) for native ligand visualization
     if (originalReceptorPath) {
@@ -2530,12 +2548,33 @@ async function loadResultStructure(result, originalReceptorPath) {
         if (ligResp.ok) {
           const ligText = await ligResp.text();
           const ligBlob = new Blob([ligText], { type: "text/plain" });
-          nativeLigComp = await stage.loadFile(ligBlob, { ext: "pdb" });
-          console.log("Loaded original receptor for native ligands:", originalReceptorPath);
+          nextNativeLigComp = await stage.loadFile(ligBlob, { ext: "pdb" });
+          if (requestId !== resultStructureRequestId) {
+            try { stage.removeComponent(component); } catch (e) { }
+            try { stage.removeComponent(nextNativeLigComp); } catch (e) { }
+            return;
+          }
         }
       } catch (e) {
         console.warn("Failed to load original receptor:", e);
       }
+    }
+
+    comp = component;
+    nativeLigComp = nextNativeLigComp;
+    representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, residueSearch: null, flexResidueSearch: null, highlightedResidue: null };
+    selectedAtomData = null;
+    externalGridSelectionData = appState.selectedReceptor
+      ? (gridSelectionMetaPerReceptor[appState.selectedReceptor] || null)
+      : null;
+    updateSelectedAtomInfo();
+    updateGridSelectionInfo();
+
+    if (previousComp) {
+      try { stage.removeComponent(previousComp); } catch (e) { }
+    }
+    if (previousNativeLigComp) {
+      try { stage.removeComponent(previousNativeLigComp); } catch (e) { }
     }
 
     // Clear any bond shapes from previous selection
@@ -3708,6 +3747,113 @@ async function selectReceptor(pdbId) {
 // Queue & Run Functions
 // =====================================================
 
+function normalizeQueueBatchId(batchId) {
+  if (batchId === null || batchId === undefined || batchId === "") return null;
+  const num = Number(batchId);
+  if (Number.isFinite(num)) return String(Math.trunc(num));
+  const text = String(batchId || "").trim();
+  return text || null;
+}
+
+function getQueueItemsForBatch(batchId, queue = appState.queueData || []) {
+  const normalizedBatchId = normalizeQueueBatchId(batchId);
+  if (!normalizedBatchId) return [];
+  return (Array.isArray(queue) ? queue : []).filter(
+    (row) => normalizeQueueBatchId(row?.batch_id) === normalizedBatchId
+  );
+}
+
+function updateQueueEditorUI() {
+  const batchId = normalizeQueueBatchId(appState.selectedQueueBatchId);
+  if (els.buildQueue) {
+    els.buildQueue.textContent = batchId ? "Update Queue" : "Build queue";
+  }
+  if (els.clearQueueSelection) {
+    els.clearQueueSelection.style.display = batchId ? "" : "none";
+  }
+  if (els.queueEditorStatus) {
+    els.queueEditorStatus.textContent = batchId
+      ? `Editing batch #${batchId}`
+      : "New queue build will append as a separate batch.";
+  }
+}
+
+function clearQueueBatchSelection({ keepForm = true } = {}) {
+  appState.selectedQueueBatchId = null;
+  appState.queueEditorReceptorIds = [];
+  updateQueueEditorUI();
+  if (!keepForm) {
+    if (els.outRootName) els.outRootName.value = "";
+    if (els.outRootPath && !els.outRootPath.value) {
+      els.outRootPath.value = "data/dock";
+    }
+  }
+}
+
+async function setAppModeQuietly(mode) {
+  const nextMode = mode === "Redocking" ? "Redocking" : "Docking";
+  if (appState.mode !== nextMode) {
+    await fetchJSON("/api/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: nextMode }),
+    });
+    appState.mode = nextMode;
+    updateModeUI();
+  }
+}
+
+async function loadQueueBatchIntoEditor(batchId) {
+  const items = getQueueItemsForBatch(batchId);
+  if (!items.length) return;
+  const normalizedBatchId = normalizeQueueBatchId(batchId);
+  const first = items[0] || {};
+  const receptorIds = [...new Set(items.map((row) => String(row?.pdb_id || "").trim().toUpperCase()).filter(Boolean))];
+  appState.selectedQueueBatchId = normalizedBatchId;
+  appState.queueEditorReceptorIds = receptorIds;
+
+  if (document.getElementById("runCount")) {
+    document.getElementById("runCount").value = String(first.run_count || 1);
+  }
+  if (document.getElementById("gridPadding")) {
+    document.getElementById("gridPadding").value = String(first.padding ?? first.grid_pad ?? 0);
+  }
+  if (els.outRootPath) {
+    els.outRootPath.value = first.out_root_path || "data/dock";
+  }
+  if (els.outRootName) {
+    els.outRootName.value = first.out_root_name || "";
+  }
+
+  appState.dockingConfig = normalizeDockingConfig(first.docking_config || appState.dockingConfig || DEFAULT_DOCKING_CONFIG);
+  applyAdvancedDockingConfigToModal(appState.dockingConfig);
+  syncDockingModeUI();
+  renderDockingConfigSummary();
+
+  items.forEach((row) => {
+    const pdbId = String(row?.pdb_id || "").trim().toUpperCase();
+    if (!pdbId) return;
+    if (!appState.selectionMap) appState.selectionMap = {};
+    appState.selectionMap[pdbId] = {
+      chain: normalizeChainValue(row.chain || "all"),
+      ligand_resname: String(row.ligand_resname || row.ligand_name || ""),
+      flex_residues: normalizeFlexResidueList(row.flex_residues || row.flex_residue_spec || []),
+    };
+    if (row.grid_params && typeof row.grid_params === "object") {
+      gridDataPerReceptor[pdbId] = { ...row.grid_params };
+    }
+  });
+
+  await setAppModeQuietly(first.job_type === "Redocking" ? "Redocking" : "Docking");
+  await refreshReceptorSummary();
+  if (receptorIds.length) {
+    await selectReceptor(receptorIds[0]);
+  }
+  updateQueueEditorUI();
+  renderQueueTable(appState.queueData || []);
+  scheduleUIStateSave();
+}
+
 function renderRecentDockings(rows) {
   if (!els.recentDockingsTable) return;
   if (!Array.isArray(rows) || rows.length === 0) {
@@ -3849,7 +3995,10 @@ async function continueRecentQueue(itemId, outRootHint = "") {
   setRunStatus(appState.runStatus);
   appState.queueCount = data.queue_count || 0;
   updateQueueCount();
-  if (data.queue) renderQueueTable(data.queue || []);
+  if (data.queue) {
+    appState.queueData = Array.isArray(data.queue) ? data.queue : [];
+    renderQueueTable(appState.queueData);
+  }
 
   if (els.recentDockingsMeta) {
     els.recentDockingsMeta.textContent = data.message || "Continue queue started.";
@@ -3869,7 +4018,23 @@ async function buildQueue() {
   const runCount = document.getElementById("runCount")?.value || 10;
   const padding = document.getElementById("gridPadding")?.value || 0;
   const activeSet = new Set(activeLigands || []);
-  const selectionMap = normalizeSelectionMapState(JSON.parse(JSON.stringify(appState.selectionMap || {})));
+  const normalizedSelectionMap = normalizeSelectionMapState(JSON.parse(JSON.stringify(appState.selectionMap || {})));
+  const selectedBatchId = normalizeQueueBatchId(appState.selectedQueueBatchId);
+  const queueEditorReceptorIds = selectedBatchId && (appState.queueEditorReceptorIds || []).length === 0
+    ? getQueueItemsForBatch(selectedBatchId, appState.queueData)
+        .map((row) => String(row?.pdb_id || "").trim().toUpperCase())
+        .filter(Boolean)
+    : (appState.queueEditorReceptorIds || []);
+  const receptorFilter = selectedBatchId
+    ? new Set(queueEditorReceptorIds.map((pdbId) => String(pdbId || "").trim().toUpperCase()).filter(Boolean))
+    : null;
+  const selectionMap = {};
+  Object.entries(normalizedSelectionMap).forEach(([pdbId, row]) => {
+    const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
+    if (!normalizedPdbId) return;
+    if (receptorFilter && !receptorFilter.has(normalizedPdbId)) return;
+    selectionMap[normalizedPdbId] = { ...row };
+  });
   Object.keys(selectionMap).forEach((pdbId) => {
     const row = selectionMap[pdbId] || {};
     const lig = String(row.ligand_resname || row.ligand || "").trim();
@@ -3881,39 +4046,70 @@ async function buildQueue() {
     }
     row.flex_residues = normalizeFlexResidueList(row.flex_residues || row.flex_residue_spec || []);
   });
+  const gridData = {};
+  Object.entries(gridDataPerReceptor || {}).forEach(([pdbId, grid]) => {
+    const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
+    if (!normalizedPdbId || !grid || typeof grid !== "object") return;
+    if (receptorFilter && !receptorFilter.has(normalizedPdbId)) return;
+    gridData[normalizedPdbId] = { ...grid };
+  });
 
   const payload = {
     run_count: parseInt(runCount),
     padding: parseFloat(padding),
     docking_config: normalizeDockingConfig(appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
     selection_map: selectionMap,
-    grid_data: gridDataPerReceptor || {},
+    grid_data: gridData,
     mode: appState.mode || "Docking",
     out_root_path: document.getElementById("outRootPath")?.value || "data/dock",
     out_root_name: document.getElementById("outRootName")?.value || "",
+    replace_queue: false,
   };
+  if (selectedBatchId) {
+    payload.update_batch_id = parseInt(selectedBatchId, 10);
+  }
 
   const data = await fetchJSON("/api/queue/build", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  appState.queueData = Array.isArray(data.queue) ? data.queue : [];
   appState.queueCount = data.queue_count || 0;
+  if (selectedBatchId) {
+    appState.selectedQueueBatchId = selectedBatchId;
+  } else {
+    appState.selectedQueueBatchId = null;
+    appState.queueEditorReceptorIds = [];
+  }
   updateQueueCount();
-  renderQueueTable(data.queue || []);
+  updateQueueEditorUI();
+  renderQueueTable(appState.queueData);
 }
 
 function renderQueueTable(queue) {
   if (!els.queueTable) return;
+  appState.queueData = Array.isArray(queue) ? queue.map((row) => ({ ...row })) : [];
+  const queueRows = appState.queueData;
   els.queueTable.innerHTML = "";
   // We change display to block because we will have multiple tables/headers
-  els.queueTable.style.display = queue.length > 0 ? "block" : "none";
+  els.queueTable.style.display = queueRows.length > 0 ? "block" : "none";
 
-  if (queue.length === 0) return;
+  if (queueRows.length === 0) {
+    appState.selectedQueueBatchId = null;
+    appState.queueEditorReceptorIds = [];
+    updateQueueEditorUI();
+    return;
+  }
+  const knownBatchIds = new Set(queueRows.map((row) => normalizeQueueBatchId(row?.batch_id)).filter(Boolean));
+  if (appState.selectedQueueBatchId && !knownBatchIds.has(normalizeQueueBatchId(appState.selectedQueueBatchId))) {
+    appState.selectedQueueBatchId = null;
+    appState.queueEditorReceptorIds = [];
+  }
 
   // Group by batch_id
   const batches = {};
-  queue.forEach(item => {
+  queueRows.forEach(item => {
     const bid = item.batch_id || "default";
     if (!batches[bid]) batches[bid] = [];
     batches[bid].push(item);
@@ -3926,6 +4122,9 @@ function renderQueueTable(queue) {
 
   batchIds.forEach(bid => {
     const items = batches[bid];
+    const normalizedBatchId = normalizeQueueBatchId(bid);
+    const isSelectedBatch = normalizedBatchId && normalizedBatchId === normalizeQueueBatchId(appState.selectedQueueBatchId);
+    const firstItem = items[0] || {};
 
     // Batch Container
     const batchContainer = document.createElement("div");
@@ -3933,6 +4132,10 @@ function renderQueueTable(queue) {
     batchContainer.style.border = "1px solid var(--border)";
     batchContainer.style.borderRadius = "6px";
     batchContainer.style.overflow = "hidden";
+    batchContainer.style.cursor = "pointer";
+    if (isSelectedBatch) {
+      batchContainer.classList.add("queue-batch-selected");
+    }
 
     // Batch Header
     const batchHeader = document.createElement("div");
@@ -3954,6 +4157,34 @@ function renderQueueTable(queue) {
     title.style.fontSize = "13px";
     title.innerHTML = `Batch #${bid} <span style="font-weight:normal; color:var(--muted); margin-left:8px;">[${batchType}]</span> (${items.length} jobs, ${totalRuns} total runs)`;
 
+    const titleWrap = document.createElement("div");
+    const meta = document.createElement("div");
+    meta.className = "queue-batch-meta";
+    meta.innerHTML = `
+      <span>Path: <code>${escapeHtml(String(firstItem.out_root_path || "data/dock"))}</code></span>
+      <span>Folder: <code>${escapeHtml(String(firstItem.out_root_name || ""))}</code></span>
+      <span>Runs: ${escapeHtml(String(firstItem.run_count || 1))}</span>
+      <span>Padding: ${escapeHtml(String(firstItem.padding ?? firstItem.grid_pad ?? 0))}</span>
+    `;
+    titleWrap.appendChild(title);
+    titleWrap.appendChild(meta);
+
+    const headerActions = document.createElement("div");
+    headerActions.style.display = "flex";
+    headerActions.style.gap = "8px";
+    headerActions.style.alignItems = "center";
+
+    const editBtn = document.createElement("button");
+    editBtn.textContent = "Edit Queue";
+    editBtn.className = "secondary";
+    editBtn.style.padding = "2px 8px";
+    editBtn.style.fontSize = "11px";
+    editBtn.style.height = "auto";
+    editBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await loadQueueBatchIntoEditor(bid);
+    });
+
     const delBtn = document.createElement("button");
     delBtn.textContent = "Delete Batch";
     delBtn.className = "secondary";
@@ -3961,21 +4192,31 @@ function renderQueueTable(queue) {
     delBtn.style.fontSize = "11px";
     delBtn.style.height = "auto";
     delBtn.style.color = "var(--danger)";
-    delBtn.onclick = async () => {
+    delBtn.onclick = async (event) => {
+      event.stopPropagation();
       if (confirm("Delete this batch?")) {
         const res = await fetchJSON("/api/queue/remove_batch", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ batch_id: parseInt(bid) })
         });
+        appState.queueData = Array.isArray(res.queue) ? res.queue : [];
+        if (normalizeQueueBatchId(appState.selectedQueueBatchId) === normalizedBatchId) {
+          clearQueueBatchSelection();
+        }
         appState.queueCount = res.queue_count || 0;
         updateQueueCount();
-        renderQueueTable(res.queue || []);
+        renderQueueTable(appState.queueData);
       }
     };
 
-    batchHeader.appendChild(title);
-    batchHeader.appendChild(delBtn);
+    batchHeader.addEventListener("click", async () => {
+      await loadQueueBatchIntoEditor(bid);
+    });
+    headerActions.appendChild(editBtn);
+    headerActions.appendChild(delBtn);
+    batchHeader.appendChild(titleWrap);
+    batchHeader.appendChild(headerActions);
     batchContainer.appendChild(batchHeader);
 
     // Table Header
@@ -4016,11 +4257,15 @@ function renderQueueTable(queue) {
             <div class="queue-grid-cell">${gridDisplay}</div>
             <div>${item.run_count || 1}</div>
         `;
+      row.addEventListener("click", async () => {
+        await loadQueueBatchIntoEditor(bid);
+      });
       batchContainer.appendChild(row);
     });
 
     els.queueTable.appendChild(batchContainer);
   });
+  updateQueueEditorUI();
 }
 
 async function startRun() {
@@ -4035,10 +4280,22 @@ async function startRun() {
   }
 
   const isTestMode = document.getElementById("testModeCheck")?.checked || false;
+  const batchIds = [...new Set((appState.queueData || []).map((row) => normalizeQueueBatchId(row?.batch_id)).filter(Boolean))];
+  let targetBatchId = normalizeQueueBatchId(appState.selectedQueueBatchId);
+  if (!targetBatchId && batchIds.length === 1) {
+    targetBatchId = batchIds[0];
+  }
+  if (!targetBatchId && batchIds.length > 1) {
+    alert("Select the queue batch you want to run first.");
+    return;
+  }
   const data = await fetchJSON("/api/run/start", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ is_test_mode: isTestMode })
+    body: JSON.stringify({
+      is_test_mode: isTestMode,
+      batch_id: targetBatchId ? parseInt(targetBatchId, 10) : null,
+    })
   });
   appState.runStatus = "running";
   appState.activeRunOutRoot = String(data.out_root || extractOutRootFromCommand(data.command || "") || "").trim();
@@ -4298,6 +4555,11 @@ function bindEvents() {
       } catch (err) {
         alert(err.message || "Failed to build queue.");
       }
+    });
+  }
+  if (els.clearQueueSelection) {
+    els.clearQueueSelection.addEventListener("click", () => {
+      clearQueueBatchSelection();
     });
   }
 
@@ -4838,9 +5100,10 @@ function bindEvents() {
         if (data.selection_map) appState.selectionMap = normalizeSelectionMapState(data.selection_map);
         if (data.grid_data) gridDataPerReceptor = data.grid_data;
         if (data.queue) {
-          appState.queueCount = data.queue.length;
+          appState.queueData = Array.isArray(data.queue) ? data.queue : [];
+          appState.queueCount = appState.queueData.length;
           updateQueueCount();
-          renderQueueTable(data.queue);
+          renderQueueTable(appState.queueData);
         }
         if (data.docking_config) {
           appState.dockingConfig = normalizeDockingConfig(data.docking_config);

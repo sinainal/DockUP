@@ -321,6 +321,7 @@ def api_state() -> JSONResponse:
         "active_ligands": STATE.get("active_ligands", []),
         "grid_file_path": STATE["grid_file_path"],
         "queue_count": len(STATE["queue"]),
+        "queue": STATE.get("queue", []),
         "runs": STATE["runs"],
         "grid_pad": STATE["grid_pad"],
         "docking_config": normalize_docking_config(STATE.get("docking_config") or {}),
@@ -338,6 +339,7 @@ def api_state() -> JSONResponse:
 def api_mode(payload: ModePayload) -> JSONResponse:
     mode = payload.mode if payload.mode in {"Docking", "Redocking", "Results", "Report"} else "Docking"
     STATE["mode"] = mode
+    save_state_cache()
     return JSONResponse({"mode": STATE["mode"]})
 
 
@@ -689,8 +691,34 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
             STATE["selected_ligand"] = STATE["selection_map"][selected].get("ligand_resname", "")
 
     new_jobs = _build_queue(payload)
-    replace_queue = bool(payload.get("replace_queue", True))
-    if replace_queue:
+    update_batch_id = payload.get("update_batch_id")
+    replace_queue = bool(payload.get("replace_queue", False))
+    if update_batch_id is not None:
+        try:
+            normalized_batch_id = int(update_batch_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid update_batch_id.")
+        for job in new_jobs:
+            job["batch_id"] = normalized_batch_id
+        existing = list(STATE.get("queue", []))
+        next_queue: list[dict[str, Any]] = []
+        inserted = False
+        for row in existing:
+            row_batch_id = row.get("batch_id")
+            try:
+                row_batch_id = int(row_batch_id)
+            except (TypeError, ValueError):
+                pass
+            if row_batch_id == normalized_batch_id:
+                if not inserted:
+                    next_queue.extend(new_jobs)
+                    inserted = True
+                continue
+            next_queue.append(row)
+        if not inserted:
+            next_queue.extend(new_jobs)
+        STATE["queue"] = next_queue
+    elif replace_queue:
         STATE["queue"] = list(new_jobs)
     else:
         STATE["queue"].extend(new_jobs)
@@ -730,26 +758,33 @@ def run_start(payload: RunStartPayload = RunStartPayload()) -> JSONResponse:
             return JSONResponse({"error": "Run already in progress."}, status_code=409)
         if not STATE["queue"]:
             return JSONResponse({"error": "Queue is empty."}, status_code=400)
-        manifest_path = write_manifest(STATE["queue"], DOCK_DIR / "manifest.tsv")
-        total_runs = sum(int(row.get("run_count") or 1) for row in STATE["queue"]) or 0
-        preview_cmd = build_preview_command(STATE["queue"], str(STATE.get("out_root") or ""))
+        queue_rows = list(STATE["queue"])
+        if payload.batch_id is not None:
+            queue_rows = [row for row in queue_rows if str(row.get("batch_id")) == str(payload.batch_id)]
+            if not queue_rows:
+                return JSONResponse({"error": "Selected queue batch was not found."}, status_code=404)
+        manifest_path = write_manifest(queue_rows, DOCK_DIR / "manifest.tsv")
+        total_runs = sum(int(row.get("run_count") or 1) for row in queue_rows) or 0
+        queue_runs = int(queue_rows[0].get("run_count") or STATE.get("runs") or 1)
+        queue_out_root = str(queue_rows[0].get("out_root") or STATE.get("out_root") or "")
+        preview_cmd = build_preview_command(queue_rows, queue_out_root)
 
         session = register_run_session(
-            STATE["out_root"],
-            STATE["runs"],
+            queue_out_root,
+            queue_runs,
             manifest_path,
             planned_total=total_runs,
         )
         persist_root_run_meta(
-            out_root=STATE["out_root"],
+            out_root=queue_out_root,
             manifest_path=manifest_path,
             mode="fresh",
             planned_total_runs=total_runs,
-            queue_count=len(STATE["queue"]),
-            runs=STATE["runs"],
+            queue_count=len(queue_rows),
+            runs=queue_runs,
             session_id=str(session.get("id") or ""),
         )
-        _start_run(manifest_path, STATE["runs"], STATE["out_root"], total_runs, preview_cmd, payload.is_test_mode)
+        _start_run(manifest_path, queue_runs, queue_out_root, total_runs, preview_cmd, payload.is_test_mode)
     return JSONResponse(
         {
             "status": RUN_STATE["status"],

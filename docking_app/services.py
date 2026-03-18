@@ -21,7 +21,12 @@ from fastapi import HTTPException, UploadFile
 
 from . import state
 from .config import BASE, DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR, WORKSPACE_DIR
-from .helpers import build_flex_residue_spec, normalize_docking_config, normalize_flex_residue_list
+from .helpers import (
+    build_flex_residue_spec,
+    normalize_docking_config,
+    normalize_flex_residue_list,
+    relative_to_base,
+)
 from .manifest import RUN_META_DIR_NAME
 from .state import (
     AMINO_ACIDS,
@@ -710,6 +715,8 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
     out_root = _safe_out_root()
     grid_store_dir = out_root / "_grid"
     grid_store_dir.mkdir(parents=True, exist_ok=True)
+    out_root_path_display = str(relative_to_base(out_root.parent))
+    out_root_name = out_root.name
 
     for meta in STATE["receptor_meta"]:
         pdb_id = meta["pdb_id"]
@@ -826,6 +833,9 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "grid_file": str(grid_file_path),
                 "padding": padding,
                 "run_count": run_count,
+                "out_root": str(out_root),
+                "out_root_path": out_root_path_display,
+                "out_root_name": out_root_name,
                 "docking_config": docking_config,
                 "flex_residues": flex_residues,
                 "flex_residue_spec": flex_residue_spec,
