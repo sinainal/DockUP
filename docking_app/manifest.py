@@ -276,6 +276,80 @@ def run_job_key(pdb_id: str, ligand_folder: str, run_id: int) -> tuple[str, str,
     )
 
 
+def resolve_out_root_path(out_root: str) -> Path:
+    """Resolve an out_root string to an absolute path under the workspace dock dir."""
+    raw = str(out_root or "").strip()
+    if not raw:
+        return DOCK_DIR.resolve()
+    out_root_path = Path(raw).expanduser()
+    if not out_root_path.is_absolute():
+        ws_candidate = (WORKSPACE_DIR / out_root_path).resolve()
+        if raw.startswith("data/") or raw.startswith("data\\"):
+            out_root_path = ws_candidate
+        elif ws_candidate.parent.exists():
+            out_root_path = ws_candidate
+        else:
+            out_root_path = (BASE / out_root_path).resolve()
+    else:
+        out_root_path = out_root_path.resolve()
+    return out_root_path
+
+
+def materialize_queue_runs(queue: list[dict[str, Any]], out_root: str) -> list[dict[str, Any]]:
+    """Expand queue rows into execution rows with unique force_run_id values.
+
+    Fresh queue rows that only specify ``run_count`` are assigned the next available
+    run ids under ``out_root`` so rerunning into the same folder appends instead of
+    overwriting existing ``runN`` directories. Resume rows that already carry an
+    explicit ``force_run_id`` are preserved as-is.
+    """
+    out_root_path = resolve_out_root_path(out_root)
+    existing_runs = scan_existing_runs(out_root_path)
+    next_run_by_job: dict[tuple[str, str], int] = {}
+    for (pdb_id, ligand_folder, run_id), _row in existing_runs.items():
+        job_key = (str(pdb_id or "").strip(), str(ligand_folder or "").strip())
+        next_run_by_job[job_key] = max(next_run_by_job.get(job_key, 0), int(run_id))
+
+    rows: list[dict[str, Any]] = []
+    for row in queue:
+        pdb_id = str(row.get("pdb_id") or "").strip()
+        ligand_value = (
+            row.get("ligand_resname")
+            or row.get("ligand_name")
+            or row.get("ligand")
+            or ""
+        )
+        lig_spec = str(row.get("lig_spec") or "").strip()
+        ligand_folder = normalize_ligand_folder_name(str(ligand_value), lig_spec)
+        job_key = (pdb_id, ligand_folder)
+
+        forced_run_raw = row.get("force_run_id")
+        if forced_run_raw not in (None, "", "__EMPTY__"):
+            try:
+                forced_run_id = int(forced_run_raw)
+            except (TypeError, ValueError):
+                forced_run_id = 0
+            if forced_run_id <= 0:
+                forced_run_id = 1
+            clone = dict(row)
+            clone["force_run_id"] = forced_run_id
+            clone["run_count"] = 1
+            rows.append(clone)
+            next_run_by_job[job_key] = max(next_run_by_job.get(job_key, 0), forced_run_id)
+            continue
+
+        run_total = max(1, int(row.get("run_count") or 1))
+        next_run_id = next_run_by_job.get(job_key, 0)
+        for _ in range(run_total):
+            next_run_id += 1
+            clone = dict(row)
+            clone["force_run_id"] = next_run_id
+            clone["run_count"] = 1
+            rows.append(clone)
+        next_run_by_job[job_key] = next_run_id
+    return rows
+
+
 def scan_existing_runs(out_root: Path) -> dict[tuple[str, str, int], dict[str, Any]]:
     """Scan an output root for existing run directories and their status."""
     index: dict[tuple[str, str, int], dict[str, Any]] = {}

@@ -26,8 +26,10 @@ from ..helpers import (
 )
 from ..manifest import (
     build_preview_command,
+    materialize_queue_runs,
     normalize_ligand_folder_name,
     persist_root_run_meta,
+    resolve_out_root_path,
     write_manifest,
 )
 from ..models import (
@@ -763,11 +765,25 @@ def run_start(payload: RunStartPayload = RunStartPayload()) -> JSONResponse:
             queue_rows = [row for row in queue_rows if str(row.get("batch_id")) == str(payload.batch_id)]
             if not queue_rows:
                 return JSONResponse({"error": "Selected queue batch was not found."}, status_code=404)
-        manifest_path = write_manifest(queue_rows, DOCK_DIR / "manifest.tsv")
-        total_runs = sum(int(row.get("run_count") or 1) for row in queue_rows) or 0
-        queue_runs = int(queue_rows[0].get("run_count") or STATE.get("runs") or 1)
-        queue_out_root = str(queue_rows[0].get("out_root") or STATE.get("out_root") or "")
-        preview_cmd = build_preview_command(queue_rows, queue_out_root)
+
+        resolved_out_roots: list[str] = []
+        for row in queue_rows:
+            resolved_out_roots.append(
+                str(resolve_out_root_path(str(row.get("out_root") or STATE.get("out_root") or "")))
+            )
+        unique_out_roots = sorted({root for root in resolved_out_roots if root})
+        if len(unique_out_roots) > 1:
+            return JSONResponse(
+                {"error": "Selected queue batch has mixed output folders. Rebuild that batch first."},
+                status_code=400,
+            )
+        queue_out_root = unique_out_roots[0] if unique_out_roots else str(resolve_out_root_path(str(STATE.get("out_root") or "")))
+
+        execution_rows = materialize_queue_runs(queue_rows, queue_out_root)
+        manifest_path = write_manifest(execution_rows, DOCK_DIR / "manifest.tsv")
+        total_runs = len(execution_rows)
+        queue_runs = 1
+        preview_cmd = build_preview_command(execution_rows, queue_out_root)
 
         session = register_run_session(
             queue_out_root,
