@@ -109,14 +109,13 @@ _LIGAND_DIR_RESOLVED = LIGAND_DIR.resolve()
 
 # Fields to persist (exclude large pdb_text blobs)
 _PERSIST_KEYS = (
-    "mode", "selection_map", "selected_receptor", "selected_ligand",
-    "selected_chain", "active_ligands", "grid_file_path", "queue", "runs", "grid_pad",
+    "mode", "selected_receptor", "active_ligands", "queue", "runs", "grid_pad",
     "docking_config", "out_root", "out_root_path", "out_root_name",
     "results_root_path",
 )
 
 _PATH_KEYS = frozenset({
-    "out_root", "out_root_path", "results_root_path", "grid_file_path",
+    "out_root", "out_root_path", "results_root_path",
 })
 
 

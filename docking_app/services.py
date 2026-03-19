@@ -673,9 +673,14 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
     padding = payload.get("padding", 0.0)
     run_count = payload.get("run_count", 10)
     mode = payload.get("mode", "Docking")
-    docking_config = normalize_docking_config(
-        payload.get("docking_config") or STATE.get("docking_config") or {}
-    )
+    if "docking_config" in payload:
+        raw_docking_config = payload.get("docking_config")
+        docking_config = normalize_docking_config(
+            raw_docking_config if isinstance(raw_docking_config, dict) else {}
+        )
+    else:
+        docking_config = normalize_docking_config(STATE.get("docking_config") or {})
+    requested_flexible_mode = docking_config.get("docking_mode") == "flexible"
 
     ligand_files = _existing_files(LIGAND_DIR, (".sdf",))
     ligand_file_map = {lig.name: lig for lig in ligand_files}
@@ -727,10 +732,13 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
         sel = selection_map[pdb_id]
         chain = sel.get("chain", "all")
         selected_ligand = str(sel.get("ligand_resname", "") or sel.get("ligand", "")).strip()
-        flex_mode = docking_config.get("docking_mode") == "flexible"
         flex_residues = normalize_flex_residue_list(sel.get("flex_residues") or sel.get("flex_residue_spec") or [])
         flex_residue_spec = build_flex_residue_spec(flex_residues)
-        if not flex_mode:
+        effective_flex_mode = requested_flexible_mode and bool(flex_residue_spec)
+        row_docking_config = normalize_docking_config(
+            {**docking_config, "docking_mode": "flexible" if effective_flex_mode else "standard"}
+        )
+        if not effective_flex_mode:
             flex_residues = []
             flex_residue_spec = ""
 
@@ -778,15 +786,6 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
                         detail=f"Ligand file not found for '{selected_ligand}'.",
                     )
                 target_ligands = [{"name": lig.name, "path": str(lig)}]
-
-        if flex_mode and not flex_residue_spec:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"No flexible residues selected for {pdb_id}. "
-                    "Open Docking Settings and choose at least one flexible residue."
-                ),
-            )
 
         grid_sig = _grid_signature(pdb_id, grid_info)
         grid_file_path = grid_store_dir / f"{pdb_id}_{grid_sig}.txt"
@@ -836,7 +835,8 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "out_root": str(out_root),
                 "out_root_path": out_root_path_display,
                 "out_root_name": out_root_name,
-                "docking_config": docking_config,
+                "docking_config": row_docking_config,
+                "docking_mode": row_docking_config.get("docking_mode", "standard"),
                 "flex_residues": flex_residues,
                 "flex_residue_spec": flex_residue_spec,
             })

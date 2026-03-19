@@ -641,7 +641,13 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
     # We expect payload to be a dict with keys: run_count, padding, selection_map, grid_data
     # We append new jobs to the existing queue
     _normalize_receptor_state()
-    STATE["docking_config"] = normalize_docking_config(payload.get("docking_config") or STATE.get("docking_config") or {})
+    if "docking_config" in payload:
+        raw_docking_config = payload.get("docking_config")
+        STATE["docking_config"] = normalize_docking_config(
+            raw_docking_config if isinstance(raw_docking_config, dict) else {}
+        )
+    else:
+        STATE["docking_config"] = normalize_docking_config(STATE.get("docking_config") or {})
     run_count = payload.get("run_count")
     if run_count is not None:
         try:

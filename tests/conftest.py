@@ -67,6 +67,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "unit: Pure unit tests without live server.")
     config.addinivalue_line("markers", "api: API integration tests against live FastAPI app.")
+    config.addinivalue_line("markers", "browser: Real browser UI regression tests.")
     config.addinivalue_line("markers", "e2e: End-to-end flow tests.")
     config.addinivalue_line("markers", "render: Report render/plot flow tests.")
     config.addinivalue_line("markers", "slow: Long-running tests.")

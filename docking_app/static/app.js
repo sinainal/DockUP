@@ -69,6 +69,8 @@ let resultDetailRequestId = 0;
 let resultStructureRequestId = 0;
 let queueBatchModalDraft = null;
 let queueBatchModalActiveJobIndex = 0;
+let latestReceptorSummaryRows = [];
+let dockingFlexTargetReceptorId = "";
 
 const EXCLUDED_RESN = new Set([
   "HOH", "DOD", "WAT", "NA", "CL", "K", "MG", "CA", "ZN", "FE", "CU", "MN", "CO", "NI",
@@ -241,6 +243,8 @@ function initElements() {
   els.dockCfgVinaSeed = document.getElementById("dockCfgVinaSeed");
   els.dockCfgFlexInfo = document.getElementById("dockCfgFlexInfo");
   els.dockCfgFlexModeBlock = document.getElementById("dockCfgFlexModeBlock");
+  els.dockCfgFlexTargetField = document.getElementById("dockCfgFlexTargetField");
+  els.dockCfgFlexReceptor = document.getElementById("dockCfgFlexReceptor");
   els.runQueue = document.getElementById("runQueue");
   els.stopRunQueue = document.getElementById("stopRunQueue");
   els.runLog = document.getElementById("runLog");
@@ -610,6 +614,56 @@ function getFlexResiduesForReceptor(pdbId = appState.selectedReceptor) {
   return row ? normalizeFlexResidueList(row.flex_residues || []) : [];
 }
 
+function getAvailableReceptorIds() {
+  const ids = latestReceptorSummaryRows.map((row) => String(row?.pdb_id || "").trim().toUpperCase()).filter(Boolean);
+  if (ids.length) return [...new Set(ids)];
+  return Object.keys(appState.selectionMap || {}).map((id) => String(id || "").trim().toUpperCase()).filter(Boolean);
+}
+
+function getFlexTargetReceptorId() {
+  const available = new Set(getAvailableReceptorIds());
+  const preferred = String(dockingFlexTargetReceptorId || "").trim().toUpperCase();
+  if (preferred && available.has(preferred)) return preferred;
+  const selected = String(appState.selectedReceptor || "").trim().toUpperCase();
+  if (selected && available.has(selected)) return selected;
+  const first = [...available][0] || "";
+  dockingFlexTargetReceptorId = first;
+  return first;
+}
+
+function getFlexTargetGridData() {
+  const target = getFlexTargetReceptorId();
+  if (!target) return null;
+  if (target === String(appState.selectedReceptor || "").trim().toUpperCase()) {
+    return gridboxData || gridDataPerReceptor[target] || null;
+  }
+  return gridDataPerReceptor[target] || null;
+}
+
+function getTotalFlexResidueCount() {
+  return Object.keys(appState.selectionMap || {}).reduce((sum, pdbId) => {
+    return sum + getFlexResiduesForReceptor(pdbId).length;
+  }, 0);
+}
+
+function syncDockingFlexTargetReceptorOptions(preferredPdbId = "") {
+  if (!els.dockCfgFlexReceptor) return;
+  const ids = getAvailableReceptorIds();
+  const preferred = String(preferredPdbId || dockingFlexTargetReceptorId || appState.selectedReceptor || "").trim().toUpperCase();
+  dockingFlexTargetReceptorId = ids.includes(preferred) ? preferred : (ids[0] || "");
+  els.dockCfgFlexReceptor.innerHTML = "";
+  ids.forEach((pdbId) => {
+    const opt = document.createElement("option");
+    opt.value = pdbId;
+    opt.textContent = pdbId;
+    els.dockCfgFlexReceptor.appendChild(opt);
+  });
+  els.dockCfgFlexReceptor.value = dockingFlexTargetReceptorId;
+  if (els.dockCfgFlexTargetField) {
+    els.dockCfgFlexTargetField.style.display = ids.length > 1 ? "" : "none";
+  }
+}
+
 function setFlexResiduesForReceptor(pdbId, residues) {
   const row = ensureSelectionMapEntry(pdbId);
   if (!row) return [];
@@ -683,13 +737,14 @@ function dispatchGridSelectionContext(reason = "viewer-refresh") {
 }
 
 function dispatchFlexSelectionContext(reason = "viewer-refresh") {
+  const targetPdbId = getFlexTargetReceptorId();
   window.dispatchEvent(new CustomEvent("dockup:flex-selection-context", {
     detail: {
       reason: String(reason || "viewer-refresh"),
-      pdbId: String(appState.selectedReceptor || "").trim().toUpperCase(),
-      chain: getSelectedChainForReceptor(appState.selectedReceptor),
+      pdbId: targetPdbId,
+      chain: getSelectedChainForReceptor(targetPdbId),
       hasStructure: !!comp?.structure,
-      hasGrid: !!(gridboxData || (appState.selectedReceptor && gridDataPerReceptor[appState.selectedReceptor])),
+      hasGrid: !!getFlexTargetGridData(),
     },
   }));
 }
@@ -851,7 +906,7 @@ function applyAdvancedDockingConfigToModal(config) {
 function renderDockingConfigSummary() {
   const cfg = normalizeDockingConfig(appState.dockingConfig || {});
   if (els.openDockingConfigModal) {
-    const flexCount = getFlexResiduesForReceptor(appState.selectedReceptor).length;
+    const flexCount = getTotalFlexResidueCount();
     const flexSuffix = cfg.docking_mode === "flexible" ? ` | ${flexCount} flex residues` : "";
     els.openDockingConfigModal.title = `${cfg.docking_mode} | pH ${cfg.pdb2pqr_ph} | Exhaustiveness ${cfg.vina_exhaustiveness}${flexSuffix}`;
   }
@@ -859,11 +914,12 @@ function renderDockingConfigSummary() {
 
 function syncDockingModeUI() {
   const mode = normalizeDockingMode(els.dockCfgDockingMode?.value || appState.dockingConfig?.docking_mode || "standard");
+  syncDockingFlexTargetReceptorOptions();
   if (els.dockCfgFlexModeBlock) {
     els.dockCfgFlexModeBlock.style.display = mode === "flexible" ? "" : "none";
   }
   if (els.dockCfgFlexInfo) {
-    const selected = getFlexSelectionData(appState.selectedReceptor);
+    const selected = getFlexSelectionData(getFlexTargetReceptorId());
     const valueEl = els.dockCfgFlexInfo.querySelector(".grid-selection-value");
     if (valueEl) {
       valueEl.textContent = selected?.label || "None";
@@ -876,6 +932,7 @@ function syncDockingModeUI() {
 function openDockingConfigModal() {
   if (!els.dockingConfigModal) return;
   dockingConfigSnapshot = normalizeDockingConfig(appState.dockingConfig || {});
+  syncDockingFlexTargetReceptorOptions(appState.selectedReceptor);
   applyAdvancedDockingConfigToModal(dockingConfigSnapshot);
   dispatchFlexSelectionContext("modal-open");
   emitFlexResidueSelectionEvent("modal-open");
@@ -1458,11 +1515,7 @@ function bboxIntersectsGrid(bbox, grid) {
 
 function buildFlexibleResidueCatalog() {
   const catalog = buildResidueSearchCatalog();
-  const activeGrid = gridboxData || (
-    appState.selectedReceptor && gridDataPerReceptor[appState.selectedReceptor]
-      ? gridDataPerReceptor[appState.selectedReceptor]
-      : null
-  );
+  const activeGrid = getFlexTargetGridData();
   if (!activeGrid) return catalog;
   return catalog.filter((row) => bboxIntersectsGrid(row.bbox, activeGrid));
 }
@@ -1481,17 +1534,19 @@ function clearResidueSearchSelection({ refreshUI = true, reason = "clear" } = {}
 }
 
 function emitFlexResidueSelectionEvent(reason = "") {
+  const targetPdbId = getFlexTargetReceptorId();
+  const selection = getFlexSelectionData(targetPdbId);
   window.dispatchEvent(new CustomEvent("dockup:flex-selection-selection", {
     detail: {
-      active: !!getFlexSelectionData(appState.selectedReceptor),
-      label: String(getFlexSelectionData(appState.selectedReceptor)?.label || ""),
+      active: !!selection,
+      label: String(selection?.label || ""),
       reason: String(reason || ""),
     },
   }));
 }
 
 function clearFlexResidueSearchSelection({ refreshUI = true, reason = "clear" } = {}) {
-  clearFlexResiduesForReceptor(appState.selectedReceptor);
+  clearFlexResiduesForReceptor(getFlexTargetReceptorId());
   renderFlexResidueHighlight();
   emitFlexResidueSelectionEvent(reason);
   if (refreshUI) {
@@ -1503,7 +1558,7 @@ function clearFlexResidueSearchSelection({ refreshUI = true, reason = "clear" } 
 
 function applyFlexResidueSearchSelection(selection, { refreshUI = true, reason = "search" } = {}) {
   const rows = normalizeFlexResidueList(selection?.residues || []);
-  setFlexResiduesForReceptor(appState.selectedReceptor, rows);
+  setFlexResiduesForReceptor(getFlexTargetReceptorId(), rows);
   renderFlexResidueHighlight();
   emitFlexResidueSelectionEvent(reason);
   if (refreshUI) {
@@ -3074,15 +3129,15 @@ window.DockUPGridSelectionSearchBridge = {
 
 window.DockUPFlexSelectionBridge = {
   getSelectedContext: () => ({
-    pdbId: String(appState.selectedReceptor || "").trim().toUpperCase(),
-    chain: getSelectedChainForReceptor(appState.selectedReceptor),
-    hasGrid: !!(gridboxData || (appState.selectedReceptor && gridDataPerReceptor[appState.selectedReceptor])),
+    pdbId: getFlexTargetReceptorId(),
+    chain: getSelectedChainForReceptor(getFlexTargetReceptorId()),
+    hasGrid: !!getFlexTargetGridData(),
   }),
   getResidueCatalog: () => buildFlexibleResidueCatalog(),
   setResidueSelection: (selection, options) => applyFlexResidueSearchSelection(selection, options || {}),
   clearResidueSelection: (options) => clearFlexResidueSearchSelection(options || {}),
   getResidueSelection: () => {
-    const current = getFlexSelectionData(appState.selectedReceptor);
+    const current = getFlexSelectionData(getFlexTargetReceptorId());
     return current ? { ...current } : null;
   },
 };
@@ -3126,9 +3181,6 @@ function saveUIState() {
     const payload = {
       mode: appState.mode,
       resultsView: appState.resultsView,
-      selectionMap: appState.selectionMap,
-      gridDataPerReceptor,
-      gridSelectionMetaPerReceptor,
       dockingConfig: normalizeDockingConfig(appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
       ui: {
         selectedQueueBatchId: String(appState.selectedQueueBatchId || ""),
@@ -3197,30 +3249,6 @@ async function restoreUIState() {
     appState.resultsView = savedResultsView;
   }
 
-  const savedSelectionMap = toObjectOrEmpty(saved.selectionMap);
-  if (Object.keys(savedSelectionMap).length) {
-    const normalizedSelection = {};
-    Object.entries(savedSelectionMap).forEach(([key, val]) => {
-      const pdbId = String(key || "").trim().toUpperCase();
-      if (!pdbId) return;
-      const row = val && typeof val === "object" ? val : {};
-      normalizedSelection[pdbId] = {
-        chain: String(row.chain || "all"),
-        ligand_resname: String(row.ligand_resname || ""),
-        flex_residues: normalizeFlexResidueList(row.flex_residues || row.flex_residue_spec || []),
-      };
-    });
-    appState.selectionMap = normalizedSelection;
-  }
-
-  const savedGridMap = toObjectOrEmpty(saved.gridDataPerReceptor);
-  if (Object.keys(savedGridMap).length) {
-    gridDataPerReceptor = savedGridMap;
-  }
-  const savedGridSelectionMap = toObjectOrEmpty(saved.gridSelectionMetaPerReceptor);
-  if (Object.keys(savedGridSelectionMap).length) {
-    gridSelectionMetaPerReceptor = savedGridSelectionMap;
-  }
   appState.dockingConfig = normalizeDockingConfig(saved.dockingConfig || appState.dockingConfig || DEFAULT_DOCKING_CONFIG);
   appState.selectedQueueBatchId = normalizeQueueBatchId(ui.selectedQueueBatchId || appState.selectedQueueBatchId);
 
@@ -3382,6 +3410,7 @@ async function refreshReceptorFiles() {
 
 async function renderReceptorSummary(rows) {
   if (!els.receptorSummary) return;
+  latestReceptorSummaryRows = Array.isArray(rows) ? rows.map((row) => ({ ...row })) : [];
   els.receptorSummary.innerHTML = "";
 
   if (!rows || rows.length === 0) {
@@ -3882,6 +3911,11 @@ function buildQueueBatchDraft(batchId) {
   const items = getQueueItemsForBatch(batchId);
   if (!items.length) return null;
   const first = items[0] || {};
+  const hasFlexibleJobs = items.some((row) => normalizeFlexResidueList(row?.flex_residues || row?.flex_residue_spec || []).length > 0);
+  const draftConfig = normalizeDockingConfig(first.docking_config || DEFAULT_DOCKING_CONFIG);
+  if (hasFlexibleJobs) {
+    draftConfig.docking_mode = "flexible";
+  }
   return {
     batchId: normalizeQueueBatchId(batchId),
     jobType: String(first.job_type || "Docking"),
@@ -3889,7 +3923,7 @@ function buildQueueBatchDraft(batchId) {
     padding: Number(first.padding ?? first.grid_pad ?? 0) || 0,
     outRootPath: String(first.out_root_path || "data/dock"),
     outRootName: String(first.out_root_name || ""),
-    dockingConfig: normalizeDockingConfig(first.docking_config || DEFAULT_DOCKING_CONFIG),
+    dockingConfig: draftConfig,
     jobs: items.map((row, index) => ({
       index,
       pdbId: String(row?.pdb_id || "").trim().toUpperCase(),
@@ -4928,6 +4962,21 @@ function bindEvents() {
   if (els.saveDockingConfigModal) {
     els.saveDockingConfigModal.addEventListener("click", () => {
       saveDockingConfigModal();
+    });
+  }
+
+  if (els.dockCfgFlexReceptor) {
+    els.dockCfgFlexReceptor.addEventListener("change", async (event) => {
+      const targetPdbId = String(event.target.value || "").trim().toUpperCase();
+      if (!targetPdbId) return;
+      dockingFlexTargetReceptorId = targetPdbId;
+      syncDockingModeUI();
+      renderDockingConfigSummary();
+      dispatchFlexSelectionContext("flex-target-change");
+      emitFlexResidueSelectionEvent("flex-target-change");
+      if (targetPdbId !== String(appState.selectedReceptor || "").trim().toUpperCase()) {
+        await selectReceptor(targetPdbId);
+      }
     });
   }
 
