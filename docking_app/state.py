@@ -94,6 +94,13 @@ REPORT_STATE: dict[str, Any] = {
     "message": "",
     "errors": [],
     "last_logs": [],
+    "cancel_requested": False,
+    "current_receptor": "",
+    "current_ligand": "",
+    "current_run": "",
+    "render_mode": "",
+    "active_subprocess_pid": None,
+    "active_subprocess_label": "",
 }
 
 # ──────────────────────────────────────────────────────────────

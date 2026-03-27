@@ -36,7 +36,7 @@ def test_otofigure_pipeline_stages_case_layout_and_copies_final_png(
             return "/usr/bin/python3"
         return "/home/sina/anaconda3/bin/python3"
 
-    def fake_run_step(cmd: list[str], *, cwd: Path, env: dict[str, str]) -> str:
+    def fake_run_step(cmd: list[str], *, cwd: Path, env: dict[str, str], on_process_start=None, on_process_end=None) -> str:
         assert Path(cwd, "protein", "3pbl.pdb").exists()
         assert sorted(path.name for path in Path(cwd, "ligands").glob("*.pdb")) == [
             "run1.pdb",
@@ -93,7 +93,7 @@ def test_otofigure_pipeline_limits_to_first_five_runs(tmp_path: Path, monkeypatc
         lambda modules, *, env_var, extra_candidates=(): "/usr/bin/python3",
     )
 
-    def fake_run_step(cmd: list[str], *, cwd: Path, env: dict[str, str]) -> str:
+    def fake_run_step(cmd: list[str], *, cwd: Path, env: dict[str, str], on_process_start=None, on_process_end=None) -> str:
         ligands = sorted(path.name for path in Path(cwd, "ligands").glob("*.pdb"))
         assert ligands == ["run1.pdb", "run2.pdb", "run3.pdb", "run4.pdb", "run5.pdb"]
         script_name = Path(cmd[1]).name

@@ -10,7 +10,7 @@
   <link
     href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap"
     rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=33">
+  <link rel="stylesheet" href="/static/styles.css?v=39">
   <link rel="stylesheet" href="/static/grid_selection_search.css?v=1">
   <link rel="stylesheet" href="/static/docking_flex_selection.css?v=1">
   <link rel="stylesheet" href="/static/pocket_finder.css?v=1">
@@ -334,119 +334,122 @@
 
           <div class="section" id="reportSection" data-mode="report" style="display: none;">
             <div class="section-title">Automated Analysis Report</div>
-            <div class="field">
-              <label class="field-label">Selected Docking Source (Root: data/dock)</label>
-              <div class="results-path-row">
-                <input type="text" id="reportRootPath" placeholder="data/dock" value="data/dock" readonly>
-                <button class="secondary" id="pickReportRoot" type="button">Choose</button>
-                <input type="file" id="reportRootPicker" webkitdirectory directory style="display:none;">
-              </div>
-            </div>
-            <div class="field">
-              <label class="field-label">Output Folder</label>
-              <div class="results-path-row">
-                <input type="text" id="reportOutputPath" placeholder="data/dock/.../report_outputs" readonly>
-                <button class="secondary" id="pickReportOutput" type="button">Choose</button>
-                <input type="file" id="reportOutputPicker" webkitdirectory directory style="display:none;">
-                <button class="secondary" id="refreshReportsBtn" type="button">Refresh</button>
-              </div>
-              <div class="helper" id="reportMetaText">
-                Choose a docking source folder under <code>data/dock</code>. Receptor/ligand/run list auto-detects from selected source.
-              </div>
-              <div class="report-validation" id="reportValidationBox"></div>
-            </div>
-
-            <div class="report-stats" id="reportStats">
-              <div class="report-stat-card">
-                <div class="report-stat-label">Total Images</div>
-                <div class="report-stat-value" id="reportStatTotal">0</div>
-              </div>
-              <div class="report-stat-card">
-                <div class="report-stat-label">Render Images</div>
-                <div class="report-stat-value" id="reportStatRendered">0</div>
-              </div>
-              <div class="report-stat-card">
-                <div class="report-stat-label">Plot Images</div>
-                <div class="report-stat-value" id="reportStatGraphs">0</div>
-              </div>
-              <div class="report-stat-card">
-                <div class="report-stat-label">Report .docx</div>
-                <div class="report-stat-value" id="reportStatOther">No</div>
-              </div>
-            </div>
-
-            <div class="results-toolbar" style="margin-bottom: 15px; margin-top: 15px;">
+            <div class="report-topbar">
               <div class="toggle-group" id="reportTabToggle">
                 <button type="button" data-tab="images" class="toggle active">Render Images</button>
                 <button type="button" data-tab="graphs" class="toggle">Plots</button>
                 <button type="button" data-tab="report" class="toggle">Report</button>
               </div>
+              <div class="report-topbar-actions">
+                <button class="secondary report-source-trigger" id="pickReportRoot" type="button">Dock Folder</button>
+                <div class="report-source-quick" id="reportSourceQuickSummary">
+                  <div class="helper">Choose a dock folder</div>
+                </div>
+                <button class="secondary" id="refreshReportsBtn" type="button">Refresh</button>
+              </div>
+            </div>
+            <div class="report-source-hidden" aria-hidden="true">
+              <input type="text" id="reportRootPath" placeholder="data/dock" value="data/dock" readonly>
+              <input type="file" id="reportRootPicker" webkitdirectory directory style="display:none;">
+              <input type="text" id="reportOutputPath" placeholder="data/dock/.../report_outputs" readonly>
+              <input type="file" id="reportOutputPicker" webkitdirectory directory style="display:none;">
             </div>
 
             <div id="reportImagesTab" class="report-tab-content">
-              <div class="table simple" style="margin-bottom: 12px;">
-                <table>
-                  <thead>
-                    <tr>
-                      <th style="width:18%;">Dock Root</th>
-                      <th style="width:14%;">Main Type</th>
-                      <th style="width:10%;">Receptors</th>
-                      <th style="width:12%;">Ready</th>
-                      <th style="width:12%;">Dockings</th>
-                      <th>Path</th>
-                      <th style="width:250px;">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody id="reportSourceTableBody">
-                    <tr><td colspan="7" class="helper">Load report context to discover docking roots.</td></tr>
-                  </tbody>
-                </table>
-              </div>
+              <div class="report-workbench-card">
+                <div class="report-workbench-head">
+                  <div>
+                    <div class="field-label">Render Workspace</div>
+                  </div>
+                </div>
 
-              <div class="table simple" style="margin-bottom: 12px;">
-                <table>
-                  <thead>
-                    <tr>
-                      <th style="width:38px; text-align:center;"><input type="checkbox" id="selectAllReceptors" checked></th>
-                      <th>Receptor</th>
-                      <th>Ready Ligands</th>
-                      <th>Min Runs/Ligand</th>
-                      <th>Run</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody id="reportReceptorBody">
-                    <tr><td colspan="6" class="helper">Select source to load receptors.</td></tr>
-                  </tbody>
-                </table>
-              </div>
+                <div class="report-workbench-body">
+                  <div class="report-selection-panel">
+                    <div class="report-section-heading">
+                      <div class="field-label">Targets</div>
+                    </div>
+                    <div class="table simple report-workbench-table report-workbench-table--scroll">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th style="width:38px; text-align:center;"><input type="checkbox" id="selectAllReceptors" checked></th>
+                            <th>Receptor</th>
+                            <th>Ligand</th>
+                            <th>Run</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody id="reportReceptorBody">
+                          <tr><td colspan="5" class="helper">Select source to load receptors.</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
 
-              <div class="results-toolbar" style="margin-bottom: 12px; gap:10px; align-items:center;">
-                <div class="field" style="max-width:170px; margin:0;">
-                  <label class="field-label" for="reportDpi">Render DPI</label>
-                  <input type="number" id="reportDpi" min="30" max="600" step="10" value="120">
-                </div>
-                <div class="field" style="max-width:220px; margin:0;">
-                  <label class="field-label" for="reportRenderMode">Render Layout</label>
-                  <select id="reportRenderMode">
-                    <option value="classic">Classic Panel</option>
-                    <option value="otofigure">OtoFigure Multiview</option>
-                  </select>
-                </div>
-                <div class="report-root-editor-actions">
-                  <button class="primary" id="btnRenderPreview" type="button">Generate Render Images</button>
-                  <button class="secondary" id="deleteAllRenderImages" type="button" style="color:#b91c1c; border-color:#fecaca;">Delete All</button>
-                </div>
-              </div>
+                  <aside class="report-settings-panel" id="reportSettingsPanel">
+                    <div class="report-section-heading">
+                      <div class="field-label">Settings</div>
+                    </div>
 
-              <div class="run-card run-progress-panel" id="renderProgressPanel"
-                style="display:none; margin-bottom: 12px;">
-                <div class="run-progress-meta">
-                  <span id="renderProgressText">Rendering...</span>
-                  <span id="renderElapsed">00:00</span>
+                    <div class="report-settings-grid">
+                      <div class="field report-workbench-field">
+                        <label class="field-label" for="reportRenderMode">Render Layout</label>
+                        <select id="reportRenderMode">
+                          <option value="classic">Classic Panel</option>
+                          <option value="otofigure">OtoFigure Multiview</option>
+                        </select>
+                      </div>
+                      <div class="field report-workbench-field">
+                        <label class="field-label" for="reportDpi">Render DPI</label>
+                        <input type="number" id="reportDpi" min="30" max="600" step="10" value="120">
+                      </div>
+                    </div>
+
+                    <div class="report-layout-icons" id="reportLayoutIcons" aria-hidden="true">
+                      <div class="report-layout-icon-card is-active" data-mode="classic">
+                        <div class="report-layout-icon report-layout-icon--classic">
+                          <span></span><span></span><span></span><span></span>
+                        </div>
+                        <div class="report-layout-icon-label">Classic</div>
+                      </div>
+                      <div class="report-layout-icon-card" data-mode="otofigure">
+                        <div class="report-layout-icon report-layout-icon--otofigure">
+                          <span class="wide"></span><span></span><span></span>
+                        </div>
+                        <div class="report-layout-icon-label">OtoFigure</div>
+                      </div>
+                    </div>
+
+                    <div class="report-settings-summary" id="reportRenderSelectionSummary">
+                      <div class="helper">Select at least one ready receptor.</div>
+                    </div>
+
+                    <div class="report-render-state-card">
+                      <div class="report-render-state-header">
+                        <div class="field-label">Render State</div>
+                        <span class="status-chip" id="reportRenderStateChip">Idle</span>
+                      </div>
+                      <div class="report-render-state-meta" id="reportRenderStateMeta">No active render task.</div>
+                      <div class="report-render-state-text" id="reportRenderStateText">Ready to generate images.</div>
+                    </div>
+
+                    <div class="report-root-editor-actions report-root-editor-actions--compact">
+                      <button class="primary report-action-primary" id="btnRenderPreview" type="button">Generate Render Images</button>
+                      <button class="secondary" id="btnStopRender" type="button" disabled>Stop Render</button>
+                      <button class="secondary" id="deleteAllRenderImages" type="button" style="color:#b91c1c; border-color:#fecaca;">Delete All Renders</button>
+                    </div>
+                  </aside>
                 </div>
-                <div class="run-progress-track">
-                  <div class="run-progress-bar" id="renderProgressBar"></div>
+
+                <div class="run-card run-progress-panel report-workbench-progress" id="renderProgressPanel"
+                  style="display:none; margin-bottom: 0;">
+                  <div class="run-progress-meta">
+                    <span id="renderProgressText">Rendering...</span>
+                    <span id="renderElapsed">00:00</span>
+                  </div>
+                  <div class="run-progress-track">
+                    <div class="run-progress-bar" id="renderProgressBar"></div>
+                  </div>
                 </div>
               </div>
 
@@ -1038,6 +1041,43 @@
     </div>
   </div>
 
+  <div id="reportSourceModal" class="report-modal" role="dialog" aria-modal="true" aria-labelledby="reportSourceModalTitle">
+    <div class="report-modal-card report-source-modal-card">
+      <div class="report-modal-header">
+        <div>
+          <div class="section-title" id="reportSourceModalTitle" style="margin-bottom: 2px;">Select Dock Folder</div>
+          <div class="helper">Choose the docking folder you want to use for render, plot and report generation. The selected folder drives every panel below.</div>
+        </div>
+        <button class="secondary" id="closeReportSourceModal" type="button">Close</button>
+      </div>
+      <div class="report-source-modal-toolbar">
+        <div class="field report-source-search-field">
+          <label class="field-label" for="reportSourceSearch">Find Dock Folder</label>
+          <input type="text" id="reportSourceSearch" placeholder="Search by folder name, type or path">
+        </div>
+        <div class="report-source-modal-note" id="reportSourceListMeta">Loading dock folders...</div>
+      </div>
+      <div class="report-source-modal-layout">
+        <div class="report-source-modal-sidebar">
+          <div class="report-source-modal-panel">
+            <div class="field-label">Current Selection</div>
+            <div class="helper">Output paths are still generated automatically under <code>report_outputs</code>.</div>
+            <div class="report-source-summary report-source-summary--modal" id="reportSourceSummary">
+              <div class="helper" id="reportMetaText">
+                Choose a docking source folder to load receptors and generated report outputs.
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="report-source-modal-body">
+          <div id="reportSourceTableBody" class="report-source-folder-list">
+            <div class="helper">Load report context to discover docking roots.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="ligand3dModal" class="ligand3d-modal" role="dialog" aria-modal="true" aria-labelledby="ligand3dModalTitle">
     <div class="ligand3d-modal-card">
       <div class="ligand3d-modal-header">
@@ -1128,7 +1168,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=49"></script>
+  <script src="/static/app.js?v=54"></script>
   <script src="/static/grid_selection_search.js?v=1"></script>
   <script src="/static/docking_flex_selection.js?v=1"></script>
   <script src="/static/pocket_finder.js?v=1"></script>

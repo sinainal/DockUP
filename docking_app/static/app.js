@@ -276,6 +276,12 @@ function initElements() {
   els.pickReportRoot = document.getElementById("pickReportRoot");
   els.reportRootPicker = document.getElementById("reportRootPicker");
   els.reportRootPath = document.getElementById("reportRootPath");
+  els.reportSourceSummary = document.getElementById("reportSourceSummary");
+  els.reportSourceQuickSummary = document.getElementById("reportSourceQuickSummary");
+  els.reportSourceModal = document.getElementById("reportSourceModal");
+  els.closeReportSourceModal = document.getElementById("closeReportSourceModal");
+  els.reportSourceSearch = document.getElementById("reportSourceSearch");
+  els.reportSourceListMeta = document.getElementById("reportSourceListMeta");
   els.reportOutputPath = document.getElementById("reportOutputPath");
   els.pickReportOutput = document.getElementById("pickReportOutput");
   els.reportOutputPicker = document.getElementById("reportOutputPicker");
@@ -299,6 +305,10 @@ function initElements() {
   els.selectAllPlots = document.getElementById("selectAllPlots");
   els.reportDpi = document.getElementById("reportDpi");
   els.reportRenderMode = document.getElementById("reportRenderMode");
+  els.reportRenderSelectionSummary = document.getElementById("reportRenderSelectionSummary");
+  els.reportRenderStateChip = document.getElementById("reportRenderStateChip");
+  els.reportRenderStateMeta = document.getElementById("reportRenderStateMeta");
+  els.reportRenderStateText = document.getElementById("reportRenderStateText");
 
   els.reportStatTotal = document.getElementById("reportStatTotal");
   els.reportStatRendered = document.getElementById("reportStatRendered");
@@ -311,6 +321,7 @@ function initElements() {
   els.reportDocTab = document.getElementById("reportDocTab");
 
   els.btnRenderPreview = document.getElementById("btnRenderPreview");
+  els.btnStopRender = document.getElementById("btnStopRender");
   els.deleteAllRenderImages = document.getElementById("deleteAllRenderImages");
   els.refreshReportsBtn = document.getElementById("refreshReportsBtn");
 
@@ -3195,6 +3206,10 @@ function saveUIState() {
         reportDocRootPath: String(els.reportDocRootPath?.value || ""),
         reportDpi: String(els.reportDpi?.value || ""),
         reportRenderMode: String(els.reportRenderMode?.value || ""),
+        reportActiveTab: String(reportActiveTab || "images"),
+        reportSelectedReceptors: Array.from(reportSelectedReceptors || []),
+        reportSelectedRuns: Object.fromEntries(reportSelectedRuns || []),
+        reportSelectedLigands: Object.fromEntries(reportSelectedLigands || []),
         colorScheme: String(els.colorScheme?.value || ""),
         viewerChain: String(els.viewerChain?.value || ""),
         showSurface: Boolean(els.showSurface?.checked),
@@ -3269,6 +3284,18 @@ async function restoreUIState() {
   if (els.reportDocRootPath && ui.reportDocRootPath !== undefined) els.reportDocRootPath.value = String(ui.reportDocRootPath);
   if (els.reportDpi && ui.reportDpi !== undefined) els.reportDpi.value = String(ui.reportDpi);
   if (els.reportRenderMode && ui.reportRenderMode !== undefined) els.reportRenderMode.value = String(ui.reportRenderMode);
+  reportActiveTab = String(ui.reportActiveTab || reportActiveTab || "images") || "images";
+  reportSelectedReceptors = new Set(
+    Array.isArray(ui.reportSelectedReceptors)
+      ? ui.reportSelectedReceptors.map((item) => String(item || "").trim()).filter(Boolean)
+      : []
+  );
+  reportSelectedRuns = new Map(
+    Object.entries(toObjectOrEmpty(ui.reportSelectedRuns)).map(([key, value]) => [String(key || "").trim(), String(value || "").trim()])
+  );
+  reportSelectedLigands = new Map(
+    Object.entries(toObjectOrEmpty(ui.reportSelectedLigands)).map(([key, value]) => [String(key || "").trim(), String(value || "").trim()])
+  );
   if (els.colorScheme && ui.colorScheme !== undefined) els.colorScheme.value = String(ui.colorScheme);
   if (els.viewerChain && ui.viewerChain !== undefined) els.viewerChain.value = String(ui.viewerChain);
   if (els.showSurface && ui.showSurface !== undefined) els.showSurface.checked = Boolean(ui.showSurface);
@@ -3287,6 +3314,7 @@ async function restoreUIState() {
   applyAdvancedDockingConfigToModal(appState.dockingConfig);
   renderDockingConfigSummary();
   updateModeUI();
+  setReportTab(reportActiveTab || "images");
   renderQueueTable(appState.queueData);
   updateQueueEditorUI();
   enforceResultsInteractionToggle();
@@ -5037,12 +5065,40 @@ function bindEvents() {
     els.btnRenderPreview.addEventListener("click", () => initiateRender(false));
   }
 
+  if (els.btnStopRender) {
+    els.btnStopRender.addEventListener("click", () => stopReportRender());
+  }
+
   if (els.deleteAllRenderImages) {
     els.deleteAllRenderImages.addEventListener("click", () => deleteAllReportImages("render"));
   }
 
   if (els.btnGenerateGraphs) {
     els.btnGenerateGraphs.addEventListener("click", () => initiateGraphs());
+  }
+
+  if (els.reportRenderMode) {
+    els.reportRenderMode.addEventListener("change", () => {
+      renderReportWorkspaceSidebar();
+      scheduleUIStateSave();
+    });
+  }
+
+  Array.from(document.querySelectorAll(".report-layout-icon-card[data-mode]")).forEach((card) => {
+    card.addEventListener("click", () => {
+      const mode = String(card.dataset.mode || "").trim();
+      if (!mode || !els.reportRenderMode) return;
+      els.reportRenderMode.value = mode;
+      renderReportWorkspaceSidebar();
+      scheduleUIStateSave();
+    });
+  });
+
+  if (els.reportDpi) {
+    els.reportDpi.addEventListener("change", () => {
+      renderReportWorkspaceSidebar();
+      scheduleUIStateSave();
+    });
   }
 
   if (els.deleteAllPlotImages) {
@@ -5099,60 +5155,36 @@ function bindEvents() {
     });
   }
 
-  if (els.pickReportRoot && els.reportRootPicker) {
-    els.pickReportRoot.addEventListener("click", () => {
-      els.reportRootPicker.click();
-    });
-    els.reportRootPicker.addEventListener("change", async (event) => {
-      try {
-        const path = await resolvePathFromPicker(event.target.files, "report", event.target);
-        if (path && els.reportRootPath) {
-          els.reportRootPath.value = path;
-          if (els.reportOutputPath) {
-            els.reportOutputPath.value = defaultReportOutputPath(path);
-          }
-          if (els.reportDocRootPath) {
-            const docRoot = defaultReportOutputPath(path);
-            els.reportDocRootPath.value = docRoot;
-            reportDocRootPath = docRoot;
-          }
-          reportSelectedLinkedRoot = "";
-          reportSelectedReceptors = new Set();
-          reportSelectedRuns = new Map();
-          reportSelectedDocImages = new Set();
-          reportDocImageOrder = [];
-          reportDocManualOrder = false;
-          reportFigureCaptionText = new Map();
-          reportFigureCaptionCustom = new Set();
-          reportExtraSections = [];
-          reportFigureStartNumber = 1;
+  if (els.pickReportRoot) {
+    els.pickReportRoot.addEventListener("click", async () => {
+      if (!reportSourceFolders.length) {
+        try {
           await fetchReports();
-        } else {
-          alert("Selected folder could not be resolved. Source reset to data/dock.");
-          if (els.reportRootPath) els.reportRootPath.value = REPORT_DOCK_ROOT;
-          if (els.reportOutputPath) els.reportOutputPath.value = defaultReportOutputPath(REPORT_DOCK_ROOT);
-          if (els.reportDocRootPath) {
-            const docRoot = defaultReportOutputPath(REPORT_DOCK_ROOT);
-            els.reportDocRootPath.value = docRoot;
-            reportDocRootPath = docRoot;
-          }
-          reportSelectedLinkedRoot = "";
-          reportSelectedReceptors = new Set();
-          reportSelectedRuns = new Map();
-          reportSelectedDocImages = new Set();
-          reportDocImageOrder = [];
-          reportDocManualOrder = false;
-          reportFigureCaptionText = new Map();
-          reportFigureCaptionCustom = new Set();
-          reportExtraSections = [];
-          reportFigureStartNumber = 1;
-          await fetchReports();
+        } catch (err) {
+          alert(err.message || "Failed to load dock folders.");
+          return;
         }
-      } catch (err) {
-        alert(err.message || "Failed to resolve folder.");
-      } finally {
-        event.target.value = "";
       }
+      openReportSourceModal();
+    });
+  }
+
+  if (els.closeReportSourceModal) {
+    els.closeReportSourceModal.addEventListener("click", () => closeReportSourceModal());
+  }
+
+  if (els.reportSourceModal) {
+    els.reportSourceModal.addEventListener("click", (event) => {
+      if (event.target === els.reportSourceModal) {
+        closeReportSourceModal();
+      }
+    });
+  }
+
+  if (els.reportSourceSearch) {
+    els.reportSourceSearch.addEventListener("input", (event) => {
+      reportSourceSearchQuery = String(event.target.value || "").trim();
+      renderSourceFoldersTable();
     });
   }
 
@@ -5590,11 +5622,13 @@ let reportDockValidation = null;
 let reportSourceMetadata = null;
 let reportDocInfo = null;
 let reportLastUpdated = null;
+let reportSourceSearchQuery = "";
 let renderTimer = null;
 let plotTimer = null;
 let reportSelectedReceptors = new Set();
 let reportSelectedPlots = new Set(REPORT_PREDEFINED_PLOTS.map((item) => item.id));
 let reportSelectedRuns = new Map();
+let reportSelectedLigands = new Map();
 let reportSelectedLinkedRoot = "";
 let reportDocRootPath = "";
 let reportDocImages = [];
@@ -5606,6 +5640,18 @@ let reportFigureCaptionText = new Map();
 let reportFigureCaptionCustom = new Set();
 let reportFigureStartNumber = 1;
 let reportExtraSections = [];
+let reportTaskState = {
+  status: "idle",
+  task: "",
+  progress: 0,
+  total: 0,
+  message: "",
+  current_receptor: "",
+  current_ligand: "",
+  current_run: "",
+  render_mode: "",
+  cancel_requested: false,
+};
 
 function defaultReportOutputPath(sourcePath) {
   const safe = String(sourcePath || REPORT_DOCK_ROOT).replace(/[\\/]+$/, "");
@@ -5654,6 +5700,7 @@ function setReportTab(tabName = "images") {
   if (els.reportImagesTab) els.reportImagesTab.style.display = reportActiveTab === "images" ? "block" : "none";
   if (els.reportGraphsTab) els.reportGraphsTab.style.display = reportActiveTab === "graphs" ? "block" : "none";
   if (els.reportDocTab) els.reportDocTab.style.display = reportActiveTab === "report" ? "block" : "none";
+  scheduleUIStateSave();
 }
 
 function formatReportTime(epochSec) {
@@ -5676,8 +5723,12 @@ function formatBytes(size) {
 }
 
 function setReportMetaText(text) {
-  if (els.reportMetaText) {
+  if (els.reportMetaText && document.body.contains(els.reportMetaText)) {
     els.reportMetaText.textContent = text;
+    return;
+  }
+  if (els.reportSourceSummary) {
+    els.reportSourceSummary.innerHTML = `<div class="helper">${escapeHtml(text)}</div>`;
   }
 }
 
@@ -5715,6 +5766,24 @@ function getSelectedPlots() {
 function openReportMetaModal() {
   if (!els.reportMetaModal) return;
   els.reportMetaModal.classList.add("active");
+}
+
+function openReportSourceModal() {
+  if (!els.reportSourceModal) return;
+  reportSourceSearchQuery = "";
+  if (els.reportSourceSearch) {
+    els.reportSourceSearch.value = "";
+  }
+  renderSourceFoldersTable();
+  els.reportSourceModal.classList.add("active");
+  if (els.reportSourceSearch) {
+    window.requestAnimationFrame(() => els.reportSourceSearch?.focus());
+  }
+}
+
+function closeReportSourceModal() {
+  if (!els.reportSourceModal) return;
+  els.reportSourceModal.classList.remove("active");
 }
 
 function closeReportMetaModal() {
@@ -5907,6 +5976,7 @@ async function deleteReportSourceFolder(sourcePath) {
     }
     reportSelectedReceptors = new Set();
     reportSelectedRuns = new Map();
+    reportSelectedLigands = new Map();
     reportSelectedDocImages = new Set();
     reportDocImageOrder = [];
     reportDocManualOrder = false;
@@ -5921,95 +5991,155 @@ async function deleteReportSourceFolder(sourcePath) {
   }
 }
 
+function applyReportSourceSelection(selectedPath) {
+  const nextPath = String(selectedPath || REPORT_DOCK_ROOT).trim() || REPORT_DOCK_ROOT;
+  if (els.reportRootPath) {
+    els.reportRootPath.value = nextPath;
+  }
+  if (els.reportOutputPath) {
+    els.reportOutputPath.value = defaultReportOutputPath(nextPath);
+  }
+  if (els.reportDocRootPath) {
+    const docRoot = defaultReportOutputPath(nextPath);
+    els.reportDocRootPath.value = docRoot;
+    reportDocRootPath = docRoot;
+  }
+  reportSelectedLinkedRoot = "";
+  reportSelectedReceptors = new Set();
+  reportSelectedRuns = new Map();
+  reportSelectedLigands = new Map();
+  reportSelectedDocImages = new Set();
+  reportDocImageOrder = [];
+  reportDocManualOrder = false;
+  reportFigureCaptionText = new Map();
+  reportFigureCaptionCustom = new Set();
+  reportExtraSections = [];
+  reportFigureStartNumber = 1;
+}
+
+function getReportSourceDetails() {
+  const selectedFolder = (reportSourceFolders || []).find(
+    (item) => String(item.path || "").trim() === String(reportCurrentSource || "").trim()
+  ) || null;
+  const mainType = String(
+    selectedFolder?.main_type
+    || reportSourceMetadata?.main_type
+    || ""
+  ).trim() || "-";
+  const receptorCount = selectedFolder?.receptor_count ?? reportReceptors.length ?? 0;
+  const readyCount = selectedFolder?.ready_receptors
+    ?? (Array.isArray(reportReceptors) ? reportReceptors.filter((row) => row.ready).length : 0);
+  const dockingCount = selectedFolder?.docking_count
+    ?? reportDockValidation?.selected_docking_count
+    ?? 0;
+  const renderCount = reportSummary?.rendered ?? reportRenderCatalog.length ?? 0;
+  const plotCount = reportSummary?.plots ?? reportPlotCatalog.length ?? 0;
+  const docReady = reportSummary?.report_ready ?? Boolean(reportDocInfo?.exists);
+  const sourceName = String(selectedFolder?.name || reportCurrentSource || REPORT_DOCK_ROOT).trim() || REPORT_DOCK_ROOT;
+  const outputPath = reportCurrentOutput || ensureReportOutputValue();
+  return {
+    selectedFolder,
+    mainType,
+    receptorCount,
+    readyCount,
+    dockingCount,
+    renderCount,
+    plotCount,
+    docReady,
+    sourceName,
+    outputPath,
+  };
+}
+
 function renderSourceFoldersTable() {
   if (!els.reportSourceTableBody) return;
   els.reportSourceTableBody.innerHTML = "";
-  if (!reportSourceFolders.length) {
+  const allFolders = [...reportSourceFolders].sort((a, b) =>
+    String(a.path || "").localeCompare(String(b.path || ""), undefined, { sensitivity: "base" })
+  );
+  const query = String(reportSourceSearchQuery || "").trim().toLowerCase();
+  const folders = allFolders.filter((item) => {
+    if (!query) return true;
+    const haystack = [
+      item.name,
+      item.main_type,
+      item.path,
+      item.receptor_count,
+      item.ready_receptors,
+      item.docking_count,
+    ]
+      .map((value) => String(value || "").toLowerCase())
+      .join(" ");
+    return haystack.includes(query);
+  });
+
+  if (els.reportSourceListMeta) {
+    const totalText = `${folders.length} of ${allFolders.length} dock folder${allFolders.length === 1 ? "" : "s"}`;
+    els.reportSourceListMeta.textContent = query ? `${totalText} match "${reportSourceSearchQuery}"` : totalText;
+  }
+
+  if (!allFolders.length) {
     const helperText = reportLinkedError
       ? `No docking roots found. ${reportLinkedError}`
       : "No docking roots found under selected source.";
-    els.reportSourceTableBody.innerHTML = `<tr><td colspan="7" class="helper">${helperText}</td></tr>`;
+    els.reportSourceTableBody.innerHTML = `<div class="helper">${escapeHtml(helperText)}</div>`;
     return;
   }
 
-  const folders = [...reportSourceFolders].sort((a, b) =>
-    String(a.path || "").localeCompare(String(b.path || ""), undefined, { sensitivity: "base" })
-  );
+  if (!folders.length) {
+    els.reportSourceTableBody.innerHTML = '<div class="helper">No dock folders match the current search.</div>';
+    return;
+  }
 
   folders.forEach((item) => {
-    const tr = document.createElement("tr");
+    const card = document.createElement("article");
     const selected = item.path === reportCurrentSource || item.selected === true;
     const mainType = String(item.main_type || "").trim() || "-";
-    tr.innerHTML = `
-      <td style="font-weight:${selected ? 700 : 500}; color:${selected ? "var(--ink)" : "var(--muted)"};">${item.name}</td>
-      <td>${mainType}</td>
-      <td>${item.receptor_count ?? "-"}</td>
-      <td>${item.ready_receptors ?? "-"}</td>
-      <td>${item.docking_count ?? "-"}</td>
-      <td style="font-family:'IBM Plex Mono', monospace; font-size:12px;">${item.path}</td>
-      <td style="display:flex; gap:6px; flex-wrap:wrap;">
-        <button class="secondary report-use-source" type="button" data-path="${item.path}" ${selected ? "disabled" : ""}>${selected ? "Selected" : "Use"}</button>
-        <button class="secondary report-edit-source" type="button" data-path="${item.path}">Edit</button>
-        <button class="secondary report-delete-source" type="button" data-path="${item.path}" style="color:#b91c1c; border-color:#fecaca;">Delete</button>
-      </td>
+    const sourceName = escapeHtml(String(item.name || "").trim() || "-");
+    const pathText = escapeHtml(String(item.path || "").trim() || "-");
+    const typeText = escapeHtml(mainType);
+    const receptorCount = escapeHtml(String(item.receptor_count ?? "-"));
+    const readyCount = escapeHtml(String(item.ready_receptors ?? "-"));
+    const dockingCount = escapeHtml(String(item.docking_count ?? "-"));
+    card.className = `report-source-folder-card${selected ? " is-selected" : ""}`;
+    card.innerHTML = `
+      <div class="report-source-folder-head">
+        <div>
+          <div class="report-source-folder-name">${sourceName}</div>
+          <div class="report-source-folder-type">${typeText}</div>
+        </div>
+        <span class="report-source-folder-state">${selected ? "Selected" : "Available"}</span>
+      </div>
+      <div class="report-source-folder-stats">
+        <span class="report-source-folder-stat">${receptorCount} receptors</span>
+        <span class="report-source-folder-stat">${readyCount} ready</span>
+        <span class="report-source-folder-stat">${dockingCount} dockings</span>
+      </div>
+      <div class="report-source-folder-path">${pathText}</div>
+      <div class="report-source-folder-actions">
+        <button class="secondary report-use-source" type="button" data-path="${escapeHtml(String(item.path || ""))}" ${selected ? "disabled" : ""}>${selected ? "Selected" : "Use"}</button>
+        <button class="secondary report-edit-source" type="button" data-path="${escapeHtml(String(item.path || ""))}">Edit</button>
+        <button class="secondary report-delete-source" type="button" data-path="${escapeHtml(String(item.path || ""))}" style="color:#b91c1c; border-color:#fecaca;">Delete</button>
+      </div>
     `;
-    els.reportSourceTableBody.appendChild(tr);
+    els.reportSourceTableBody.appendChild(card);
   });
 
   Array.from(els.reportSourceTableBody.querySelectorAll(".report-use-source")).forEach((btn) => {
     btn.addEventListener("click", async () => {
-      const selectedPath = btn.dataset.path || REPORT_DOCK_ROOT;
-      if (els.reportRootPath) {
-        els.reportRootPath.value = selectedPath;
-      }
-      if (els.reportOutputPath) {
-        els.reportOutputPath.value = defaultReportOutputPath(selectedPath);
-      }
-      if (els.reportDocRootPath) {
-        const docRoot = defaultReportOutputPath(selectedPath);
-        els.reportDocRootPath.value = docRoot;
-        reportDocRootPath = docRoot;
-      }
-      reportSelectedLinkedRoot = "";
-      reportSelectedReceptors = new Set();
-      reportSelectedRuns = new Map();
-      reportSelectedDocImages = new Set();
-      reportDocImageOrder = [];
-      reportDocManualOrder = false;
-      reportFigureCaptionText = new Map();
-      reportFigureCaptionCustom = new Set();
-      reportExtraSections = [];
-      reportFigureStartNumber = 1;
+      applyReportSourceSelection(btn.dataset.path || REPORT_DOCK_ROOT);
       await fetchReports();
+      closeReportSourceModal();
       setReportTab("images");
     });
   });
 
   Array.from(els.reportSourceTableBody.querySelectorAll(".report-edit-source")).forEach((btn) => {
     btn.addEventListener("click", async () => {
-      const selectedPath = btn.dataset.path || REPORT_DOCK_ROOT;
-      if (els.reportRootPath) {
-        els.reportRootPath.value = selectedPath;
-      }
-      if (els.reportOutputPath) {
-        els.reportOutputPath.value = defaultReportOutputPath(selectedPath);
-      }
-      if (els.reportDocRootPath) {
-        const docRoot = defaultReportOutputPath(selectedPath);
-        els.reportDocRootPath.value = docRoot;
-        reportDocRootPath = docRoot;
-      }
-      reportSelectedReceptors = new Set();
-      reportSelectedRuns = new Map();
-      reportSelectedDocImages = new Set();
-      reportDocImageOrder = [];
-      reportDocManualOrder = false;
-      reportFigureCaptionText = new Map();
-      reportFigureCaptionCustom = new Set();
-      reportExtraSections = [];
-      reportFigureStartNumber = 1;
+      applyReportSourceSelection(btn.dataset.path || REPORT_DOCK_ROOT);
       await fetchReports();
       setReportTab("images");
+      closeReportSourceModal();
       openReportMetaModal();
     });
   });
@@ -6021,12 +6151,215 @@ function renderSourceFoldersTable() {
   });
 }
 
+function renderReportSourceSummary() {
+  if (!els.reportSourceSummary) return;
+  const {
+    mainType,
+    receptorCount,
+    readyCount,
+    dockingCount,
+    renderCount,
+    plotCount,
+    docReady,
+    sourceName,
+    outputPath,
+  } = getReportSourceDetails();
+
+  if (!reportCurrentSource || reportCurrentSource === REPORT_DOCK_ROOT) {
+    els.reportSourceSummary.innerHTML = `
+      <div class="helper">
+        Choose a docking source folder to load receptors and generated report outputs.
+      </div>
+    `;
+    return;
+  }
+
+  els.reportSourceSummary.innerHTML = `
+    <div class="report-source-summary-grid">
+      <div class="report-source-summary-item">
+        <span class="report-source-summary-label">Selected</span>
+        <span class="report-source-summary-value">${escapeHtml(sourceName)}</span>
+      </div>
+      <div class="report-source-summary-item">
+        <span class="report-source-summary-label">Type</span>
+        <span class="report-source-summary-value">${escapeHtml(mainType)}</span>
+      </div>
+      <div class="report-source-summary-item">
+        <span class="report-source-summary-label">Receptors</span>
+        <span class="report-source-summary-value">${escapeHtml(`${receptorCount} total / ${readyCount} ready`)}</span>
+      </div>
+      <div class="report-source-summary-item">
+        <span class="report-source-summary-label">Dockings</span>
+        <span class="report-source-summary-value">${escapeHtml(String(dockingCount))}</span>
+      </div>
+      <div class="report-source-summary-item">
+        <span class="report-source-summary-label">Generated</span>
+        <span class="report-source-summary-value">${escapeHtml(`${renderCount} renders / ${plotCount} plots / report ${docReady ? "ready" : "missing"}`)}</span>
+      </div>
+      <div class="report-source-summary-item report-source-summary-item--wide">
+        <span class="report-source-summary-label">Output</span>
+        <span class="report-source-summary-path">${escapeHtml(outputPath)}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderReportSourceQuickSummary() {
+  if (!els.reportSourceQuickSummary) return;
+  const {
+    sourceName,
+    mainType,
+    readyCount,
+    receptorCount,
+    dockingCount,
+  } = getReportSourceDetails();
+
+  if (!reportCurrentSource || reportCurrentSource === REPORT_DOCK_ROOT) {
+    els.reportSourceQuickSummary.innerHTML = '<div class="helper">Choose a dock folder</div>';
+    return;
+  }
+
+  els.reportSourceQuickSummary.innerHTML = `
+    <div class="report-source-quick-name">${escapeHtml(sourceName)}</div>
+    <div class="report-source-quick-meta">${escapeHtml(mainType)} · ${escapeHtml(`${readyCount}/${receptorCount}`)} ready · ${escapeHtml(String(dockingCount))} dockings</div>
+  `;
+}
+
+function getReadyLigandRows(row) {
+  return Array.isArray(row?.ligands)
+    ? row.ligands.filter((item) => Number(item?.valid_runs || 0) > 0)
+    : [];
+}
+
+function getLigandLabel(row, ligandName) {
+  const match = getReadyLigandRows(row).find((item) => String(item?.ligand || "") === String(ligandName || ""));
+  return String(match?.display_ligand || ligandName || "").trim() || "-";
+}
+
+function getRowRunOptions(row, ligandName = "") {
+  const preferred = String(ligandName || "").trim();
+  if (!preferred) {
+    return Array.isArray(row?.run_options) ? row.run_options : [];
+  }
+  const match = getReadyLigandRows(row).find((item) => String(item?.ligand || "") === preferred);
+  if (!match) return Array.isArray(row?.run_options) ? row.run_options : [];
+  return Array.isArray(match.runs) ? match.runs : [];
+}
+
+function getCurrentReportSelection(row) {
+  const readyLigands = getReadyLigandRows(row);
+  const storedLigand = String(reportSelectedLigands.get(row.id) || "").trim();
+  const ligandNames = readyLigands.map((item) => String(item.ligand || "").trim()).filter(Boolean);
+  const selectedLigand = ligandNames.includes(storedLigand) ? storedLigand : "";
+  const runOptions = getRowRunOptions(row, selectedLigand);
+  const storedRun = String(reportSelectedRuns.get(row.id) || "").trim();
+  let selectedRun = runOptions.includes(storedRun) ? storedRun : "";
+  if (!selectedRun && runOptions.includes("run1")) {
+    selectedRun = "run1";
+  }
+  if (!selectedRun && runOptions.length > 0) {
+    selectedRun = runOptions[0];
+  }
+  return {
+    selectedLigand,
+    selectedRun,
+    readyLigands,
+    runOptions,
+  };
+}
+
+function renderReportWorkspaceSidebar() {
+  if (!els.reportRenderSelectionSummary) return;
+  const renderMode = String(els.reportRenderMode?.value || "classic").trim() || "classic";
+  Array.from(document.querySelectorAll(".report-layout-icon-card[data-mode]")).forEach((card) => {
+    card.classList.toggle("is-active", String(card.dataset.mode || "") === renderMode);
+  });
+
+  const selectedRows = reportReceptors.filter((row) => row.ready && reportSelectedReceptors.has(row.id));
+  if (!selectedRows.length) {
+    els.reportRenderSelectionSummary.innerHTML = '<div class="helper">Select at least one ready receptor.</div>';
+    return;
+  }
+
+  const focusRow = selectedRows[0];
+  const { selectedLigand, selectedRun, readyLigands } = getCurrentReportSelection(focusRow);
+  const ligandLabel = selectedLigand
+    ? getLigandLabel(focusRow, selectedLigand)
+    : "Auto";
+  const runLabel = renderMode === "otofigure"
+    ? "Auto multirun"
+    : (selectedRun || focusRow.default_run || "Auto");
+
+  els.reportRenderSelectionSummary.innerHTML = `
+    <div class="report-settings-summary-grid">
+      <div class="report-settings-summary-item">
+        <span class="report-settings-summary-label">Selected</span>
+        <span class="report-settings-summary-value">${escapeHtml(`${selectedRows.length} receptor${selectedRows.length === 1 ? "" : "s"}`)}</span>
+      </div>
+      <div class="report-settings-summary-item">
+        <span class="report-settings-summary-label">Focus</span>
+        <span class="report-settings-summary-value">${escapeHtml(String(focusRow.display_id || focusRow.id || "-"))}</span>
+      </div>
+      <div class="report-settings-summary-item">
+        <span class="report-settings-summary-label">Ligand</span>
+        <span class="report-settings-summary-value">${escapeHtml(ligandLabel)}</span>
+      </div>
+      <div class="report-settings-summary-item">
+        <span class="report-settings-summary-label">Run</span>
+        <span class="report-settings-summary-value">${escapeHtml(runLabel)}</span>
+      </div>
+      <div class="report-settings-summary-item">
+        <span class="report-settings-summary-label">Ready</span>
+        <span class="report-settings-summary-value">${escapeHtml(String(readyLigands.length || 0))}</span>
+      </div>
+    </div>
+  `;
+}
+
+function updateReportRenderStateUI(nextState = reportTaskState) {
+  reportTaskState = {
+    ...reportTaskState,
+    ...(nextState || {}),
+  };
+  if (!els.reportRenderStateChip || !els.reportRenderStateMeta || !els.reportRenderStateText) return;
+
+  const status = String(reportTaskState.status || "idle").trim() || "idle";
+  const task = String(reportTaskState.task || "").trim();
+  const isRenderActive = task === "render" && (status === "running" || status === "stopping");
+
+  let chipLabel = "Idle";
+  let chipStyle = "";
+  if (status === "running") {
+    chipLabel = task === "render" ? "Rendering" : "Busy";
+  } else if (status === "stopping") {
+    chipLabel = "Stopping";
+    chipStyle = "border-color:#fed7aa;color:#c2410c;background:#fff7ed;";
+  } else if (task && task !== "render" && status === "idle") {
+    chipLabel = "Idle";
+  }
+
+  els.reportRenderStateChip.textContent = chipLabel;
+  els.reportRenderStateChip.style.cssText = chipStyle;
+  const progress = Number(reportTaskState.progress || 0);
+  const total = Number(reportTaskState.total || 0);
+  const metaParts = [];
+  if (task) metaParts.push(task);
+  if (total > 0) metaParts.push(`${progress}/${total}`);
+  if (reportTaskState.current_receptor) metaParts.push(String(reportTaskState.current_receptor));
+  els.reportRenderStateMeta.textContent = metaParts.join(" · ") || "No active render task.";
+  els.reportRenderStateText.textContent = String(reportTaskState.message || "Ready to generate images.");
+
+  if (els.btnRenderPreview) els.btnRenderPreview.disabled = task && status !== "idle";
+  if (els.btnStopRender) els.btnStopRender.disabled = !isRenderActive;
+  if (els.deleteAllRenderImages) els.deleteAllRenderImages.disabled = isRenderActive;
+}
+
 function renderReceptorTable() {
   if (!els.reportReceptorBody) return;
   els.reportReceptorBody.innerHTML = "";
   if (!reportReceptors.length) {
     els.reportReceptorBody.innerHTML =
-      '<tr><td colspan="6" class="helper">No receptor rows found for selected docking root.</td></tr>';
+      '<tr><td colspan="5" class="helper">No receptor rows found for selected docking root.</td></tr>';
     return;
   }
 
@@ -6038,22 +6371,42 @@ function renderReceptorTable() {
   reportReceptors.forEach((row) => {
     const tr = document.createElement("tr");
     const checked = row.ready && reportSelectedReceptors.has(row.id);
-    const ligandText = (row.valid_ligands_display || row.valid_ligands || []).join(", ") || "-";
     const receptorLabel = row.display_id || row.id;
-    const runOptions = Array.isArray(row.run_options) ? row.run_options : [];
-    const storedRun = reportSelectedRuns.get(row.id) || "";
-    let selectedRun = runOptions.includes(storedRun) ? storedRun : (row.default_run || "");
-    if (!selectedRun && runOptions.includes("run1")) {
-      selectedRun = "run1";
-    }
-    if (!selectedRun && runOptions.length > 0) {
-      selectedRun = runOptions[0];
-    }
+    const {
+      selectedLigand,
+      selectedRun,
+      readyLigands,
+      runOptions,
+    } = getCurrentReportSelection(row);
+    const ligandOptions = readyLigands
+      .map((item) => {
+        const ligandId = String(item.ligand || "").trim();
+        const label = String(item.display_ligand || ligandId || "").trim() || ligandId;
+        const runCount = Number(item.valid_runs || 0);
+        return `<option value="${escapeHtml(ligandId)}" ${selectedLigand === ligandId ? "selected" : ""}>${escapeHtml(`${label} (${runCount})`)}</option>`;
+      })
+      .join("");
+    const ligandCell = row.ready
+      ? `
+        <div class="report-select-cell">
+          <select class="report-ligand-select" data-receptor="${row.id}">
+            <option value="" ${selectedLigand ? "" : "selected"}>Auto</option>
+            ${ligandOptions}
+          </select>
+          <span class="report-select-hint">${escapeHtml(`${readyLigands.length} ready ligand${readyLigands.length === 1 ? "" : "s"}`)}</span>
+        </div>
+      `
+      : '<span class="helper">-</span>';
     const runSelectOptions = runOptions
       .map((runName) => `<option value="${runName}" ${selectedRun === runName ? "selected" : ""}>${runName}</option>`)
       .join("");
     const runCell = row.ready && runOptions.length > 0
-      ? `<select class="report-run-select" data-receptor="${row.id}">${runSelectOptions}</select>`
+      ? `
+        <div class="report-select-cell">
+          <select class="report-run-select" data-receptor="${row.id}">${runSelectOptions}</select>
+          <span class="report-select-hint">${escapeHtml(`${runOptions.length} available run${runOptions.length === 1 ? "" : "s"}`)}</span>
+        </div>
+      `
       : `<span class="helper">-</span>`;
 
     tr.innerHTML = `
@@ -6061,8 +6414,7 @@ function renderReceptorTable() {
         <input type="checkbox" class="report-receptor-checkbox" value="${row.id}" ${checked ? "checked" : ""} ${row.ready ? "" : "disabled"}>
       </td>
       <td style="font-weight:600;">${receptorLabel}</td>
-      <td>${ligandText}</td>
-      <td>${row.runs_per_ligand_min || 0}</td>
+      <td>${ligandCell}</td>
       <td>${runCell}</td>
       <td>${row.ready ? '<span class="status-chip">Ready</span>' : '<span class="status-chip" style="border-color:#fca5a5;color:#b91c1c;background:#fff1f2;">Missing Inputs</span>'}</td>
     `;
@@ -6070,8 +6422,10 @@ function renderReceptorTable() {
 
     if (row.ready) {
       reportSelectedRuns.set(row.id, selectedRun || "");
+      reportSelectedLigands.set(row.id, selectedLigand || "");
     } else {
       reportSelectedRuns.delete(row.id);
+      reportSelectedLigands.delete(row.id);
     }
   });
 
@@ -6082,6 +6436,19 @@ function renderReceptorTable() {
       } else {
         reportSelectedReceptors.delete(event.target.value);
       }
+      renderReportWorkspaceSidebar();
+      scheduleUIStateSave();
+    });
+  });
+
+  Array.from(document.querySelectorAll(".report-ligand-select")).forEach((selector) => {
+    selector.addEventListener("change", (event) => {
+      const receptorId = String(event.target.dataset.receptor || "").trim();
+      if (!receptorId) return;
+      reportSelectedLigands.set(receptorId, String(event.target.value || "").trim());
+      renderReceptorTable();
+      renderReportWorkspaceSidebar();
+      scheduleUIStateSave();
     });
   });
 
@@ -6090,6 +6457,8 @@ function renderReceptorTable() {
       const receptorId = (event.target.dataset.receptor || "").trim();
       if (!receptorId) return;
       reportSelectedRuns.set(receptorId, (event.target.value || "").trim());
+      renderReportWorkspaceSidebar();
+      scheduleUIStateSave();
     });
   });
 
@@ -6107,6 +6476,8 @@ function renderReceptorTable() {
           reportSelectedReceptors.delete(checkbox.value);
         }
       });
+      renderReportWorkspaceSidebar();
+      scheduleUIStateSave();
     };
   }
 }
@@ -6154,27 +6525,12 @@ function renderReportViews() {
   renderReports(reportPlotCatalog, els.reportGraphsGallery, { emptyText: "No generated predefined plots yet." });
   renderReportDocStatus(reportDocInfo);
   renderSourceFoldersTable();
+  renderReportSourceSummary();
+  renderReportSourceQuickSummary();
   renderReceptorTable();
   renderPlotTable();
-
-  const validation = reportDockValidation || {};
-  const dockRootsFound = validation.linked_roots_found ?? reportSourceFolders.length;
-  const selectedReady = validation.selected_ready_receptors ?? reportReceptors.filter((row) => row.ready).length;
-  const selectedDockings = validation.selected_docking_count ?? 0;
-  const validationLine = `Dock roots: ${dockRootsFound} | Ready receptors: ${selectedReady} | Docking count: ${selectedDockings}`;
-  const mainType = String(reportSourceMetadata?.main_type || "").trim();
-  if (els.reportValidationBox) {
-    els.reportValidationBox.innerHTML = `
-      <span class="status-chip">Inside dock: ${validation.inside_dock === false ? "No" : "Yes"}</span>
-      <span class="status-chip">Detected roots: ${dockRootsFound}</span>
-      <span class="status-chip">Ready receptors: ${selectedReady}</span>
-      <span class="status-chip">Dockings: ${selectedDockings}</span>
-    `;
-  }
-  const extraError = reportLinkedError ? ` | Warning: ${reportLinkedError}` : "";
-  setReportMetaText(
-    `Root: ${reportCurrentRoot} | Source: ${reportCurrentSource} | Type: ${mainType || "-"} | Linked: ${reportLinkedRoot || "-"} | ${validationLine} | Last update: ${reportLastUpdated || "-"}${extraError}`
-  );
+  renderReportWorkspaceSidebar();
+  updateReportRenderStateUI(reportTaskState);
 }
 
 function renderReportDocStatus(docInfo) {
@@ -6223,7 +6579,11 @@ async function deleteReportImage(imagePath) {
 }
 
 async function deleteAllReportImages(scope) {
-  const scopeText = scope === "render" ? "render images" : "plot images";
+  const scopeText = scope === "render" ? "renders" : "plot images";
+  if (scope === "render" && reportTaskState.task === "render" && (reportTaskState.status === "running" || reportTaskState.status === "stopping")) {
+    alert("Stop the active render task before deleting renders.");
+    return;
+  }
   if (!confirm(`Delete all ${scopeText} in current output folder?`)) return;
   try {
     const res = await fetchJSON("/api/reports/images/delete-all", {
@@ -6895,10 +7255,16 @@ async function fetchReports() {
   const rootPath = REPORT_DOCK_ROOT;
   const sourcePath = ensureReportSourceValue();
   const outputPath = ensureReportOutputValue();
+  const normalizedSourcePath = sourcePath === REPORT_DOCK_ROOT ? "" : sourcePath;
+  const normalizedOutputPath = (
+    sourcePath === REPORT_DOCK_ROOT && outputPath === defaultReportOutputPath(REPORT_DOCK_ROOT)
+  )
+    ? ""
+    : outputPath;
   const query = new URLSearchParams({
     root_path: rootPath,
-    source_path: sourcePath,
-    output_path: outputPath,
+    source_path: normalizedSourcePath,
+    output_path: normalizedOutputPath,
   });
   const url = `/api/reports/list?${query.toString()}`;
 
@@ -6934,9 +7300,15 @@ async function fetchReports() {
     }
 
     const nextRunSelection = new Map();
+    const nextLigandSelection = new Map();
     reportReceptors.forEach((row) => {
       if (!row.ready) return;
-      const options = Array.isArray(row.run_options) ? row.run_options : [];
+      const readyLigands = getReadyLigandRows(row);
+      const ligandOptions = readyLigands.map((item) => String(item.ligand || "").trim()).filter(Boolean);
+      const prevLigand = (reportSelectedLigands.get(row.id) || "").trim();
+      const selectedLigand = ligandOptions.includes(prevLigand) ? prevLigand : "";
+      nextLigandSelection.set(row.id, selectedLigand);
+      const options = getRowRunOptions(row, selectedLigand);
       const prev = (reportSelectedRuns.get(row.id) || "").trim();
       let selectedRun = prev;
       if (selectedRun && options.length && !options.includes(selectedRun)) {
@@ -6948,6 +7320,7 @@ async function fetchReports() {
       nextRunSelection.set(row.id, selectedRun);
     });
     reportSelectedRuns = nextRunSelection;
+    reportSelectedLigands = nextLigandSelection;
 
     if (!prevDocRoot) {
       reportDocRootPath = reportCurrentOutput || outputPath;
@@ -6965,6 +7338,7 @@ async function fetchReports() {
     renderReportViews();
     renderRootMetadataEditor();
     syncReportDocConfigFromMetadata();
+    await syncReportTaskState();
     try {
       await fetchReportDocImages();
     } catch (docErr) {
@@ -6991,6 +7365,7 @@ async function fetchReports() {
     reportLinkedRoot = "";
     reportSelectedLinkedRoot = "";
     reportSelectedRuns = new Map();
+    reportSelectedLigands = new Map();
     reportSourceMetadata = null;
     reportDocInfo = null;
     reportDocImages = [];
@@ -7009,11 +7384,14 @@ async function fetchReports() {
     if (els.reportGraphsGallery) els.reportGraphsGallery.innerHTML = msg;
     renderReportDocStatus(null);
     renderSourceFoldersTable();
+    renderReportSourceSummary();
+    renderReportSourceQuickSummary();
     renderReceptorTable();
     renderPlotTable();
+    renderReportWorkspaceSidebar();
+    await syncReportTaskState({ silent: true });
     renderRootMetadataEditor();
     renderReportExtraSectionsEditor();
-    if (els.reportValidationBox) els.reportValidationBox.innerHTML = "";
     setReportMetaText("Failed to load generated report outputs.");
     renderReportDocImageGallery();
   }
@@ -7117,12 +7495,27 @@ function openReportOverlay(src, alt) {
   overlay.classList.add("active");
 }
 
+function getSelectedLigandByReceptor() {
+  const ligandMap = {};
+  Array.from(document.querySelectorAll(".report-ligand-select")).forEach((el) => {
+    const receptor = (el.dataset.receptor || "").trim();
+    if (!receptor) return;
+    const ligandVal = (el.value || "").trim();
+    reportSelectedLigands.set(receptor, ligandVal);
+    if (ligandVal) {
+      ligandMap[receptor] = ligandVal;
+    }
+  });
+  return ligandMap;
+}
+
 async function initiateRender(isPreview) {
   const rootPath = REPORT_DOCK_ROOT;
   const sourcePath = ensureReportSourceValue();
   const outputPath = ensureReportOutputValue();
   const receptors = getSelectedReceptors();
   const runByReceptor = getSelectedRunByReceptor();
+  const ligandByReceptor = getSelectedLigandByReceptor();
   if (!receptors.length) {
     alert("Select at least one render-ready receptor.");
     return;
@@ -7139,6 +7532,7 @@ async function initiateRender(isPreview) {
       render_mode: renderMode,
       receptors,
       run_by_receptor: runByReceptor,
+      ligand_by_receptor: ligandByReceptor,
       dpi,
       is_preview: isPreview,
     };
@@ -7149,6 +7543,14 @@ async function initiateRender(isPreview) {
     });
 
     if (res.status === "started" && els.renderProgressPanel) {
+      updateReportRenderStateUI({
+        status: "running",
+        task: "render",
+        progress: 0,
+        total: receptors.length,
+        message: "Starting render...",
+        render_mode: renderMode,
+      });
       els.renderProgressPanel.style.display = "flex";
       if (els.renderProgressBar) els.renderProgressBar.style.width = "0%";
       if (els.renderElapsed) {
@@ -7161,10 +7563,51 @@ async function initiateRender(isPreview) {
   }
 }
 
+async function stopReportRender() {
+  try {
+    const res = await fetchJSON("/api/reports/render/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    updateReportRenderStateUI({
+      status: String(res.status || "stopping"),
+      task: "render",
+      message: String(res.message || "Stopping render..."),
+      cancel_requested: true,
+    });
+    if (els.renderProgressPanel) {
+      els.renderProgressPanel.style.display = "flex";
+    }
+    pollRenderStatus();
+  } catch (err) {
+    alert("Failed to stop render: " + err.message);
+  }
+}
+
+async function syncReportTaskState(options = {}) {
+  try {
+    const state = await fetchJSON("/api/reports/status");
+    updateReportRenderStateUI(state);
+    if (state.task === "render" && (state.status === "running" || state.status === "stopping")) {
+      if (els.renderProgressPanel) els.renderProgressPanel.style.display = "flex";
+      if (renderTimer) clearTimeout(renderTimer);
+      renderTimer = setTimeout(pollRenderStatus, 1000);
+    } else if (els.renderProgressPanel) {
+      els.renderProgressPanel.style.display = "none";
+    }
+  } catch (err) {
+    if (!options.silent) {
+      console.error("Failed to sync report task state:", err);
+    }
+  }
+}
+
 async function pollRenderStatus() {
   if (renderTimer) clearTimeout(renderTimer);
   try {
     const state = await fetchJSON("/api/reports/status");
+    updateReportRenderStateUI(state);
     if (els.renderProgressText) {
       els.renderProgressText.textContent = state.message || "Rendering...";
     }
@@ -7173,11 +7616,11 @@ async function pollRenderStatus() {
       els.renderProgressBar.style.width = `${pct}%`;
     }
 
-    if (state.status === "running" && (state.task || "") === "render") {
+    if ((state.status === "running" || state.status === "stopping") && (state.task || "") === "render") {
       renderTimer = setTimeout(pollRenderStatus, 1000);
     } else {
       if (els.renderProgressPanel) els.renderProgressPanel.style.display = "none";
-      if (Array.isArray(state.errors) && state.errors.length) {
+      if (Array.isArray(state.errors) && state.errors.length && !state.cancel_requested) {
         alert("Render completed with errors: " + state.errors.join(" | "));
       }
       await fetchReports();

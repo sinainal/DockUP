@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -1032,11 +1034,19 @@ def _select_otofigure_ligand_runs(
     inventory: dict[str, dict[str, list[tuple[str, Path]]]],
     receptor_id: str,
     *,
+    preferred_ligand: str = "",
     ligand_order_index: dict[str, int] | None = None,
 ) -> tuple[str, list[tuple[str, Path]]]:
     ligand_map = inventory.get(receptor_id) or {}
     if not ligand_map:
         raise FileNotFoundError(f"No ligand/run data found for receptor: {receptor_id}")
+
+    preferred = str(preferred_ligand or "").strip()
+    if preferred:
+        run_entries = sorted(ligand_map.get(preferred) or [], key=lambda item: _run_sort_key(item[0]))
+        if not run_entries:
+            raise FileNotFoundError(f"No multi-run ligand data found for receptor {receptor_id}: {preferred}")
+        return preferred, run_entries[:5]
 
     order_index = dict(ligand_order_index or {})
     ranked: list[tuple[int, int, tuple[str, str], str, list[tuple[str, Path]]]] = []
@@ -1161,6 +1171,218 @@ def _list_source_folders(report_root: Path, selected_source: Path | None = None)
     return entries
 
 
+def _load_interaction_payload(interaction_json: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(interaction_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _interaction_type_palette() -> dict[str, str]:
+    return {
+        "hydrophobic": "#0f766e",
+        "hbond": "#2563eb",
+        "hydrogen bond": "#2563eb",
+        "pi-stacking": "#7c3aed",
+        "pi_cation": "#9333ea",
+        "electrostatic": "#dc2626",
+        "salt bridge": "#dc2626",
+        "halogen": "#ea580c",
+        "water bridge": "#0891b2",
+    }
+
+
+def _build_interaction_preview_svg(
+    *,
+    receptor_label: str,
+    ligand_label: str,
+    run_name: str,
+    render_mode: str,
+    contact_count: int,
+    residue_rows: list[dict[str, Any]],
+    type_counts: dict[str, int],
+) -> str:
+    width = 720
+    height = 360
+    left = 36
+    right = width - 36
+    chart_width = 276
+    top_residues = residue_rows[:6]
+    type_rows = sorted(type_counts.items(), key=lambda item: (-item[1], item[0].lower()))[:6]
+    max_residue = max((int(item.get("contact_count") or 0) for item in top_residues), default=1)
+    max_type = max((int(count or 0) for _, count in type_rows), default=1)
+    palette = _interaction_type_palette()
+
+    parts: list[str] = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" fill="none">',
+        '<defs>',
+        '<linearGradient id="previewBg" x1="0" y1="0" x2="1" y2="1">',
+        '<stop offset="0%" stop-color="#f8fafc"/>',
+        '<stop offset="100%" stop-color="#eef6ff"/>',
+        '</linearGradient>',
+        '</defs>',
+        f'<rect x="0" y="0" width="{width}" height="{height}" rx="18" fill="url(#previewBg)"/>',
+        f'<rect x="18" y="18" width="{width - 36}" height="{height - 36}" rx="16" fill="#ffffff" stroke="#dbe3ef"/>',
+        f'<text x="{left}" y="52" font-size="13" font-family="IBM Plex Sans, Arial, sans-serif" fill="#64748b">Panel Preview</text>',
+        f'<text x="{left}" y="78" font-size="24" font-weight="700" font-family="IBM Plex Sans, Arial, sans-serif" fill="#0f172a">{html.escape(receptor_label)} · {html.escape(ligand_label)}</text>',
+        f'<text x="{left}" y="102" font-size="12" font-family="IBM Plex Sans, Arial, sans-serif" fill="#475569">Run {html.escape(run_name)} · {html.escape(render_mode.title())} mode · {contact_count} contacts</text>',
+        f'<text x="{left}" y="138" font-size="12" font-family="IBM Plex Sans, Arial, sans-serif" fill="#64748b">Top interacting residues</text>',
+        f'<text x="{left + 344}" y="138" font-size="12" font-family="IBM Plex Sans, Arial, sans-serif" fill="#64748b">Interaction classes</text>',
+    ]
+
+    if not top_residues:
+        parts.append(
+            f'<text x="{left}" y="190" font-size="14" font-family="IBM Plex Sans, Arial, sans-serif" fill="#94a3b8">No interaction map data available for this run.</text>'
+        )
+    else:
+        for idx, item in enumerate(top_residues):
+            y = 162 + idx * 28
+            label = f'{item.get("receptor_resname", "-")}{item.get("receptor_resid", "")} {item.get("receptor_chain", "")}'.strip()
+            count = int(item.get("contact_count") or 0)
+            min_distance = item.get("min_distance")
+            bar_width = int((count / max_residue) * chart_width) if max_residue else 0
+            distance_text = f'{float(min_distance):.2f} Å' if min_distance not in (None, "") else "-"
+            parts.extend(
+                [
+                    f'<text x="{left}" y="{y}" font-size="12" font-family="IBM Plex Mono, monospace" fill="#0f172a">{html.escape(label)}</text>',
+                    f'<rect x="{left}" y="{y + 7}" width="{chart_width}" height="10" rx="5" fill="#e2e8f0"/>',
+                    f'<rect x="{left}" y="{y + 7}" width="{max(12, bar_width)}" height="10" rx="5" fill="#0f766e"/>',
+                    f'<text x="{left + chart_width + 10}" y="{y + 16}" font-size="11" font-family="IBM Plex Sans, Arial, sans-serif" fill="#334155">{count} contacts · {html.escape(distance_text)}</text>',
+                ]
+            )
+
+    if type_rows:
+        for idx, (kind, count) in enumerate(type_rows):
+            y = 162 + idx * 28
+            color = palette.get(kind.lower(), "#475569")
+            label = kind.replace("_", " ")
+            bar_width = int((count / max_type) * chart_width) if max_type else 0
+            parts.extend(
+                [
+                    f'<text x="{left + 344}" y="{y}" font-size="12" font-family="IBM Plex Sans, Arial, sans-serif" fill="#0f172a">{html.escape(label.title())}</text>',
+                    f'<rect x="{left + 344}" y="{y + 7}" width="{chart_width}" height="10" rx="5" fill="#e2e8f0"/>',
+                    f'<rect x="{left + 344}" y="{y + 7}" width="{max(12, bar_width)}" height="10" rx="5" fill="{color}"/>',
+                    f'<text x="{left + 344 + chart_width + 10}" y="{y + 16}" font-size="11" font-family="IBM Plex Sans, Arial, sans-serif" fill="#334155">{count}</text>',
+                ]
+            )
+    else:
+        parts.append(
+            f'<text x="{left + 344}" y="190" font-size="14" font-family="IBM Plex Sans, Arial, sans-serif" fill="#94a3b8">No interaction classes recorded.</text>'
+        )
+
+    parts.extend(
+        [
+            f'<rect x="{left}" y="{height - 64}" width="{width - 72}" height="1" fill="#e2e8f0"/>',
+            f'<text x="{left}" y="{height - 36}" font-size="12" font-family="IBM Plex Sans, Arial, sans-serif" fill="#64748b">Preview uses the currently selected receptor and run. Render output remains unchanged.</text>',
+            '</svg>',
+        ]
+    )
+    return "".join(parts)
+
+
+def _resolve_preview_context(
+    source_dir: Path,
+    *,
+    receptor_id: str,
+    run_name: str,
+    render_mode: str,
+) -> dict[str, Any]:
+    receptor_rows = _collect_receptor_rows(source_dir)
+    receptor_ids, ligand_names = _collect_entities_from_rows(receptor_rows)
+    source_metadata = _load_source_metadata(source_dir, receptor_ids, ligand_names)
+    receptor_labels = {str(k): str(v) for k, v in (source_metadata.get("receptor_labels") or {}).items()}
+    ligand_labels = {str(k): str(v) for k, v in (source_metadata.get("ligand_labels") or {}).items()}
+    ligand_order_index = {
+        str(name): idx
+        for idx, name in enumerate(source_metadata.get("ligand_order") or [])
+        if str(name)
+    }
+
+    ready_rows = [row for row in receptor_rows if row.get("ready")]
+    if not ready_rows:
+        raise FileNotFoundError("No render-ready receptor found for preview.")
+
+    row_by_id = {str(row.get("id") or ""): row for row in receptor_rows}
+    selected_row = row_by_id.get(str(receptor_id or "").strip()) or ready_rows[0]
+    receptor_key = str(selected_row.get("id") or "").strip()
+
+    inventory = _collect_receptor_inventory(source_dir)
+    ligand_map = inventory.get(receptor_key) or {}
+    if not ligand_map:
+        raise FileNotFoundError(f"No valid ligand/run data found for receptor: {receptor_key}")
+
+    normalized_mode = _normalize_render_mode(render_mode)
+    available_runs: list[str] = []
+    if normalized_mode == REPORT_RENDER_MODE_OTOFIGURE:
+        ligand_name, run_entries = _select_otofigure_ligand_runs(
+            inventory,
+            receptor_key,
+            ligand_order_index=ligand_order_index,
+        )
+        available_runs = [name for name, _ in run_entries]
+    else:
+        ligand_names = sorted(
+            ligand_map.keys(),
+            key=lambda ligand_name: (
+                ligand_order_index.get(ligand_name, 10**6),
+                _ligand_sort_key(ligand_name),
+            ),
+        )
+        ligand_name = ligand_names[0]
+        available_runs = [name for name, _ in (ligand_map.get(ligand_name) or [])]
+
+    preferred_run = str(run_name or "").strip()
+    complex_pdb, interaction_json, _plip_report, selected_run_name = _find_render_inputs(
+        inventory,
+        receptor_key,
+        ligand_name,
+        preferred_run=preferred_run,
+    )
+    interaction_payload = _load_interaction_payload(interaction_json)
+    contacts = interaction_payload.get("contacts") if isinstance(interaction_payload.get("contacts"), list) else []
+    residue_rows = interaction_payload.get("residue_summary") if isinstance(interaction_payload.get("residue_summary"), list) else []
+    residue_rows = sorted(
+        [row for row in residue_rows if isinstance(row, dict)],
+        key=lambda item: (-int(item.get("contact_count") or 0), float(item.get("min_distance") or 10**6)),
+    )
+    type_counts: dict[str, int] = {}
+    for contact in contacts:
+        if not isinstance(contact, dict):
+            continue
+        kind = str(contact.get("interaction_type") or "other").strip().lower() or "other"
+        type_counts[kind] = type_counts.get(kind, 0) + 1
+
+    receptor_label = receptor_labels.get(receptor_key, _prettify_label(receptor_key))
+    ligand_label = ligand_labels.get(ligand_name, _prettify_label(ligand_name, trim_run_suffix=True))
+    svg_markup = _build_interaction_preview_svg(
+        receptor_label=receptor_label,
+        ligand_label=ligand_label,
+        run_name=selected_run_name,
+        render_mode=normalized_mode,
+        contact_count=int(interaction_payload.get("contact_count") or len(contacts) or 0),
+        residue_rows=residue_rows,
+        type_counts=type_counts,
+    )
+
+    return {
+        "available": True,
+        "receptor_id": receptor_key,
+        "receptor_label": receptor_label,
+        "ligand_name": ligand_name,
+        "ligand_label": ligand_label,
+        "run_name": selected_run_name,
+        "available_runs": available_runs,
+        "render_mode": normalized_mode,
+        "contact_count": int(interaction_payload.get("contact_count") or len(contacts) or 0),
+        "top_residues": residue_rows[:6],
+        "interaction_type_counts": type_counts,
+        "has_interaction_map": bool(interaction_payload),
+        "complex_path": to_display_path(complex_pdb.parent),
+        "svg_markup": svg_markup,
+    }
+
+
 def _render_dtype_panel_with_runner(
     dtype: str,
     inventory: dict[str, dict[str, list[tuple[str, Path]]]],
@@ -1170,9 +1392,11 @@ def _render_dtype_panel_with_runner(
     *,
     pipeline_runner,
     preferred_run: str = "run1",
+    preferred_ligand: str = "",
     output_stem: str = "",
     preview_mode: bool = False,
     ligand_order_index: dict[str, int] | None = None,
+    process_hooks: dict[str, Any] | None = None,
 ) -> tuple[Path, list[str]]:
     from PIL import Image
 
@@ -1197,7 +1421,12 @@ def _render_dtype_panel_with_runner(
         key=lambda ligand_name: (order_index.get(ligand_name, 10**6), _ligand_sort_key(ligand_name)),
     )
     max_tiles = 1 if preview_mode else 4
-    selected_ligands = ligand_names[:max_tiles]
+    if preferred_ligand:
+        if preferred_ligand not in ligand_map:
+            raise FileNotFoundError(f"No ligand data found for receptor {dtype}: {preferred_ligand}")
+        selected_ligands = [preferred_ligand]
+    else:
+        selected_ligands = ligand_names[:max_tiles]
     if not selected_ligands:
         raise FileNotFoundError(f"No renderable ligands found for receptor: {dtype}")
 
@@ -1273,9 +1502,11 @@ def _render_dtype_panel(
     temp_root: Path,
     dpi: int,
     preferred_run: str = "run1",
+    preferred_ligand: str = "",
     output_stem: str = "",
     preview_mode: bool = False,
     ligand_order_index: dict[str, int] | None = None,
+    process_hooks: dict[str, Any] | None = None,
 ) -> tuple[Path, list[str]]:
     from figure_scripts.panel_figure.pipeline import run as run_pipeline
 
@@ -1287,9 +1518,11 @@ def _render_dtype_panel(
         dpi,
         pipeline_runner=run_pipeline,
         preferred_run=preferred_run,
+        preferred_ligand=preferred_ligand,
         output_stem=output_stem,
         preview_mode=preview_mode,
         ligand_order_index=ligand_order_index,
+        process_hooks=process_hooks,
     )
 
 
@@ -1300,9 +1533,11 @@ def _render_dtype_otofigure_panel(
     temp_root: Path,
     dpi: int,
     preferred_run: str = "run1",
+    preferred_ligand: str = "",
     output_stem: str = "",
     preview_mode: bool = False,
     ligand_order_index: dict[str, int] | None = None,
+    process_hooks: dict[str, Any] | None = None,
 ) -> tuple[Path, list[str]]:
     from figure_scripts.otofigure.pipeline import run as run_pipeline
 
@@ -1312,6 +1547,7 @@ def _render_dtype_otofigure_panel(
     ligand_name, run_entries = _select_otofigure_ligand_runs(
         inventory,
         dtype,
+        preferred_ligand=preferred_ligand,
         ligand_order_index=ligand_order_index,
     )
     safe_ligand = re.sub(r"[^A-Za-z0-9_.-]+", "_", ligand_name)
@@ -1327,6 +1563,8 @@ def _render_dtype_otofigure_panel(
             work_dir=work_dir,
             dpi=dpi,
             preview_mode=preview_mode,
+            on_process_start=(process_hooks or {}).get("on_process_start"),
+            on_process_end=(process_hooks or {}).get("on_process_end"),
         )
         used_runs = [str(name) for name in result.get("used_runs") or [run_name for run_name, _ in run_entries]]
         return out_path, sorted(used_runs, key=_run_sort_key)
@@ -1612,6 +1850,37 @@ def list_reports(root_path: str = "", source_path: str = "", output_path: str = 
         ),
     }
     payload["images"] = payload["render_images"] + payload["plot_images"]
+    return JSONResponse(payload)
+
+
+@router.get("/api/reports/preview")
+def get_report_preview(
+    root_path: str = "",
+    source_path: str = "",
+    receptor_id: str = "",
+    run_name: str = "",
+    render_mode: str = "",
+) -> JSONResponse:
+    report_root = _resolve_report_root(root_path)
+    source_dir = _resolve_report_source(report_root, source_path)
+    try:
+        payload = _resolve_preview_context(
+            source_dir,
+            receptor_id=receptor_id,
+            run_name=run_name,
+            render_mode=render_mode,
+        )
+    except FileNotFoundError as exc:
+        return JSONResponse(
+            {
+                "available": False,
+                "message": str(exc),
+                "receptor_id": str(receptor_id or "").strip(),
+                "render_mode": _normalize_render_mode(render_mode),
+            }
+        )
+    payload["root_path"] = to_display_path(report_root)
+    payload["source_path"] = to_display_path(source_dir)
     return JSONResponse(payload)
 
 
@@ -2051,13 +2320,14 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
     render_jobs: list[dict[str, str]] = []
     for dtype in selected:
         preferred_run = str(payload.run_by_receptor.get(dtype, "")).strip()
+        preferred_ligand = str(payload.ligand_by_receptor.get(dtype, "")).strip()
         row = receptor_index.get(dtype) or {}
         run_options = {run_name for run_name in row.get("run_options", []) if run_name}
         if preferred_run and run_options and preferred_run not in run_options:
             preferred_run = str(row.get("default_run") or "")
         if not preferred_run:
             preferred_run = str(row.get("default_run") or "run1")
-        render_jobs.append({"dtype": dtype, "run": preferred_run})
+        render_jobs.append({"dtype": dtype, "run": preferred_run, "ligand": preferred_ligand})
 
     REPORT_STATE["status"] = "running"
     REPORT_STATE["task"] = "render"
@@ -2066,6 +2336,13 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
     REPORT_STATE["message"] = f"Generating {render_mode_label} render panels..."
     REPORT_STATE["errors"] = []
     REPORT_STATE["last_logs"] = []
+    REPORT_STATE["cancel_requested"] = False
+    REPORT_STATE["current_receptor"] = ""
+    REPORT_STATE["current_ligand"] = ""
+    REPORT_STATE["current_run"] = ""
+    REPORT_STATE["render_mode"] = render_mode
+    REPORT_STATE["active_subprocess_pid"] = None
+    REPORT_STATE["active_subprocess_label"] = ""
 
     def run_render_job(
         state: dict[str, Any],
@@ -2089,14 +2366,27 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
 
         try:
             for idx, job in enumerate(jobs, start=1):
-                if state.get("status") != "running":
+                if state.get("cancel_requested"):
                     break
                 dtype = job.get("dtype", "")
                 preferred_run = (job.get("run") or "").strip()
+                preferred_ligand = (job.get("ligand") or "").strip()
                 run_label = "all runs" if render_mode_key == REPORT_RENDER_MODE_OTOFIGURE else (preferred_run if preferred_run else "auto")
+                state["current_receptor"] = dtype
+                state["current_ligand"] = preferred_ligand
+                state["current_run"] = preferred_run
                 state["message"] = (
                     f"[{idx}/{len(jobs)}] Rendering {dtype} with {render_mode_name} mode (run: {run_label})..."
                 )
+
+                def on_process_start(proc: subprocess.Popen[str]) -> None:
+                    state["active_subprocess_pid"] = int(proc.pid or 0) or None
+                    state["active_subprocess_label"] = dtype
+
+                def on_process_end(_proc: subprocess.Popen[str]) -> None:
+                    state["active_subprocess_pid"] = None
+                    state["active_subprocess_label"] = ""
+
                 try:
                     if render_mode_key == REPORT_RENDER_MODE_OTOFIGURE:
                         panel_stem = f"{dtype}_{render_mode}_multirun_{started_stamp}_{idx:02d}"
@@ -2109,21 +2399,38 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
                         temp_root,
                         render_dpi,
                         preferred_run,
+                        preferred_ligand,
                         output_stem=panel_stem,
                         preview_mode=preview_mode,
                         ligand_order_index=ligand_order,
+                        process_hooks={
+                            "on_process_start": on_process_start,
+                            "on_process_end": on_process_end,
+                        },
                     )
                     used_label = ", ".join(used_runs) if used_runs else "auto"
                     logs.append(f"{dtype}: {out_path.name} (used: {used_label})")
                 except Exception as exc:
+                    if state.get("cancel_requested"):
+                        logs.append(f"{dtype}: cancelled")
+                        break
                     errors.append(f"{dtype}: {exc}")
                 state["progress"] = idx
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
             state["errors"] = errors
             state["last_logs"] = logs[-10:]
+            state["active_subprocess_pid"] = None
+            state["active_subprocess_label"] = ""
+            state["current_receptor"] = ""
+            state["current_ligand"] = ""
+            state["current_run"] = ""
             state["status"] = "idle"
-            state["message"] = "Render completed." if not errors else "Render completed with errors."
+            if state.get("cancel_requested"):
+                state["message"] = "Render stopped."
+            else:
+                state["message"] = "Render completed." if not errors else "Render completed with errors."
+            state["cancel_requested"] = False
 
     background_tasks.add_task(
         run_render_job,
@@ -2145,6 +2452,32 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
         base_seconds = 14 if is_preview_mode else 40
     expected_seconds = int(max(12, len(render_jobs) * base_seconds * dpi_scale))
     return JSONResponse({"status": "started", "expected_time": expected_seconds})
+
+
+@router.post("/api/reports/render/stop")
+def stop_render() -> JSONResponse:
+    if REPORT_STATE.get("task") != "render" or REPORT_STATE.get("status") not in {"running", "stopping"}:
+        return JSONResponse({"status": "idle", "message": "No active render task."})
+
+    REPORT_STATE["cancel_requested"] = True
+    REPORT_STATE["status"] = "stopping"
+    REPORT_STATE["message"] = "Stopping render..."
+
+    active_pid = REPORT_STATE.get("active_subprocess_pid")
+    if active_pid:
+        try:
+            os.killpg(int(active_pid), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            pass
+
+    return JSONResponse(
+        {
+            "status": REPORT_STATE.get("status", "stopping"),
+            "message": REPORT_STATE.get("message", "Stopping render..."),
+        }
+    )
 
 
 @router.post("/api/reports/compile")
@@ -2262,5 +2595,12 @@ def get_report_status() -> JSONResponse:
         "message": REPORT_STATE.get("message", ""),
         "errors": REPORT_STATE.get("errors", []),
         "last_logs": REPORT_STATE.get("last_logs", []),
+        "cancel_requested": bool(REPORT_STATE.get("cancel_requested")),
+        "current_receptor": REPORT_STATE.get("current_receptor", ""),
+        "current_ligand": REPORT_STATE.get("current_ligand", ""),
+        "current_run": REPORT_STATE.get("current_run", ""),
+        "render_mode": REPORT_STATE.get("render_mode", ""),
+        "active_subprocess_pid": REPORT_STATE.get("active_subprocess_pid"),
+        "active_subprocess_label": REPORT_STATE.get("active_subprocess_label", ""),
     }
     return JSONResponse(state)

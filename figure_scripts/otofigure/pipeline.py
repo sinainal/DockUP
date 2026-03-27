@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -120,21 +121,46 @@ def _render_settings(dpi: int, *, preview_mode: bool) -> tuple[int, int, int, in
     return (400, 300, min(max(12, safe_dpi), 30), max(72, min(180, safe_dpi * 2)))
 
 
-def _run_step(cmd: list[str], *, cwd: Path, env: dict[str, str]) -> str:
-    completed = subprocess.run(
+def _run_step(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    on_process_start=None,
+    on_process_end=None,
+) -> str:
+    proc = subprocess.Popen(
         cmd,
         cwd=str(cwd),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        check=False,
+        start_new_session=True,
     )
-    if completed.returncode != 0:
+    if callable(on_process_start):
+        on_process_start(proc)
+    output_chunks: list[str] = []
+    try:
+        while True:
+            chunk = proc.stdout.readline() if proc.stdout is not None else ""
+            if chunk:
+                output_chunks.append(chunk)
+            if proc.poll() is not None:
+                break
+            time.sleep(0.05)
+        remaining = proc.stdout.read() if proc.stdout is not None else ""
+        if remaining:
+            output_chunks.append(remaining)
+    finally:
+        if callable(on_process_end):
+            on_process_end(proc)
+    output_text = "".join(output_chunks)
+    if proc.returncode != 0:
         raise RuntimeError(
-            f"OtoFigure step failed ({' '.join(cmd)}):\n{completed.stdout.strip()}"
+            f"OtoFigure step failed ({' '.join(cmd)}):\n{output_text.strip()}"
         )
-    return completed.stdout
+    return output_text
 
 
 def run(
@@ -146,6 +172,8 @@ def run(
     work_dir: str | Path,
     dpi: int = 30,
     preview_mode: bool = False,
+    on_process_start=None,
+    on_process_end=None,
 ) -> dict[str, Any]:
     if not run_entries:
         raise FileNotFoundError(f"No OtoFigure run entries found for {receptor_id}/{ligand_name}")
@@ -190,6 +218,8 @@ def run(
         ],
         cwd=work_root,
         env=env,
+        on_process_start=on_process_start,
+        on_process_end=on_process_end,
     )
     logs["create_visualization"] = _run_step(
         [
@@ -204,6 +234,8 @@ def run(
         ],
         cwd=work_root,
         env=env,
+        on_process_start=on_process_start,
+        on_process_end=on_process_end,
     )
     logs["final_formatter"] = _run_step(
         [
@@ -220,6 +252,8 @@ def run(
         ],
         cwd=work_root,
         env=env,
+        on_process_start=on_process_start,
+        on_process_end=on_process_end,
     )
 
     final_images = sorted(layout["final_results_dir"].glob("*_final.png"))

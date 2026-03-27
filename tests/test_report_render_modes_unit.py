@@ -45,9 +45,11 @@ def test_trigger_render_dispatches_otofigure_builder(monkeypatch: pytest.MonkeyP
         _temp_root,
         _dpi,
         preferred_run="run1",
+        preferred_ligand="",
         output_stem="",
         preview_mode=False,
         ligand_order_index=None,
+        process_hooks=None,
     ):
         called.append("classic")
         out_path = Path(out_dir) / f"{output_stem or dtype}_classic.png"
@@ -61,9 +63,11 @@ def test_trigger_render_dispatches_otofigure_builder(monkeypatch: pytest.MonkeyP
         _temp_root,
         _dpi,
         preferred_run="run1",
+        preferred_ligand="",
         output_stem="",
         preview_mode=False,
         ligand_order_index=None,
+        process_hooks=None,
     ):
         called.append("otofigure")
         out_path = Path(out_dir) / f"{output_stem or dtype}_otofigure.png"
@@ -139,3 +143,52 @@ def test_select_otofigure_ligand_runs_prefers_highest_run_count() -> None:
 
     assert ligand_name == "LigandB"
     assert [name for name, _ in run_entries] == ["run1", "run2", "run3"]
+
+
+@pytest.mark.unit
+def test_select_otofigure_ligand_runs_respects_preferred_ligand() -> None:
+    inventory = {
+        "3PBL": {
+            "LigandA": [
+                ("run1", Path("/tmp/a1")),
+                ("run2", Path("/tmp/a2")),
+            ],
+            "LigandB": [
+                ("run1", Path("/tmp/b1")),
+                ("run2", Path("/tmp/b2")),
+                ("run3", Path("/tmp/b3")),
+            ],
+        }
+    }
+
+    ligand_name, run_entries = report._select_otofigure_ligand_runs(
+        inventory,
+        "3PBL",
+        preferred_ligand="LigandA",
+    )
+
+    assert ligand_name == "LigandA"
+    assert [name for name, _ in run_entries] == ["run1", "run2"]
+
+
+@pytest.mark.unit
+def test_stop_render_marks_report_state_stopping() -> None:
+    snapshot = copy.deepcopy(REPORT_STATE)
+    try:
+        REPORT_STATE.update(
+            {
+                "status": "running",
+                "task": "render",
+                "message": "Generating render panels...",
+                "cancel_requested": False,
+                "active_subprocess_pid": None,
+            }
+        )
+        response = report.stop_render()
+        payload = json.loads(response.body.decode("utf-8"))
+        assert payload["status"] == "stopping"
+        assert REPORT_STATE["cancel_requested"] is True
+        assert REPORT_STATE["message"] == "Stopping render..."
+    finally:
+        REPORT_STATE.clear()
+        REPORT_STATE.update(snapshot)

@@ -41,6 +41,7 @@ class RenderPayload(BaseModel):
     render_mode: str = "classic"
     receptors: list[str] = []
     run_by_receptor: dict[str, str] = {}
+    ligand_by_receptor: dict[str, str] = {}
     is_preview: bool = False
 
 
