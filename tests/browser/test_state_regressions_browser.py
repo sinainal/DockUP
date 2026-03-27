@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 
@@ -72,7 +73,7 @@ def _clear_loaded_receptors(api: ApiClient) -> None:
 
 
 def _upload_temp_ligand(base_url: str, stem: str) -> str:
-    sdf_bytes = b"\n  Ketcher\n\n  0  0  0     0  0            999 V2000\nM  END\n$$$$\n"
+    sdf_bytes = f"{stem}\n  Ketcher\n\n  0  0  0     0  0            999 V2000\nM  END\n$$$$\n".encode("utf-8")
     resp = requests.post(
         f"{base_url.rstrip('/')}/api/ligands/upload",
         files={"files": (f"{stem}.sdf", sdf_bytes, "application/octet-stream")},
@@ -83,6 +84,14 @@ def _upload_temp_ligand(base_url: str, stem: str) -> str:
     saved = payload.get("saved") or []
     assert saved, f"Upload response does not include saved ligand name: {payload}"
     return str(saved[0])
+
+
+def _remove_dock_out_roots(test_cfg, *names: str) -> None:
+    for raw_name in names:
+        name = str(raw_name or "").strip()
+        if not name:
+            continue
+        shutil.rmtree(test_cfg.dock_dir / name, ignore_errors=True)
 
 
 def _prepare_two_queue_batches(api: ApiClient, test_cfg, *, stamp: int) -> tuple[str, str]:
@@ -114,7 +123,7 @@ def _prepare_two_queue_batches(api: ApiClient, test_cfg, *, stamp: int) -> tuple
     return receptor_id, ligand_name
 
 
-def _cleanup_queue_seed(api: ApiClient, receptor_id: str, ligand_name: str) -> None:
+def _cleanup_queue_seed(api: ApiClient, test_cfg, receptor_id: str, ligand_name: str) -> None:
     try:
         _clear_queue(api)
     except Exception:
@@ -131,6 +140,7 @@ def _cleanup_queue_seed(api: ApiClient, receptor_id: str, ligand_name: str) -> N
         api.post("/api/receptors/remove", {"pdb_id": receptor_id})
     except Exception:
         pass
+    _remove_dock_out_roots(test_cfg, "qa_refresh_bug", "qb_refresh_bug", "q_clear_selection_new")
 
 
 def _prepare_distinct_receptor_batches(api: ApiClient, test_cfg, *, stamp: int) -> tuple[str, str]:
@@ -194,7 +204,7 @@ def _prepare_distinct_receptor_batches(api: ApiClient, test_cfg, *, stamp: int) 
     return "6CM4", "3PBL"
 
 
-def _cleanup_receptors(api: ApiClient, receptor_ids: list[str]) -> None:
+def _cleanup_receptors(api: ApiClient, test_cfg, receptor_ids: list[str]) -> None:
     try:
         _clear_queue(api)
     except Exception:
@@ -208,6 +218,7 @@ def _cleanup_receptors(api: ApiClient, receptor_ids: list[str]) -> None:
             api.post("/api/receptors/remove", {"pdb_id": receptor_id})
         except Exception:
             pass
+    _remove_dock_out_roots(test_cfg, "q3_only", "q6_only", "q_hidden_leak")
 
 
 def _queue_batch_card(page: Page, batch_label: str):
@@ -306,7 +317,7 @@ def test_queue_selection_persists_after_reload(
         assert page.locator("#clearQueueSelection").is_visible(), "Clear Selection should remain visible after reload."
     finally:
         if receptor_id or ligand_name:
-            _cleanup_queue_seed(api, receptor_id, ligand_name)
+            _cleanup_queue_seed(api, test_cfg, receptor_id, ligand_name)
 
 
 def test_deleting_selected_batch_clears_selected_queue_context(
@@ -346,7 +357,7 @@ def test_deleting_selected_batch_clears_selected_queue_context(
         )
     finally:
         if receptor_id or ligand_name:
-            _cleanup_queue_seed(api, receptor_id, ligand_name)
+            _cleanup_queue_seed(api, test_cfg, receptor_id, ligand_name)
 
 
 def test_clear_selection_returns_queue_builder_to_append_mode(
@@ -392,7 +403,7 @@ def test_clear_selection_returns_queue_builder_to_append_mode(
         assert leak_rows, "Expected a new queue batch with out_root_name=q_clear_selection_new."
     finally:
         if receptor_id or ligand_name:
-            _cleanup_queue_seed(api, receptor_id, ligand_name)
+            _cleanup_queue_seed(api, test_cfg, receptor_id, ligand_name)
 
 
 def test_queue_popup_edits_do_not_leak_hidden_receptors_into_new_batch(
@@ -442,4 +453,4 @@ def test_queue_popup_edits_do_not_leak_hidden_receptors_into_new_batch(
             f"Screenshot: output/playwright/browser_state_regressions/bug_hidden_receptor_leak_after.png"
         )
     finally:
-        _cleanup_receptors(api, ["6CM4", "3PBL"])
+        _cleanup_receptors(api, test_cfg, ["6CM4", "3PBL"])

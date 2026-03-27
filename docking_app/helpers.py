@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,9 @@ from .config import BASE, DATA_DIR, DOCK_DIR, WORKSPACE_DIR
 from .state import DOCKING_CONFIG_DEFAULTS
 
 logger = logging.getLogger(__name__)
+
+LIGAND_TIMESTAMP_SUFFIX_RE = re.compile(r"_(\d{8}_\d{6})(?:_\d+)?$", re.IGNORECASE)
+LIGAND_DUPLICATE_SUFFIX_RE = re.compile(r"^(?P<base>.+?)_(?P<index>\d+)$")
 
 # Resolved path constants for safety checks
 BASE_RESOLVED = BASE.resolve()
@@ -145,6 +149,91 @@ def build_flex_residue_spec(rows: Any) -> str:
     """Serialize normalized flex residue rows into a Meeko/Vina residue spec."""
     normalized = normalize_flex_residue_list(rows)
     return ",".join(f"{row['chain']}:{row['resno']}" for row in normalized if row.get("chain") and row.get("resno"))
+
+
+def normalize_ligand_db_filename(filename: str) -> str:
+    """Normalize ligand storage names while stripping generator timestamps."""
+    src = Path(str(filename or "").strip())
+    suffix = src.suffix.lower() or ".sdf"
+    stem = str(src.stem or "ligand").strip()
+    stem = LIGAND_TIMESTAMP_SUFFIX_RE.sub("", stem).strip("._-")
+    if not stem:
+        stem = "ligand"
+    return f"{stem}{suffix}"
+
+
+def next_available_ligand_path(directory: Path, filename: str) -> Path:
+    """Return a stable deduplicated ligand path inside *directory*."""
+    directory = Path(directory).expanduser().resolve()
+    normalized_name = normalize_ligand_db_filename(filename)
+    stem = Path(normalized_name).stem
+    suffix = Path(normalized_name).suffix or ".sdf"
+
+    duplicate_match = LIGAND_DUPLICATE_SUFFIX_RE.fullmatch(stem)
+    if duplicate_match:
+        candidate_base = str(duplicate_match.group("base") or "").strip("._-")
+        if candidate_base:
+            unsuffixed = directory / f"{candidate_base}{suffix}"
+            siblings_pattern = f"{candidate_base}_[0-9]*{suffix}"
+            if unsuffixed.exists() or any(directory.glob(siblings_pattern)):
+                stem = candidate_base
+
+    candidate = directory / f"{stem}{suffix}"
+    if not candidate.exists():
+        return candidate
+
+    idx = 1
+    while True:
+        next_path = directory / f"{stem}_{idx}{suffix}"
+        if not next_path.exists():
+            return next_path
+        idx += 1
+
+
+def find_identical_file_by_bytes(
+    directory: Path,
+    content: bytes,
+    *,
+    suffixes: tuple[str, ...] = (),
+    preferred_name: str = "",
+) -> Path | None:
+    """Return an existing file whose byte content matches *content*."""
+    directory = Path(directory).expanduser().resolve()
+    suffix_filter = {str(suffix or "").lower() for suffix in suffixes if str(suffix or "").strip()}
+    content_size = len(content)
+    matches: list[Path] = []
+
+    try:
+        entries = sorted(directory.iterdir(), key=lambda item: item.name.lower())
+    except OSError:
+        return None
+
+    for path in entries:
+        if not path.is_file():
+            continue
+        if suffix_filter and path.suffix.lower() not in suffix_filter:
+            continue
+        try:
+            if path.stat().st_size != content_size:
+                continue
+            if path.read_bytes() != content:
+                continue
+        except OSError:
+            continue
+        matches.append(path)
+
+    if not matches:
+        return None
+
+    normalized_preferred = normalize_ligand_db_filename(preferred_name) if preferred_name else ""
+    matches.sort(
+        key=lambda path: (
+            len(path.stem),
+            path.name != normalized_preferred,
+            path.name.lower(),
+        )
+    )
+    return matches[0]
 
 
 # ---------------------------------------------------------------------------

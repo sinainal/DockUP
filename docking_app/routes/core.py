@@ -18,8 +18,11 @@ from fastapi.templating import Jinja2Templates
 from .. import state as runtime_state
 from ..config import BASE, DATA_DIR, DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR
 from ..helpers import (
+    find_identical_file_by_bytes,
+    next_available_ligand_path,
     normalize_flex_residue_list,
     normalize_docking_config,
+    normalize_ligand_db_filename,
     relative_to_base,
     resolve_dock_directory,
     to_display_path,
@@ -50,6 +53,7 @@ from ..services import (
     _normalize_chain_id,
     _normalize_receptor_id,
     _parse_grid_file,
+    _sanitize_upload_filename,
     _save_uploads,
     _start_run,
     _summarize_receptors,
@@ -70,7 +74,6 @@ _templates: Jinja2Templates | None = None
 LIGAND_DIR_RESOLVED = LIGAND_DIR.resolve()
 RECEPTOR_DIR_RESOLVED = RECEPTOR_DIR.resolve()
 DOCK_DIR_RESOLVED = DOCK_DIR.resolve()
-LIGAND_TIMESTAMP_SUFFIX_RE = re.compile(r"_(\d{8}_\d{6})(?:_\d+)?$", re.IGNORECASE)
 VALID_RECEPTOR_ID_RE = re.compile(r"^[A-Z0-9]{4}$")
 
 from ..manifest import config_to_manifest_values, append_docking_config_args
@@ -81,27 +84,11 @@ from ..manifest import config_to_manifest_values, append_docking_config_args
 # ---------------------------------------------------------------------------
 
 def _next_available_ligand_path(filename: str) -> Path:
-    stem = Path(filename).stem
-    suffix = Path(filename).suffix or ".sdf"
-    candidate = LIGAND_DIR / f"{stem}{suffix}"
-    if not candidate.exists():
-        return candidate
-    idx = 1
-    while True:
-        path = LIGAND_DIR / f"{stem}_{idx}{suffix}"
-        if not path.exists():
-            return path
-        idx += 1
+    return next_available_ligand_path(LIGAND_DIR, filename)
 
 
 def _normalize_ligand_db_filename(filename: str) -> str:
-    src = Path(str(filename or "").strip())
-    suffix = src.suffix.lower() or ".sdf"
-    stem = str(src.stem or "ligand").strip()
-    stem = LIGAND_TIMESTAMP_SUFFIX_RE.sub("", stem).strip("._-")
-    if not stem:
-        stem = "ligand"
-    return f"{stem}{suffix}"
+    return normalize_ligand_db_filename(filename)
 
 
 def _sanitize_out_root_name(raw_name: str) -> str:
@@ -347,10 +334,35 @@ def api_mode(payload: ModePayload) -> JSONResponse:
 
 @router.post("/api/ligands/upload")
 def upload_ligands(files: list[UploadFile] = File(...)) -> JSONResponse:
-    saved = _save_uploads(files, LIGAND_DIR)
+    saved: list[str] = []
+    duplicates: list[str] = []
+    for file in files:
+        safe_name = _sanitize_upload_filename(file.filename)
+        file_bytes = file.file.read()
+        existing_path = find_identical_file_by_bytes(
+            LIGAND_DIR,
+            file_bytes,
+            suffixes=(".sdf",),
+            preferred_name=safe_name,
+        )
+        if existing_path is not None:
+            duplicates.append(existing_path.name)
+            saved.append(str(existing_path))
+            continue
+        target_path = _next_available_ligand_path(safe_name)
+        target_path.write_bytes(file_bytes)
+        saved.append(str(target_path))
     _normalize_active_ligands_state()
     save_state_cache()
-    return JSONResponse({"saved": [Path(p).name for p in saved]})
+    lig_files = _existing_files(LIGAND_DIR, (".sdf",))
+    return JSONResponse(
+        {
+            "saved": [Path(p).name for p in saved],
+            "duplicates": duplicates,
+            "created_count": max(0, len(saved) - len(duplicates)),
+            "ligands": [f.name for f in lig_files],
+        }
+    )
 
 
 @router.get("/api/ligands/list")

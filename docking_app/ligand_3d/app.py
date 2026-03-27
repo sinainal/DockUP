@@ -20,6 +20,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
+from ..helpers import find_identical_file_by_bytes as _shared_find_identical_file_by_bytes
+from ..helpers import next_available_ligand_path as _shared_next_available_ligand_path
+from ..helpers import normalize_ligand_db_filename as _shared_normalize_ligand_db_filename
+from ..state import STATE, save_state_cache
+
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR
 while PROJECT_ROOT != PROJECT_ROOT.parent and not (PROJECT_ROOT / "convert_3D.py").exists():
@@ -41,7 +46,6 @@ PUBCHEM_PUG_BASE_URL = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
 CACHE_TTL_SECONDS = 180
 CACHE_MAX_KEYS = 512
 API_CACHE: dict[str, tuple[float, Any]] = {}
-LIGAND_TIMESTAMP_SUFFIX_RE = re.compile(r"_(\d{8}_\d{6})(?:_\d+)?$", re.IGNORECASE)
 
 
 @lru_cache(maxsize=1)
@@ -101,6 +105,10 @@ class AddLigandsPayload(BaseModel):
     file_names: list[str] = []
 
 
+class DeleteLigandPayload(BaseModel):
+    name: str = ""
+
+
 class DeleteFilesPayload(BaseModel):
     file_names: list[str] = []
 
@@ -155,28 +163,11 @@ def _safe_stem(raw: str, fallback: str = "ligand") -> str:
 
 
 def _next_available_path(directory: Path, filename: str) -> Path:
-    directory = directory.resolve()
-    stem = Path(filename).stem
-    suffix = Path(filename).suffix or ".sdf"
-    candidate = directory / f"{stem}{suffix}"
-    if not candidate.exists():
-        return candidate
-    idx = 1
-    while True:
-        next_path = directory / f"{stem}_{idx}{suffix}"
-        if not next_path.exists():
-            return next_path
-        idx += 1
+    return _shared_next_available_ligand_path(directory, filename)
 
 
 def _normalize_ligand_db_filename(filename: str) -> str:
-    src = Path(str(filename or "").strip())
-    suffix = src.suffix.lower() or ".sdf"
-    stem = str(src.stem or "ligand").strip()
-    stem = LIGAND_TIMESTAMP_SUFFIX_RE.sub("", stem).strip("._-")
-    if not stem:
-        stem = "ligand"
-    return f"{stem}{suffix}"
+    return _shared_normalize_ligand_db_filename(filename)
 
 
 def _cleanup_ligand_db_names() -> int:
@@ -191,6 +182,10 @@ def _cleanup_ligand_db_names() -> int:
         path.rename(target_path)
         renamed += 1
     return renamed
+
+
+def _list_docking_db_ligands() -> list[str]:
+    return sorted([p.name for p in LIGAND_DB_DIR.glob("*.sdf") if p.is_file()], key=lambda x: x.lower())
 
 
 def _oligomer_label(count: int) -> str:
@@ -860,6 +855,7 @@ def add_ligands(payload: AddLigandsPayload) -> dict[str, Any]:
     _cleanup_ligand_db_names()
 
     copied: list[str] = []
+    duplicates: list[str] = []
     missing: list[str] = []
     for raw_name in names:
         safe_name = Path(raw_name).name
@@ -870,26 +866,73 @@ def add_ligands(payload: AddLigandsPayload) -> dict[str, Any]:
         if not source_path.exists() or not source_path.is_file():
             missing.append(raw_name)
             continue
+        source_bytes = source_path.read_bytes()
+        existing_path = _shared_find_identical_file_by_bytes(
+            LIGAND_DB_DIR,
+            source_bytes,
+            suffixes=(".sdf",),
+            preferred_name=safe_name,
+        )
+        if existing_path is not None:
+            duplicates.append(existing_path.name)
+            continue
         normalized_name = _normalize_ligand_db_filename(safe_name)
         target_path = _next_available_path(LIGAND_DB_DIR, normalized_name)
         shutil.copy2(source_path, target_path)
         copied.append(target_path.name)
 
-    ligands = sorted([p.name for p in LIGAND_DB_DIR.glob("*.sdf") if p.is_file()], key=lambda x: x.lower())
+    ligands = _list_docking_db_ligands()
     return {
         "ok": True,
         "copied_count": len(copied),
         "copied": copied,
+        "duplicates": duplicates,
         "missing": missing,
         "ligands_path": str(LIGAND_DB_DIR.resolve()),
         "ligands": ligands,
     }
 
 
+@app.post("/api/ligands/delete")
+def delete_ligand(payload: DeleteLigandPayload) -> dict[str, Any]:
+    name = str(payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Ligand name is required.")
+    _cleanup_ligand_db_names()
+
+    target = (LIGAND_DB_DIR / Path(name).name).resolve()
+    if LIGAND_DB_DIR.resolve() not in target.parents or target.suffix.lower() != ".sdf":
+        raise HTTPException(status_code=400, detail="Invalid ligand name.")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Ligand not found.")
+
+    target.unlink(missing_ok=False)
+    deleted_name = target.name
+    STATE["active_ligands"] = [item for item in STATE.get("active_ligands", []) if str(item or "").strip() != deleted_name]
+    if str(STATE.get("selected_ligand") or "").strip() == deleted_name:
+        STATE["selected_ligand"] = ""
+    selection_map = STATE.get("selection_map")
+    if isinstance(selection_map, dict):
+        for row in selection_map.values():
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("ligand_resname") or "").strip() == deleted_name:
+                row["ligand_resname"] = ""
+    save_state_cache()
+    ligands = _list_docking_db_ligands()
+    return {
+        "ok": True,
+        "deleted": deleted_name,
+        "count": len(ligands),
+        "ligands": ligands,
+        "ligands_path": str(LIGAND_DB_DIR.resolve()),
+    }
+
+
 @app.get("/api/ligands/database")
 def ligand_database() -> dict[str, Any]:
     _cleanup_ligand_db_names()
-    ligands = sorted([p.name for p in LIGAND_DB_DIR.glob("*.sdf") if p.is_file()], key=lambda x: x.lower())
+    ligands = _list_docking_db_ligands()
     return {
         "count": len(ligands),
         "ligands": ligands,

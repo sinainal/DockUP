@@ -92,3 +92,23 @@ def test_build_queue_keeps_valid_docking_ligand():
     assert entries[0]["pdb_id"] == "6CM4"
     assert entries[0]["ligand_resname"] == ligand_name
     assert entries[0]["lig_spec"] == str(ligand_path)
+
+
+def test_build_queue_empty_selection_does_not_create_output_dirs():
+    out_root = (DOCK_DIR / "pytest_queue_validation").resolve()
+    shutil.rmtree(out_root, ignore_errors=True)
+    _configure_minimal_state(active_ligands=[])
+
+    entries = _build_queue(
+        {
+            "selection_map": {},
+            "grid_data": {},
+            "run_count": 1,
+            "padding": 0.0,
+            "mode": "Docking",
+            "docking_config": {},
+        }
+    )
+
+    assert entries == []
+    assert not out_root.exists()

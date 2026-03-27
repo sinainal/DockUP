@@ -38,6 +38,7 @@ class RenderPayload(BaseModel):
     output_path: str = ""
     linked_path: str = ""
     dpi: int = 120
+    render_mode: str = "classic"
     receptors: list[str] = []
     run_by_receptor: dict[str, str] = {}
     is_preview: bool = False

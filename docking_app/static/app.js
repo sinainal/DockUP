@@ -298,6 +298,7 @@ function initElements() {
   els.reportPlotBody = document.getElementById("reportPlotBody");
   els.selectAllPlots = document.getElementById("selectAllPlots");
   els.reportDpi = document.getElementById("reportDpi");
+  els.reportRenderMode = document.getElementById("reportRenderMode");
 
   els.reportStatTotal = document.getElementById("reportStatTotal");
   els.reportStatRendered = document.getElementById("reportStatRendered");
@@ -3193,6 +3194,7 @@ function saveUIState() {
         reportOutputPath: String(els.reportOutputPath?.value || ""),
         reportDocRootPath: String(els.reportDocRootPath?.value || ""),
         reportDpi: String(els.reportDpi?.value || ""),
+        reportRenderMode: String(els.reportRenderMode?.value || ""),
         colorScheme: String(els.colorScheme?.value || ""),
         viewerChain: String(els.viewerChain?.value || ""),
         showSurface: Boolean(els.showSurface?.checked),
@@ -3266,6 +3268,7 @@ async function restoreUIState() {
   if (els.reportOutputPath && ui.reportOutputPath !== undefined) els.reportOutputPath.value = String(ui.reportOutputPath);
   if (els.reportDocRootPath && ui.reportDocRootPath !== undefined) els.reportDocRootPath.value = String(ui.reportDocRootPath);
   if (els.reportDpi && ui.reportDpi !== undefined) els.reportDpi.value = String(ui.reportDpi);
+  if (els.reportRenderMode && ui.reportRenderMode !== undefined) els.reportRenderMode.value = String(ui.reportRenderMode);
   if (els.colorScheme && ui.colorScheme !== undefined) els.colorScheme.value = String(ui.colorScheme);
   if (els.viewerChain && ui.viewerChain !== undefined) els.viewerChain.value = String(ui.viewerChain);
   if (els.showSurface && ui.showSurface !== undefined) els.showSurface.checked = Boolean(ui.showSurface);
@@ -3302,19 +3305,6 @@ function normalizeReceptorIds(rawText) {
   return out;
 }
 
-function mergeReceptorIdsIntoInput(ids) {
-  if (!els.pdbIds) return;
-  const current = normalizeReceptorIds(els.pdbIds.value || "");
-  const seen = new Set(current);
-  (ids || []).forEach((raw) => {
-    const id = String(raw || "").trim().toUpperCase();
-    if (!id || seen.has(id)) return;
-    seen.add(id);
-    current.push(id);
-  });
-  els.pdbIds.value = current.join("\n");
-}
-
 function renderStoredReceptorFiles(rows) {
   if (!els.receptorFileList) return;
   els.receptorFileList.innerHTML = "";
@@ -3341,7 +3331,6 @@ function renderStoredReceptorFiles(rows) {
     addBtn.disabled = Boolean(row.loaded);
     addBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
-      mergeReceptorIdsIntoInput([row.pdb_id]);
       if (row.loaded) return;
       const result = await fetchJSON("/api/receptors/add", {
         method: "POST",
@@ -3382,9 +3371,15 @@ function renderStoredReceptorFiles(rows) {
       await refreshViewer();
     });
 
-    pill.addEventListener("click", () => {
-      mergeReceptorIdsIntoInput([row.pdb_id]);
-      scheduleUIStateSave();
+    pill.addEventListener("click", async () => {
+      if (!row.loaded || !row.pdb_id) return;
+      await fetchJSON("/api/receptors/select", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pdb_id: row.pdb_id }),
+      });
+      await refreshReceptorSummary();
+      await refreshViewer();
     });
 
     actions.appendChild(addBtn);
@@ -4809,7 +4804,10 @@ function bindEvents() {
       if (!files.length) return;
       const form = new FormData();
       Array.from(files).forEach((file) => form.append("files", file));
-      await fetchJSON("/api/ligands/upload", { method: "POST", body: form });
+      const res = await fetchJSON("/api/ligands/upload", { method: "POST", body: form });
+      if (Array.isArray(res?.duplicates) && res.duplicates.length) {
+        alert(`Skipped already existing ligands: ${res.duplicates.join(", ")}`);
+      }
       await refreshLigands();
       await refreshReceptorSummary(); // Auto-refresh receptor table to show new ligands
     });
@@ -5387,6 +5385,7 @@ function bindEvents() {
     els.reportOutputPath,
     els.reportDocRootPath,
     els.reportDpi,
+    els.reportRenderMode,
     els.fixedGridSize,
     document.getElementById("testModeCheck"),
   ];
@@ -7131,11 +7130,13 @@ async function initiateRender(isPreview) {
   const dpiVal = Number(els.reportDpi?.value || 120);
   const dpi = Number.isFinite(dpiVal) ? Math.max(30, Math.min(600, Math.round(dpiVal))) : 120;
   if (els.reportDpi) els.reportDpi.value = String(dpi);
+  const renderMode = String(els.reportRenderMode?.value || "classic").trim() || "classic";
   try {
     const payload = {
       root_path: rootPath,
       source_path: sourcePath,
       output_path: outputPath,
+      render_mode: renderMode,
       receptors,
       run_by_receptor: runByReceptor,
       dpi,

@@ -73,6 +73,8 @@ REPORT_PLOT_ORDER_BY_NAME: tuple[str, ...] = (
     "common_residue_heatmap",
     "interaction_stacked_bar",
 )
+REPORT_RENDER_MODE_CLASSIC = "classic"
+REPORT_RENDER_MODE_OTOFIGURE = "otofigure"
 
 
 def _prettify_label(name: str, *, trim_run_suffix: bool = False) -> str:
@@ -81,6 +83,15 @@ def _prettify_label(name: str, *, trim_run_suffix: bool = False) -> str:
         text = re.sub(r"_\d+$", "", text)
     text = re.sub(r"[_-]+", " ", text).strip()
     return text or str(name or "")
+
+
+def _normalize_render_mode(raw_value: Any) -> str:
+    value = str(raw_value or "").strip().lower()
+    if not value or value in {"classic", "panel", "grid", "default"}:
+        return REPORT_RENDER_MODE_CLASSIC
+    if value in {"otofigure", "multiview", "multi_view", "multi-run", "multi_run"}:
+        return REPORT_RENDER_MODE_OTOFIGURE
+    raise ValueError(f"Unsupported render mode: {raw_value}")
 
 
 def _receptor_sort_key(name: str) -> tuple[int, int, str]:
@@ -388,6 +399,25 @@ def _resolve_report_root(root_path: str) -> Path:
 
 
 def resolve_dock_directory(path_text: str, *, default: Path, allow_create: bool) -> Path:
+    def _rebase_to_dock(raw_text: str) -> Path | None:
+        raw_candidate = Path(str(raw_text or "").strip().replace("\\", "/")).expanduser()
+        parts = [part for part in raw_candidate.parts if part not in {"", "."}]
+        if not parts:
+            return None
+        lowered = [part.lower() for part in parts]
+        idx = None
+        for i in range(len(lowered) - 1):
+            if lowered[i] == "data" and lowered[i + 1] == "dock":
+                idx = i
+                break
+        if idx is None:
+            return None
+        tail = [part for part in parts[idx + 2 :] if part not in {"", "."}]
+        if any(part == ".." for part in tail):
+            return None
+        rebased = DOCK_DIR_RESOLVED / Path(*tail) if tail else DOCK_DIR_RESOLVED
+        return rebased.resolve()
+
     raw = str(path_text or "").strip()
     if not raw:
         return default.resolve()
@@ -402,7 +432,11 @@ def resolve_dock_directory(path_text: str, *, default: Path, allow_create: bool)
     else:
         candidate = candidate.resolve()
     if candidate != DOCK_DIR_RESOLVED and DOCK_DIR_RESOLVED not in candidate.parents:
-        raise HTTPException(status_code=400, detail="Path must be inside data/dock.")
+        rebased = _rebase_to_dock(raw)
+        if rebased is not None:
+            candidate = rebased
+        if candidate != DOCK_DIR_RESOLVED and DOCK_DIR_RESOLVED not in candidate.parents:
+            raise HTTPException(status_code=400, detail="Path must be inside data/dock.")
     if candidate.exists():
         if not candidate.is_dir():
             raise HTTPException(status_code=400, detail="Path is not a directory.")
@@ -994,6 +1028,40 @@ def _find_render_inputs(
     return complex_files[0], interaction_json, plip_report, selected_run_name
 
 
+def _select_otofigure_ligand_runs(
+    inventory: dict[str, dict[str, list[tuple[str, Path]]]],
+    receptor_id: str,
+    *,
+    ligand_order_index: dict[str, int] | None = None,
+) -> tuple[str, list[tuple[str, Path]]]:
+    ligand_map = inventory.get(receptor_id) or {}
+    if not ligand_map:
+        raise FileNotFoundError(f"No ligand/run data found for receptor: {receptor_id}")
+
+    order_index = dict(ligand_order_index or {})
+    ranked: list[tuple[int, int, tuple[str, str], str, list[tuple[str, Path]]]] = []
+    for ligand_name, run_entries in ligand_map.items():
+        valid_runs = sorted(run_entries, key=lambda item: _run_sort_key(item[0]))
+        if not valid_runs:
+            continue
+        ranked.append(
+            (
+                -len(valid_runs),
+                order_index.get(ligand_name, 10**6),
+                _ligand_sort_key(ligand_name),
+                ligand_name,
+                valid_runs,
+            )
+        )
+
+    if not ranked:
+        raise FileNotFoundError(f"No multi-run ligand data found for receptor: {receptor_id}")
+
+    ranked.sort()
+    _, _, _, ligand_name, run_entries = ranked[0]
+    return ligand_name, run_entries[:5]
+
+
 def _collect_receptor_rows(source_dir: Path) -> list[dict[str, Any]]:
     inventory = _collect_receptor_inventory(source_dir)
     candidates = _collect_receptor_candidates(source_dir)
@@ -1093,12 +1161,14 @@ def _list_source_folders(report_root: Path, selected_source: Path | None = None)
     return entries
 
 
-def _render_dtype_panel(
+def _render_dtype_panel_with_runner(
     dtype: str,
     inventory: dict[str, dict[str, list[tuple[str, Path]]]],
     output_dir: Path,
     temp_root: Path,
     dpi: int,
+    *,
+    pipeline_runner,
     preferred_run: str = "run1",
     output_stem: str = "",
     preview_mode: bool = False,
@@ -1108,8 +1178,6 @@ def _render_dtype_panel(
 
     from figure_scripts.panel_figure.config import TargetConfig
     from figure_scripts.panel_figure.panel import add_left_margin_label, compose_2x2, load_bold_serif_font
-    from figure_scripts.panel_figure.pipeline import run as run_pipeline
-
     output_dir.mkdir(parents=True, exist_ok=True)
     temp_root.mkdir(parents=True, exist_ok=True)
     tiles: dict[str, Image.Image] = {}
@@ -1162,7 +1230,7 @@ def _render_dtype_panel(
                 cleanup_intermediate=True,
                 contacts_zoom=0.0,
             )
-            result = run_pipeline(cfg)
+            result = pipeline_runner(cfg)
             combined_path = Path(result["combined_transparent"])
             with Image.open(combined_path) as image_obj:
                 tile = image_obj.convert("RGBA").copy()
@@ -1196,6 +1264,81 @@ def _render_dtype_panel(
     out_path = _next_unique_png_path(output_dir, panel_stem)
     panel.save(out_path, dpi=(effective_dpi, effective_dpi))
     return out_path, sorted(used_runs, key=_run_sort_key)
+
+
+def _render_dtype_panel(
+    dtype: str,
+    inventory: dict[str, dict[str, list[tuple[str, Path]]]],
+    output_dir: Path,
+    temp_root: Path,
+    dpi: int,
+    preferred_run: str = "run1",
+    output_stem: str = "",
+    preview_mode: bool = False,
+    ligand_order_index: dict[str, int] | None = None,
+) -> tuple[Path, list[str]]:
+    from figure_scripts.panel_figure.pipeline import run as run_pipeline
+
+    return _render_dtype_panel_with_runner(
+        dtype,
+        inventory,
+        output_dir,
+        temp_root,
+        dpi,
+        pipeline_runner=run_pipeline,
+        preferred_run=preferred_run,
+        output_stem=output_stem,
+        preview_mode=preview_mode,
+        ligand_order_index=ligand_order_index,
+    )
+
+
+def _render_dtype_otofigure_panel(
+    dtype: str,
+    inventory: dict[str, dict[str, list[tuple[str, Path]]]],
+    output_dir: Path,
+    temp_root: Path,
+    dpi: int,
+    preferred_run: str = "run1",
+    output_stem: str = "",
+    preview_mode: bool = False,
+    ligand_order_index: dict[str, int] | None = None,
+) -> tuple[Path, list[str]]:
+    from figure_scripts.otofigure.pipeline import run as run_pipeline
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    temp_root.mkdir(parents=True, exist_ok=True)
+
+    ligand_name, run_entries = _select_otofigure_ligand_runs(
+        inventory,
+        dtype,
+        ligand_order_index=ligand_order_index,
+    )
+    safe_ligand = re.sub(r"[^A-Za-z0-9_.-]+", "_", ligand_name)
+    work_dir = temp_root / f"otofigure_{dtype}_{safe_ligand}"
+    out_path = _next_unique_png_path(output_dir, output_stem or f"{dtype}_{safe_ligand}_{timestamp_token()}")
+
+    try:
+        result = run_pipeline(
+            receptor_id=dtype,
+            ligand_name=ligand_name,
+            run_entries=run_entries,
+            output_png=out_path,
+            work_dir=work_dir,
+            dpi=dpi,
+            preview_mode=preview_mode,
+        )
+        used_runs = [str(name) for name in result.get("used_runs") or [run_name for run_name, _ in run_entries]]
+        return out_path, sorted(used_runs, key=_run_sort_key)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _get_render_panel_builder(render_mode: str):
+    normalized = _normalize_render_mode(render_mode)
+    if normalized == REPORT_RENDER_MODE_OTOFIGURE:
+        return _render_dtype_otofigure_panel
+    return _render_dtype_panel
 
 
 def _build_report_doc(
@@ -1844,6 +1987,10 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
     global REPORT_STATE
     if REPORT_STATE.get("status") == "running":
         return JSONResponse({"error": "Another report task is already running."}, status_code=409)
+    try:
+        render_mode = _normalize_render_mode(payload.render_mode)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
 
     report_root = _resolve_report_root(payload.root_path)
     source_dir = _resolve_report_source(report_root, payload.source_path)
@@ -1898,6 +2045,8 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
     is_preview_mode = bool(payload.is_preview)
     dpi = int(payload.dpi or 120)
     dpi = max(30, min(600, dpi))
+    render_panel_builder = _get_render_panel_builder(render_mode)
+    render_mode_label = "OtoFigure" if render_mode == REPORT_RENDER_MODE_OTOFIGURE else "Classic"
 
     render_jobs: list[dict[str, str]] = []
     for dtype in selected:
@@ -1914,7 +2063,7 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
     REPORT_STATE["task"] = "render"
     REPORT_STATE["progress"] = 0
     REPORT_STATE["total"] = len(render_jobs)
-    REPORT_STATE["message"] = "Generating render panels..."
+    REPORT_STATE["message"] = f"Generating {render_mode_label} render panels..."
     REPORT_STATE["errors"] = []
     REPORT_STATE["last_logs"] = []
 
@@ -1926,6 +2075,9 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
         render_dpi: int,
         preview_mode: bool,
         ligand_order: dict[str, int],
+        render_builder,
+        render_mode_name: str,
+        render_mode_key: str,
     ) -> None:
         errors: list[str] = []
         logs: list[str] = []
@@ -1941,11 +2093,16 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
                     break
                 dtype = job.get("dtype", "")
                 preferred_run = (job.get("run") or "").strip()
-                run_label = preferred_run if preferred_run else "auto"
-                state["message"] = f"[{idx}/{len(jobs)}] Rendering {dtype} (run: {run_label})..."
+                run_label = "all runs" if render_mode_key == REPORT_RENDER_MODE_OTOFIGURE else (preferred_run if preferred_run else "auto")
+                state["message"] = (
+                    f"[{idx}/{len(jobs)}] Rendering {dtype} with {render_mode_name} mode (run: {run_label})..."
+                )
                 try:
-                    panel_stem = f"{dtype}_{preferred_run or 'run1'}_{started_stamp}_{idx:02d}"
-                    out_path, used_runs = _render_dtype_panel(
+                    if render_mode_key == REPORT_RENDER_MODE_OTOFIGURE:
+                        panel_stem = f"{dtype}_{render_mode}_multirun_{started_stamp}_{idx:02d}"
+                    else:
+                        panel_stem = f"{dtype}_{render_mode}_{preferred_run or 'run1'}_{started_stamp}_{idx:02d}"
+                    out_path, used_runs = render_builder(
                         dtype,
                         receptor_data,
                         out_dir,
@@ -1977,9 +2134,15 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
         dpi,
         is_preview_mode,
         ligand_order_index,
+        render_panel_builder,
+        render_mode_label,
+        render_mode,
     )
     dpi_scale = max(0.5, float(dpi) / 120.0)
-    base_seconds = 14 if is_preview_mode else 40
+    if render_mode == REPORT_RENDER_MODE_OTOFIGURE:
+        base_seconds = 20 if is_preview_mode else 55
+    else:
+        base_seconds = 14 if is_preview_mode else 40
     expected_seconds = int(max(12, len(render_jobs) * base_seconds * dpi_scale))
     return JSONResponse({"status": "started", "expected_time": expected_seconds})
 

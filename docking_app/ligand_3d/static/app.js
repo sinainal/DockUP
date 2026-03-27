@@ -22,6 +22,7 @@ const els = {
   generateOligomersBtn: document.getElementById("generateOligomersBtn"),
   addToLigandsBtn: document.getElementById("addToLigandsBtn"),
   dockingDbMeta: document.getElementById("dockingDbMeta"),
+  dockingDbList: document.getElementById("dockingDbList"),
   builderStatus: document.getElementById("builderStatus"),
   generatedFiles: document.getElementById("generatedFiles"),
   generatedSelectionMeta: document.getElementById("generatedSelectionMeta"),
@@ -37,6 +38,7 @@ let currentSearchResults = [];
 let queueItems = [];
 let generatedFiles = [];
 let generatedSelection = new Set();
+let dockingDbLigands = [];
 let nglStage = null;
 const ROOT_PATH = String(document.body?.dataset.rootPath || "").replace(/\/+$/, "");
 
@@ -367,6 +369,46 @@ function notifyDockingLigandsUpdated(payload = {}) {
   }
 }
 
+function renderDockingDatabase() {
+  if (!els.dockingDbList) return;
+  if (!dockingDbLigands.length) {
+    els.dockingDbList.innerHTML = '<div class="helper">Docking ligand database is empty.</div>';
+    return;
+  }
+  const body = dockingDbLigands
+    .map((name, idx) => `
+      <tr>
+        <td>${idx + 1}</td>
+        <td><code>${esc(name)}</code></td>
+        <td>
+          <button class="secondary docking-db-delete-btn" type="button" data-name="${esc(name)}" style="color:#b91c1c;border-color:#fecaca;">Delete</button>
+        </td>
+      </tr>
+    `)
+    .join("");
+
+  els.dockingDbList.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Ligand</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
+
+  Array.from(els.dockingDbList.querySelectorAll(".docking-db-delete-btn")).forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const name = String(btn.dataset.name || "");
+      if (!name) return;
+      await deleteDockingLigand(name);
+    });
+  });
+}
+
 function renderGeneratedFiles() {
   if (!els.generatedFiles) return;
   if (!generatedFiles.length) {
@@ -545,7 +587,9 @@ async function addSelectedToLigands() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ file_names: names }),
     });
-    els.builderStatus.textContent = `Saved ${res.copied_count} file(s) to Docking DB. ${res.missing?.length ? `Missing: ${res.missing.join(", ")}` : ""}`;
+    const duplicateMsg = res.duplicates?.length ? ` Already present: ${res.duplicates.join(", ")}` : "";
+    const missingMsg = res.missing?.length ? ` Missing: ${res.missing.join(", ")}` : "";
+    els.builderStatus.textContent = `Saved ${res.copied_count} file(s) to Docking DB.${duplicateMsg}${missingMsg}`;
     await loadDockingDatabase();
     notifyDockingLigandsUpdated({
       copied_count: Number(res.copied_count || 0),
@@ -557,15 +601,42 @@ async function addSelectedToLigands() {
   }
 }
 
+async function deleteDockingLigand(name) {
+  const safeName = String(name || "").trim();
+  if (!safeName) return;
+  els.builderStatus.textContent = `Deleting ${safeName} from Docking DB...`;
+  try {
+    const res = await fetchJSON(apiUrl("/ligands/delete"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: safeName }),
+    });
+    await loadDockingDatabase();
+    notifyDockingLigandsUpdated({
+      deleted: [safeName],
+      ligands_count: Number(res.count || 0),
+    });
+    els.builderStatus.textContent = `Deleted ${safeName} from Docking DB.`;
+  } catch (err) {
+    els.builderStatus.textContent = `Delete failed: ${err.message}`;
+  }
+}
+
 async function loadDockingDatabase() {
   if (!els.dockingDbMeta) return;
   try {
     const res = await fetchJSON(apiUrl("/ligands/database"));
     const count = Number(res.count || 0);
     const path = String(res.ligands_path || "").trim();
+    dockingDbLigands = Array.isArray(res.ligands) ? res.ligands : [];
     els.dockingDbMeta.textContent = `Docking DB: ${count} ligand(s)${path ? ` | ${path}` : ""}`;
+    renderDockingDatabase();
   } catch (err) {
+    dockingDbLigands = [];
     els.dockingDbMeta.textContent = `Docking DB: unavailable (${err.message})`;
+    if (els.dockingDbList) {
+      els.dockingDbList.innerHTML = "";
+    }
   }
 }
 

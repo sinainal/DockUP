@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 
@@ -15,7 +16,7 @@ pytestmark = [pytest.mark.api]
 
 def _upload_temp_ligand(base_url: str, tmp_path: Path, stem: str) -> str:
     sdf_path = tmp_path / f"{stem}.sdf"
-    sdf_path.write_text("\n  Ketcher\n\n  0  0  0     0  0            999 V2000\nM  END\n$$$$\n", encoding="utf-8")
+    sdf_path.write_text(f"{stem}\n  Ketcher\n\n  0  0  0     0  0            999 V2000\nM  END\n$$$$\n", encoding="utf-8")
     with sdf_path.open("rb") as handle:
         resp = requests.post(
             f"{base_url.rstrip('/')}/api/ligands/upload",
@@ -64,6 +65,7 @@ def test_queue_build_contract_with_uploaded_ligand(
 ) -> None:
     stamp = int(time.time() * 1000)
     ligand_name = ""
+    out_root_name = f"api_contract_{stamp}"
     try:
         clear_queue(api)
         clear_loaded_receptors(api)
@@ -90,7 +92,7 @@ def test_queue_build_contract_with_uploaded_ligand(
                 {
                     "run_count": 1,
                     "padding": 0.0,
-                    "out_root_name": f"api_contract_{stamp}",
+                    "out_root_name": out_root_name,
                     "out_root_path": "data/dock",
                     "selection_map": {"6CM4": {"chain": "all", "ligand_resname": ligand_name}},
                     "grid_data": {"6CM4": {"cx": 0.0, "cy": 0.0, "cz": 0.0, "sx": 20.0, "sy": 20.0, "sz": 20.0}},
@@ -118,4 +120,33 @@ def test_queue_build_contract_with_uploaded_ligand(
             api.post("/api/ligands/delete", {"name": ligand_name})
         api.post("/api/ligands/active/clear", {})
         api.post("/api/receptors/remove", {"pdb_id": "6CM4"})
+        shutil.rmtree(test_cfg.dock_dir / out_root_name, ignore_errors=True)
 
+
+def test_popup_delete_ligand_removes_db_entry_and_state(
+    server_ready: None, api: ApiClient, test_cfg, tmp_path: Path
+) -> None:
+    stamp = int(time.time() * 1000)
+    ligand_name = ""
+    try:
+        api.post("/api/ligands/active/clear", {})
+        ligand_name = _upload_temp_ligand(test_cfg.base_url, tmp_path, f"api_popup_delete_{stamp}")
+        active = api.assert_ok(
+            api.post("/api/ligands/active/add", {"names": [ligand_name]}),
+            where="POST /api/ligands/active/add",
+        )
+        assert ligand_name in set(active.get("active_ligands") or []), active
+
+        deleted = api.assert_ok(
+            api.post("/ligand-3d/api/ligands/delete", {"name": ligand_name}),
+            where="POST /ligand-3d/api/ligands/delete",
+        )
+        assert str(deleted.get("deleted") or "") == ligand_name, deleted
+        assert ligand_name not in set(deleted.get("ligands") or []), deleted
+
+        active_after = api.assert_ok(api.get("/api/ligands/active"), where="GET /api/ligands/active")
+        assert ligand_name not in set(active_after.get("active_ligands") or []), active_after
+    finally:
+        if ligand_name:
+            api.post("/api/ligands/delete", {"name": ligand_name})
+        api.post("/api/ligands/active/clear", {})

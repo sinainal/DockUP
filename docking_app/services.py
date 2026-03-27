@@ -166,6 +166,11 @@ def _resolve_receptor_file_for_id(pdb_id: str) -> Path:
 def _load_receptor_meta(pdb_ids: list[str], pdb_files: list[Path]) -> list[dict[str, Any]]:
     meta: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+    requested_ids = {
+        _normalize_receptor_id(pdb_id)
+        for pdb_id in pdb_ids
+        if _normalize_receptor_id(pdb_id)
+    }
     for pdb in pdb_ids:
         pdb_id = _normalize_receptor_id(pdb)
         if not pdb_id or pdb_id in seen_ids:
@@ -201,6 +206,8 @@ def _load_receptor_meta(pdb_ids: list[str], pdb_files: list[Path]) -> list[dict[
         pdb_id = _normalize_receptor_id(f.stem)
         if not pdb_id or pdb_id in seen_ids:
             continue
+        if requested_ids and pdb_id not in requested_ids:
+            continue
         chains, ligands_by_chain = _parse_pdb_chains_and_ligands(text)
         chains = ["all"] + [c for c in chains if c != "all"]
         if ligands_by_chain:
@@ -225,14 +232,27 @@ def _summarize_receptors(meta: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
     for item in meta:
         pdb_id = _normalize_receptor_id(item.get("pdb_id", ""))
-        lig_count = sum(len(v) for v in item.get("ligands_by_chain", {}).values())
+        ligands_by_chain = item.get("ligands_by_chain", {}) or {}
+        if "all" in ligands_by_chain:
+            lig_count = len(
+                {str(lig).strip() for lig in (ligands_by_chain.get("all") or []) if str(lig).strip()}
+            )
+        else:
+            lig_count = len(
+                {
+                    str(lig).strip()
+                    for ligs in ligands_by_chain.values()
+                    for lig in (ligs or [])
+                    if str(lig).strip()
+                }
+            )
         source = "file" if item.get("pdb_file") else "pdb"
         rows.append(
             {
                 "pdb_id": pdb_id,
                 "chains_str": ", ".join(item.get("chains", [])),
                 "chains": item.get("chains", []),
-                "ligands_by_chain": item.get("ligands_by_chain", {}),
+                "ligands_by_chain": ligands_by_chain,
                 "ligands": lig_count,
                 "source": source,
                 "status": "ok" if not item.get("error") else "error",
@@ -701,7 +721,6 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
         dock_root = DOCK_DIR.resolve()
         if candidate != dock_root and dock_root not in candidate.parents:
             return dock_root
-        candidate.mkdir(parents=True, exist_ok=True)
         return candidate
 
     def _grid_signature(pdb_id: str, grid: dict[str, Any]) -> str:
@@ -719,9 +738,17 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     out_root = _safe_out_root()
     grid_store_dir = out_root / "_grid"
-    grid_store_dir.mkdir(parents=True, exist_ok=True)
     out_root_path_display = str(relative_to_base(out_root.parent))
     out_root_name = out_root.name
+    grid_store_ready = False
+
+    def _ensure_grid_store_dir() -> None:
+        nonlocal grid_store_ready
+        if grid_store_ready:
+            return
+        out_root.mkdir(parents=True, exist_ok=True)
+        grid_store_dir.mkdir(parents=True, exist_ok=True)
+        grid_store_ready = True
 
     for meta in STATE["receptor_meta"]:
         pdb_id = meta["pdb_id"]
@@ -790,6 +817,7 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
         grid_sig = _grid_signature(pdb_id, grid_info)
         grid_file_path = grid_store_dir / f"{pdb_id}_{grid_sig}.txt"
         if not grid_file_path.exists():
+            _ensure_grid_store_dir()
             grid_file_path.write_text(
                 "\n".join(
                     [
