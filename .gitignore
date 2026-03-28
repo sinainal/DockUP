@@ -27,6 +27,8 @@ data/
 **/_run_sessions/
 **/.sessions/
 **/report_outputs/
+.playwright-cli/
+test_background/
 output/
 tests/.last_test_log.txt
 *.log
