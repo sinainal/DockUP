@@ -8,6 +8,11 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+from PIL import Image
+
+from figure_scripts.panel_figure.concat import mask_by_threshold
+from figure_scripts.panel_figure.config import MASK_THRESHOLD
+
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 FINAL_DINAMIK_SCRIPT = PACKAGE_DIR / "final_dinamik.py"
@@ -163,6 +168,16 @@ def _run_step(
     return output_text
 
 
+def _copy_transparent_png(source_png: Path, target_png: Path) -> None:
+    with Image.open(source_png) as image_obj:
+        rgba = mask_by_threshold(image_obj.convert("RGBA"), threshold=MASK_THRESHOLD)
+        save_kwargs: dict[str, Any] = {}
+        dpi = image_obj.info.get("dpi")
+        if dpi:
+            save_kwargs["dpi"] = dpi
+        rgba.save(target_png, **save_kwargs)
+
+
 def run(
     *,
     receptor_id: str,
@@ -263,7 +278,7 @@ def run(
     formatted_images = sorted(layout["formatted_results_dir"].glob("*.png"))
     target_png = Path(output_png).resolve()
     target_png.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(final_images[0], target_png)
+    _copy_transparent_png(final_images[0], target_png)
 
     return {
         "final_png": str(target_png),

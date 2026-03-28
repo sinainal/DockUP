@@ -78,6 +78,8 @@ def test_otofigure_pipeline_stages_case_layout_and_copies_final_png(
     assert result["used_runs"] == ["run1", "run2", "run3", "run4", "run5"]
     assert Path(result["raw_final_png"]).exists()
     assert Path(result["formatted_png"]).exists()
+    with Image.open(output_png) as copied_image:
+        assert copied_image.convert("RGBA").getpixel((0, 0))[3] == 0
 
 
 @pytest.mark.unit
