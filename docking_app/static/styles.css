@@ -1645,10 +1645,12 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .report-workbench-card {
+  --report-workbench-left-col: minmax(0, 1.65fr);
+  --report-workbench-right-col: minmax(300px, 0.82fr);
   display: grid;
-  gap: 10px;
+  gap: 12px;
   margin-bottom: 14px;
-  padding: 10px 12px;
+  padding: 12px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: #f8fafc;
@@ -1670,20 +1672,25 @@ input[type="range"]::-webkit-slider-thumb {
 
 .report-workbench-body {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.85fr);
+  grid-template-columns: var(--report-workbench-left-col) var(--report-workbench-right-col);
   gap: 12px;
   align-items: stretch;
+  min-height: 408px;
 }
 
 .report-workbench-table {
   margin-bottom: 0;
+  min-height: 0;
+  height: 100%;
   border-radius: 12px;
   overflow: auto;
   background: #ffffff;
 }
 
 .report-workbench-table--scroll {
-  max-height: 350px;
+  min-height: 0;
+  height: 100%;
+  max-height: none;
 }
 
 .report-workbench-table thead th {
@@ -1700,21 +1707,82 @@ input[type="range"]::-webkit-slider-thumb {
   vertical-align: top;
 }
 
+.report-workbench-footer {
+  display: grid;
+  grid-template-columns: var(--report-workbench-left-col) var(--report-workbench-right-col);
+  gap: 12px;
+  align-items: center;
+}
+
 .report-workbench-progress {
   margin-bottom: 0;
+  min-height: 58px;
+  padding: 10px 12px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  border: 1px solid #dbe3ef;
+  background: #f8fafc;
+}
+
+.report-workbench-progress .run-progress-meta {
+  min-width: 0;
+  margin-bottom: 6px;
+  gap: 12px;
+  font-size: 11px;
+}
+
+.report-workbench-progress .run-progress-meta > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-workbench-progress .run-progress-meta > span:last-child {
+  flex-shrink: 0;
+}
+
+.report-workbench-progress .run-progress-track {
+  height: 8px;
+}
+
+.report-workbench-progress:not(.is-active) .run-progress-bar {
+  width: 0% !important;
+}
+
+.report-workbench-progress.is-active {
+  border-color: #bfdbfe;
+  background: #f8fbff;
+}
+
+.report-workbench-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  width: 100%;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 0;
+}
+
+.report-workbench-actions > button {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .report-selection-panel,
 .report-settings-panel {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
   height: 100%;
-  min-height: 380px;
-  padding: 10px;
+  min-height: 0;
+  padding: 12px;
   border: 1px solid #dbe3ef;
   border-radius: 12px;
   background: #ffffff;
+  overflow: hidden;
 }
 
 .report-selection-panel {
@@ -1722,8 +1790,8 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .report-settings-panel {
-  grid-template-rows: auto auto auto auto;
-  align-content: start;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  align-content: stretch;
 }
 
 .report-section-heading {
@@ -1830,6 +1898,8 @@ input[type="range"]::-webkit-slider-thumb {
   flex-direction: column;
   gap: 6px;
   padding: 10px;
+  min-height: 0;
+  height: 100%;
   border: 1px solid #dbe3ef;
   border-radius: 10px;
   background: #f8fafc;
@@ -2596,10 +2666,25 @@ input[type="range"]::-webkit-slider-thumb {
 
   .report-workbench-body {
     grid-template-columns: minmax(0, 1fr);
+    min-height: auto;
   }
 
   .report-settings-grid,
   .report-settings-summary-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .report-workbench-actions {
+    flex-wrap: wrap;
+    justify-content: stretch;
+  }
+
+  .report-workbench-actions > button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .report-workbench-footer {
     grid-template-columns: minmax(0, 1fr);
   }
 

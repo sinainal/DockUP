@@ -405,25 +405,6 @@
                       </div>
                     </div>
 
-                    <div class="report-layout-icons" id="reportLayoutIcons" aria-hidden="true">
-                      <div class="report-layout-icon-card is-active" data-mode="classic">
-                        <div class="report-layout-icon report-layout-icon--classic">
-                          <span></span><span></span><span></span><span></span>
-                        </div>
-                        <div class="report-layout-icon-label">Classic</div>
-                      </div>
-                      <div class="report-layout-icon-card" data-mode="otofigure">
-                        <div class="report-layout-icon report-layout-icon--otofigure">
-                          <span class="wide"></span><span></span><span></span>
-                        </div>
-                        <div class="report-layout-icon-label">OtoFigure</div>
-                      </div>
-                    </div>
-
-                    <div class="report-settings-summary" id="reportRenderSelectionSummary">
-                      <div class="helper">Select at least one ready receptor.</div>
-                    </div>
-
                     <div class="report-render-state-card">
                       <div class="report-render-state-header">
                         <div class="field-label">Render State</div>
@@ -432,23 +413,24 @@
                       <div class="report-render-state-meta" id="reportRenderStateMeta">No active render task.</div>
                       <div class="report-render-state-text" id="reportRenderStateText">Ready to generate images.</div>
                     </div>
-
-                    <div class="report-root-editor-actions report-root-editor-actions--compact">
-                      <button class="primary report-action-primary" id="btnRenderPreview" type="button">Generate Render Images</button>
-                      <button class="secondary" id="btnStopRender" type="button" disabled>Stop Render</button>
-                      <button class="secondary" id="deleteAllRenderImages" type="button" style="color:#b91c1c; border-color:#fecaca;">Delete All Renders</button>
-                    </div>
                   </aside>
                 </div>
 
-                <div class="run-card run-progress-panel report-workbench-progress" id="renderProgressPanel"
-                  style="display:none; margin-bottom: 0;">
-                  <div class="run-progress-meta">
-                    <span id="renderProgressText">Rendering...</span>
-                    <span id="renderElapsed">00:00</span>
+                <div class="report-workbench-footer">
+                  <div class="run-card run-progress-panel report-workbench-progress" id="renderProgressPanel" aria-hidden="false">
+                    <div class="run-progress-meta">
+                      <span id="renderProgressText">Ready to generate images.</span>
+                      <span id="renderElapsed">Expected: ~0s</span>
+                    </div>
+                    <div class="run-progress-track">
+                      <div class="run-progress-bar" id="renderProgressBar"></div>
+                    </div>
                   </div>
-                  <div class="run-progress-track">
-                    <div class="run-progress-bar" id="renderProgressBar"></div>
+
+                  <div class="report-workbench-actions">
+                    <button class="primary" id="btnRenderPreview" type="button">Generate Render Images</button>
+                    <button class="secondary" id="btnStopRender" type="button" disabled>Stop Render</button>
+                    <button class="secondary" id="deleteAllRenderImages" type="button" style="color:#b91c1c; border-color:#fecaca;">Delete All Renders</button>
                   </div>
                 </div>
               </div>

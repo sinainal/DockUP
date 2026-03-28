@@ -91,6 +91,7 @@ REPORT_STATE: dict[str, Any] = {
     "task": "",
     "progress": 0,
     "total": 0,
+    "expected_time": 0,
     "message": "",
     "errors": [],
     "last_logs": [],

@@ -5640,11 +5640,13 @@ let reportFigureCaptionText = new Map();
 let reportFigureCaptionCustom = new Set();
 let reportFigureStartNumber = 1;
 let reportExtraSections = [];
+let reportRenderExpectedSeconds = 0;
 let reportTaskState = {
   status: "idle",
   task: "",
   progress: 0,
   total: 0,
+  expected_time: 0,
   message: "",
   current_receptor: "",
   current_ligand: "",
@@ -6025,7 +6027,7 @@ function getReportSourceDetails() {
     selectedFolder?.main_type
     || reportSourceMetadata?.main_type
     || ""
-  ).trim() || "-";
+  ).trim();
   const receptorCount = selectedFolder?.receptor_count ?? reportReceptors.length ?? 0;
   const readyCount = selectedFolder?.ready_receptors
     ?? (Array.isArray(reportReceptors) ? reportReceptors.filter((row) => row.ready).length : 0);
@@ -6182,7 +6184,7 @@ function renderReportSourceSummary() {
       </div>
       <div class="report-source-summary-item">
         <span class="report-source-summary-label">Type</span>
-        <span class="report-source-summary-value">${escapeHtml(mainType)}</span>
+        <span class="report-source-summary-value">${escapeHtml(mainType || "Not set")}</span>
       </div>
       <div class="report-source-summary-item">
         <span class="report-source-summary-label">Receptors</span>
@@ -6219,9 +6221,13 @@ function renderReportSourceQuickSummary() {
     return;
   }
 
+  const metaParts = [];
+  if (mainType) metaParts.push(mainType);
+  metaParts.push(`${readyCount}/${receptorCount} ready`);
+  metaParts.push(`${dockingCount} dockings`);
   els.reportSourceQuickSummary.innerHTML = `
     <div class="report-source-quick-name">${escapeHtml(sourceName)}</div>
-    <div class="report-source-quick-meta">${escapeHtml(mainType)} · ${escapeHtml(`${readyCount}/${receptorCount}`)} ready · ${escapeHtml(String(dockingCount))} dockings</div>
+    <div class="report-source-quick-meta">${escapeHtml(metaParts.join(" · "))}</div>
   `;
 }
 
@@ -6269,11 +6275,11 @@ function getCurrentReportSelection(row) {
 }
 
 function renderReportWorkspaceSidebar() {
-  if (!els.reportRenderSelectionSummary) return;
   const renderMode = String(els.reportRenderMode?.value || "classic").trim() || "classic";
   Array.from(document.querySelectorAll(".report-layout-icon-card[data-mode]")).forEach((card) => {
     card.classList.toggle("is-active", String(card.dataset.mode || "") === renderMode);
   });
+  if (!els.reportRenderSelectionSummary) return;
 
   const selectedRows = reportReceptors.filter((row) => row.ready && reportSelectedReceptors.has(row.id));
   if (!selectedRows.length) {
@@ -6316,6 +6322,13 @@ function renderReportWorkspaceSidebar() {
   `;
 }
 
+function setRenderProgressActive(isActive) {
+  if (!els.renderProgressPanel) return;
+  const active = Boolean(isActive);
+  els.renderProgressPanel.classList.toggle("is-active", active);
+  els.renderProgressPanel.setAttribute("aria-busy", active ? "true" : "false");
+}
+
 function updateReportRenderStateUI(nextState = reportTaskState) {
   reportTaskState = {
     ...reportTaskState,
@@ -6342,6 +6355,7 @@ function updateReportRenderStateUI(nextState = reportTaskState) {
   els.reportRenderStateChip.style.cssText = chipStyle;
   const progress = Number(reportTaskState.progress || 0);
   const total = Number(reportTaskState.total || 0);
+  const expectedTime = Number(reportTaskState.expected_time || reportRenderExpectedSeconds || 0);
   const metaParts = [];
   if (task) metaParts.push(task);
   if (total > 0) metaParts.push(`${progress}/${total}`);
@@ -6352,6 +6366,32 @@ function updateReportRenderStateUI(nextState = reportTaskState) {
   if (els.btnRenderPreview) els.btnRenderPreview.disabled = task && status !== "idle";
   if (els.btnStopRender) els.btnStopRender.disabled = !isRenderActive;
   if (els.deleteAllRenderImages) els.deleteAllRenderImages.disabled = isRenderActive;
+  setRenderProgressActive(isRenderActive);
+
+  if (els.renderProgressText) {
+    if (isRenderActive) {
+      els.renderProgressText.textContent = String(reportTaskState.message || "Rendering...");
+    } else {
+      els.renderProgressText.textContent = "Ready to generate images.";
+    }
+  }
+  if (els.renderElapsed) {
+    if (status === "stopping") {
+      els.renderElapsed.textContent = "Stopping";
+    } else if (isRenderActive && expectedTime > 0) {
+      els.renderElapsed.textContent = `Expected: ~${expectedTime}s`;
+    } else if (status === "running") {
+      els.renderElapsed.textContent = "Rendering";
+    } else {
+      els.renderElapsed.textContent = "Expected: ~0s";
+    }
+  }
+  if (els.renderProgressBar) {
+    const pct = isRenderActive && total > 0
+      ? Math.min(100, Math.round((progress / total) * 100))
+      : 0;
+    els.renderProgressBar.style.width = `${pct}%`;
+  }
 }
 
 function renderReceptorTable() {
@@ -7543,19 +7583,16 @@ async function initiateRender(isPreview) {
     });
 
     if (res.status === "started" && els.renderProgressPanel) {
+      reportRenderExpectedSeconds = Number(res.expected_time || 0);
       updateReportRenderStateUI({
         status: "running",
         task: "render",
         progress: 0,
         total: receptors.length,
+        expected_time: reportRenderExpectedSeconds,
         message: "Starting render...",
         render_mode: renderMode,
       });
-      els.renderProgressPanel.style.display = "flex";
-      if (els.renderProgressBar) els.renderProgressBar.style.width = "0%";
-      if (els.renderElapsed) {
-        els.renderElapsed.textContent = `Expected: ~${Math.round(res.expected_time || 0)}s`;
-      }
       pollRenderStatus();
     }
   } catch (err) {
@@ -7576,9 +7613,6 @@ async function stopReportRender() {
       message: String(res.message || "Stopping render..."),
       cancel_requested: true,
     });
-    if (els.renderProgressPanel) {
-      els.renderProgressPanel.style.display = "flex";
-    }
     pollRenderStatus();
   } catch (err) {
     alert("Failed to stop render: " + err.message);
@@ -7588,13 +7622,13 @@ async function stopReportRender() {
 async function syncReportTaskState(options = {}) {
   try {
     const state = await fetchJSON("/api/reports/status");
+    reportRenderExpectedSeconds = Number(state.expected_time || reportRenderExpectedSeconds || 0);
     updateReportRenderStateUI(state);
     if (state.task === "render" && (state.status === "running" || state.status === "stopping")) {
-      if (els.renderProgressPanel) els.renderProgressPanel.style.display = "flex";
       if (renderTimer) clearTimeout(renderTimer);
       renderTimer = setTimeout(pollRenderStatus, 1000);
-    } else if (els.renderProgressPanel) {
-      els.renderProgressPanel.style.display = "none";
+    } else if (state.status === "idle") {
+      reportRenderExpectedSeconds = 0;
     }
   } catch (err) {
     if (!options.silent) {
@@ -7607,19 +7641,14 @@ async function pollRenderStatus() {
   if (renderTimer) clearTimeout(renderTimer);
   try {
     const state = await fetchJSON("/api/reports/status");
+    reportRenderExpectedSeconds = Number(state.expected_time || reportRenderExpectedSeconds || 0);
     updateReportRenderStateUI(state);
-    if (els.renderProgressText) {
-      els.renderProgressText.textContent = state.message || "Rendering...";
-    }
-    if (state.total > 0 && els.renderProgressBar) {
-      const pct = Math.min(100, Math.round((state.progress / state.total) * 100));
-      els.renderProgressBar.style.width = `${pct}%`;
-    }
-
     if ((state.status === "running" || state.status === "stopping") && (state.task || "") === "render") {
       renderTimer = setTimeout(pollRenderStatus, 1000);
     } else {
-      if (els.renderProgressPanel) els.renderProgressPanel.style.display = "none";
+      if (state.status === "idle") {
+        reportRenderExpectedSeconds = 0;
+      }
       if (Array.isArray(state.errors) && state.errors.length && !state.cancel_requested) {
         alert("Render completed with errors: " + state.errors.join(" | "));
       }

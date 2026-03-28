@@ -2451,6 +2451,7 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
     else:
         base_seconds = 14 if is_preview_mode else 40
     expected_seconds = int(max(12, len(render_jobs) * base_seconds * dpi_scale))
+    REPORT_STATE["expected_time"] = expected_seconds
     return JSONResponse({"status": "started", "expected_time": expected_seconds})
 
 
@@ -2592,6 +2593,7 @@ def get_report_status() -> JSONResponse:
         "task": REPORT_STATE.get("task", ""),
         "progress": REPORT_STATE.get("progress", 0),
         "total": REPORT_STATE.get("total", 0),
+        "expected_time": REPORT_STATE.get("expected_time", 0),
         "message": REPORT_STATE.get("message", ""),
         "errors": REPORT_STATE.get("errors", []),
         "last_logs": REPORT_STATE.get("last_logs", []),
