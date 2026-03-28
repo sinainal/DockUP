@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
 from PIL import Image, ImageDraw
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +45,7 @@ def test_create_visualization_preserves_transparent_background(tmp_path: Path) -
         output_dir=str(output_dir),
         interaction_dir=str(interaction_dir),
         debug=False,
+        dpi=120,
     )
 
     assert ok is True
@@ -55,3 +57,4 @@ def test_create_visualization_preserves_transparent_background(tmp_path: Path) -
         assert rgba.getpixel((0, 0))[3] == 0
         assert any(pixel[3] == 0 for pixel in rgba.getdata())
         assert any(pixel[3] > 0 and max(pixel[:3]) > 200 for pixel in rgba.getdata())
+        assert image_obj.info.get("dpi") == pytest.approx((120, 120), rel=0.01)

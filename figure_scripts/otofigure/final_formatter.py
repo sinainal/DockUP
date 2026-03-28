@@ -16,6 +16,9 @@ import matplotlib.font_manager as fm
 import argparse
 import sys
 from pathlib import Path
+from math import ceil
+
+from PIL import Image
 
 # Global stil ve görsel parametreleri
 RENDER_DPI = 300  # Çıkış görüntüsünün DPI değeri
@@ -42,6 +45,23 @@ DEFAULT_OXA_PDB_CSV = "oxa_pdb_list.csv"  # OXA-PDB eşleştirme dosyası
 DEFAULT_ZINC_CSV = "ZINC.csv"  # ZINC-ID eşleştirme dosyası
 DEFAULT_MAX_IMAGES = 16  # Her sayfada maksimum resim sayısı
 DEFAULT_RENDER_DPI = 300  # Görüntü oluşturma DPI değeri
+CELL_WIDTH_INCHES = 5.0
+CELL_HEIGHT_INCHES = 5.0
+
+
+def _minimum_formatter_dpi(image_paths, requested_dpi):
+    effective_dpi = max(30, int(requested_dpi or DEFAULT_RENDER_DPI))
+    for image_path in image_paths:
+        if not image_path or not os.path.exists(image_path):
+            continue
+        with Image.open(image_path) as image_obj:
+            width, height = image_obj.size
+        needed = max(
+            ceil(width / CELL_WIDTH_INCHES),
+            ceil(height / CELL_HEIGHT_INCHES),
+        )
+        effective_dpi = max(effective_dpi, needed)
+    return effective_dpi
 
 def load_oxa_pdb_mapping(file_path=DEFAULT_OXA_PDB_CSV):
     """
@@ -216,9 +236,16 @@ def create_formatted_figures(df, output_dir=DEFAULT_OUTPUT_DIR, max_images=DEFAU
         actual_images = len(page_groups)
         actual_rows = int(np.ceil(np.sqrt(actual_images)))
         actual_cols = int(np.ceil(actual_images / actual_rows))
+        page_image_paths = []
+        for (oxa, zinc_id), _group_indices in page_groups:
+            indices = grouped.groups[(oxa, zinc_id)]
+            if len(indices) > 0:
+                row = df.iloc[indices[0]]
+                page_image_paths.append(row['output_file'])
+        effective_render_dpi = _minimum_formatter_dpi(page_image_paths, render_dpi)
         
         # Figür oluştur
-        fig = plt.figure(figsize=(5*actual_cols, 5*actual_rows), dpi=render_dpi)
+        fig = plt.figure(figsize=(5*actual_cols, 5*actual_rows), dpi=effective_render_dpi)
         fig.patch.set_alpha(0)
         gs = GridSpec(actual_rows, actual_cols, figure=fig)
         
@@ -260,7 +287,7 @@ def create_formatted_figures(df, output_dir=DEFAULT_OUTPUT_DIR, max_images=DEFAU
         
         # Dosyayı kaydet
         output_file = os.path.join(output_dir, f"formatted_figure_{page+1}.png")
-        plt.savefig(output_file, dpi=render_dpi, bbox_inches='tight', transparent=True)
+        plt.savefig(output_file, dpi=effective_render_dpi, bbox_inches='tight', transparent=True)
         plt.close(fig)
         
         print(f"Formatlanmış görüntü oluşturuldu: {output_file}")

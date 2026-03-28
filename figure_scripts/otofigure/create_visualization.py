@@ -18,7 +18,7 @@ import argparse
 
 # Ayarlanabilir parametreler
 DEBUG_OUTPUT = False  # Debug görselinin kaydedilip kaydedilmeyeceğini kontrol eder (True/False)
-DPI = 300  # Çıkış DPI değeri
+DEFAULT_DPI = 300  # Çıkış DPI değeri
 INPUT_DIR = "results"  # Giriş klasörü
 OUTPUT_DIR = "final_results"  # Çıkış klasörü
 INTERACTION_DIR = "interaction"  # Etkileşim haritaları klasörü
@@ -251,7 +251,13 @@ def create_blank_image_with_text(width, height, text="Interaction map not found"
     
     return blank_image
 
-def create_visualization(input_filename, output_dir=OUTPUT_DIR, interaction_dir=INTERACTION_DIR, debug=False):
+def create_visualization(
+    input_filename,
+    output_dir=OUTPUT_DIR,
+    interaction_dir=INTERACTION_DIR,
+    debug=False,
+    dpi=DEFAULT_DPI,
+):
     """
     Belirtilen dosyaları kullanarak görselleştirmeyi oluştur
     
@@ -423,7 +429,7 @@ def create_visualization(input_filename, output_dir=OUTPUT_DIR, interaction_dir=
             # Debug görselini kaydet
             output_filename = f"{pdb_id}_{zinc_id}_debug.png"
             debug_output_file = os.path.join(output_dir, output_filename)
-            plt.savefig(debug_output_file, dpi=DPI, bbox_inches='tight', pad_inches=0, transparent=True)
+            plt.savefig(debug_output_file, dpi=dpi, bbox_inches='tight', pad_inches=0, transparent=True)
             print(f"- Debug görsel: {debug_output_file}")
             
             plt.close(fig)
@@ -457,8 +463,8 @@ def create_visualization(input_filename, output_dir=OUTPUT_DIR, interaction_dir=
         fig.canvas.draw()
         
         # Aynı koordinatları kullanarak çizgileri çiz (kırmızı noktasız)
-        canvas_width = int(round(fig.get_figwidth() * DPI))
-        canvas_height = int(round(fig.get_figheight() * DPI))
+        canvas_width = int(round(fig.get_figwidth() * dpi))
+        canvas_height = int(round(fig.get_figheight() * dpi))
         pil_canvas = Image.new("RGBA", (canvas_width, canvas_height), (255, 255, 255, 0))
 
         far_image = Image.fromarray(far_view_rgb, mode="RGBA")
@@ -532,7 +538,7 @@ def create_visualization(input_filename, output_dir=OUTPUT_DIR, interaction_dir=
         # Final görselini kaydet (sadece PNG olarak)
         output_filename = f"{pdb_id}_{zinc_id}_final.png"
         final_output_file = os.path.join(output_dir, output_filename)
-        pil_canvas.save(final_output_file, dpi=(DPI, DPI))
+        pil_canvas.save(final_output_file, dpi=(dpi, dpi))
         plt.close(fig)
         
         print(f"Görselleştirme tamamlandı: {final_output_file}")
@@ -544,7 +550,13 @@ def create_visualization(input_filename, output_dir=OUTPUT_DIR, interaction_dir=
         traceback.print_exc()
         return False
 
-def process_results_dir(input_dir=INPUT_DIR, output_dir=OUTPUT_DIR, interaction_dir=INTERACTION_DIR, debug=False):
+def process_results_dir(
+    input_dir=INPUT_DIR,
+    output_dir=OUTPUT_DIR,
+    interaction_dir=INTERACTION_DIR,
+    debug=False,
+    dpi=DEFAULT_DPI,
+):
     """
     Results klasöründeki tüm PNG dosyalarını işler.
     
@@ -598,7 +610,7 @@ def process_results_dir(input_dir=INPUT_DIR, output_dir=OUTPUT_DIR, interaction_
                 log_file.write(log_message + "\n")
                 
                 # Görselleştirmeyi oluştur
-                result = create_visualization(png_file, output_dir, interaction_dir, debug)
+                result = create_visualization(png_file, output_dir, interaction_dir, debug, dpi=dpi)
                 
                 # Kombinasyonu işlenmiş olarak işaretle
                 processed_combinations.add((pdb_id, zinc_id))
@@ -636,12 +648,13 @@ def main():
     parser.add_argument('--input_dir', type=str, default=INPUT_DIR, help='Giriş klasörünün yolu')
     parser.add_argument('--output_dir', type=str, default=OUTPUT_DIR, help='Çıkış klasörünün yolu')
     parser.add_argument('--interaction_dir', type=str, default=INTERACTION_DIR, help='Etkileşim haritaları klasörünün yolu')
+    parser.add_argument('--dpi', type=int, default=DEFAULT_DPI, help='Çıkış DPI değeri')
     parser.add_argument('--debug', action='store_true', help='Debug modunu etkinleştir')
     
     args = parser.parse_args()
     
     # Results klasöründeki tüm PNG dosyalarını işle
-    process_results_dir(args.input_dir, args.output_dir, args.interaction_dir, args.debug)
+    process_results_dir(args.input_dir, args.output_dir, args.interaction_dir, args.debug, dpi=args.dpi)
 
 if __name__ == "__main__":
     main() 

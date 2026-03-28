@@ -13,6 +13,10 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 FINAL_DINAMIK_SCRIPT = PACKAGE_DIR / "final_dinamik.py"
 CREATE_VISUALIZATION_SCRIPT = PACKAGE_DIR / "create_visualization.py"
 FINAL_FORMATTER_SCRIPT = PACKAGE_DIR / "final_formatter.py"
+NORMAL_BASE_RENDER_DPI = 120
+NORMAL_BASE_RENDER_SIZE = (400, 300)
+PREVIEW_BASE_RENDER_DPI = 72
+PREVIEW_BASE_RENDER_SIZE = (320, 240)
 
 
 def _candidate_interpreters(extra: Iterable[str | Path | None]) -> list[str]:
@@ -114,11 +118,18 @@ def _copy_case_inputs(
     }
 
 
-def _render_settings(dpi: int, *, preview_mode: bool) -> tuple[int, int, int, int]:
-    safe_dpi = max(10, min(120, int(dpi or 30)))
+def _render_settings(dpi: int, *, preview_mode: bool) -> tuple[int, int, int]:
+    effective_dpi = max(30, min(600, int(dpi or NORMAL_BASE_RENDER_DPI)))
     if preview_mode:
-        return (320, 240, min(safe_dpi, 15), max(60, safe_dpi))
-    return (400, 300, min(max(12, safe_dpi), 30), max(72, min(180, safe_dpi * 2)))
+        base_width, base_height = PREVIEW_BASE_RENDER_SIZE
+        base_dpi = PREVIEW_BASE_RENDER_DPI
+    else:
+        base_width, base_height = NORMAL_BASE_RENDER_SIZE
+        base_dpi = NORMAL_BASE_RENDER_DPI
+    scale = float(effective_dpi) / float(base_dpi)
+    width = max(1, int(round(base_width * scale)))
+    height = max(1, int(round(base_height * scale)))
+    return width, height, effective_dpi
 
 
 def _run_step(
@@ -185,7 +196,7 @@ def run(
     work_root.mkdir(parents=True, exist_ok=True)
 
     layout = _copy_case_inputs(work_root, receptor_id=receptor_id, run_entries=resolved_runs)
-    width, height, render_dpi, formatter_dpi = _render_settings(dpi, preview_mode=preview_mode)
+    width, height, render_dpi = _render_settings(dpi, preview_mode=preview_mode)
 
     pymol_python = _find_python_with_modules(["pymol"], env_var="DOCKUP_OTOFIGURE_PYMOL_PYTHON")
     viz_python = _find_python_with_modules(
@@ -231,6 +242,8 @@ def run(
             str(layout["final_results_dir"]),
             "--interaction_dir",
             str(layout["interaction_dir"]),
+            "--dpi",
+            str(render_dpi),
         ],
         cwd=work_root,
         env=env,
@@ -246,7 +259,7 @@ def run(
             "--output_dir",
             str(layout["formatted_results_dir"]),
             "--render_dpi",
-            str(formatter_dpi),
+            str(render_dpi),
             "--max_images",
             "1",
         ],

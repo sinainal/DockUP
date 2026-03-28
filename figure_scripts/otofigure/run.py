@@ -5,8 +5,16 @@ import os
 import glob
 import subprocess
 import sys
+import argparse
+
+DEFAULT_DPI = 120
+
 
 def main():
+    parser = argparse.ArgumentParser(description="Run the legacy OtoFigure pipeline.")
+    parser.add_argument("--dpi", type=int, default=DEFAULT_DPI, help="Requested DPI for all OtoFigure outputs")
+    args = parser.parse_args()
+
     # Klasörleri oluştur
     os.makedirs("results", exist_ok=True)
     os.makedirs("final_results", exist_ok=True)
@@ -45,7 +53,8 @@ def main():
             "python", "final_dinamik.py",
             "--pdb_id", pdb_id,
             "--ligands_dir", ligand_dir,
-            "--output_dir", "results"
+            "--output_dir", "results",
+            "--dpi", str(args.dpi),
         ]
         
         try:
@@ -66,7 +75,8 @@ def main():
             "python", "create_visualization.py",
             "--input_dir", "results",
             "--output_dir", "final_results",
-            "--interaction_dir", "interaction"
+            "--interaction_dir", "interaction",
+            "--dpi", str(args.dpi),
         ]
         
         subprocess.run(cmd, check=True)
@@ -83,7 +93,8 @@ def main():
         cmd = [
             "python", "final_formatter.py",
             "--input_dir", "final_results",
-            "--output_dir", "formatted_results"
+            "--output_dir", "formatted_results",
+            "--render_dpi", str(args.dpi),
         ]
         
         subprocess.run(cmd, check=True)
