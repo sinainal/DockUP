@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from matplotlib.patches import Rectangle
+from PIL import Image, ImageDraw
 import glob
 import re
 import datetime
@@ -28,10 +29,98 @@ BORDER_THICKNESS = 1  # Çerçeve kalınlığı
 CONNECTOR_THICKNESS = 0.75  # Bağlantı çizgilerinin kalınlığı
 RED_CIRCLE_RADIUS = 7  # Kırmızı kürelerin yarıçapı
 
+
+def _load_image_preserve_alpha(path):
+    return cv2.imread(path, cv2.IMREAD_UNCHANGED)
+
+
+def _as_bgr(image):
+    if image is None:
+        return None
+    if len(image.shape) == 2:
+        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    if image.shape[2] == 4:
+        return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+    return image
+
+
+def _as_rgba(image):
+    if image is None:
+        return None
+    if len(image.shape) == 2:
+        return cv2.cvtColor(image, cv2.COLOR_GRAY2RGBA)
+    if image.shape[2] == 4:
+        return cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA)
+    return cv2.cvtColor(image, cv2.COLOR_BGR2RGBA)
+
+
+def _opaque_color(image, bgr_color):
+    if len(image.shape) == 3 and image.shape[2] == 4:
+        return (*bgr_color, 255)
+    return bgr_color
+
+
+def _axis_bounds_in_pixels(ax, fig, canvas_width, canvas_height):
+    bbox = ax.get_position()
+    left = int(round(bbox.x0 * canvas_width))
+    top = int(round((1.0 - bbox.y1) * canvas_height))
+    right = int(round(bbox.x1 * canvas_width))
+    bottom = int(round((1.0 - bbox.y0) * canvas_height))
+    return left, top, right, bottom
+
+
+def _fit_image_to_box(image, width, height):
+    if width <= 0 or height <= 0:
+        return None
+    scale = min(float(width) / float(image.width), float(height) / float(image.height))
+    new_width = max(1, int(round(image.width * scale)))
+    new_height = max(1, int(round(image.height * scale)))
+    return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+
+def _alpha_compose_centered(canvas, image, box):
+    left, top, right, bottom = box
+    target = _fit_image_to_box(image, right - left, bottom - top)
+    if target is None:
+        return
+    offset_x = left + max(0, ((right - left) - target.width) // 2)
+    offset_y = top + max(0, ((bottom - top) - target.height) // 2)
+    canvas.alpha_composite(target, dest=(offset_x, offset_y))
+
+
+def _data_point_to_canvas(ax, fig, point, canvas_width, canvas_height):
+    display = ax.transData.transform(point)
+    fig_coord = fig.transFigure.inverted().transform(display)
+    x = int(round(fig_coord[0] * canvas_width))
+    y = int(round((1.0 - fig_coord[1]) * canvas_height))
+    return x, y
+
+
+def _draw_dashed_line(draw, start, end, *, dash=14, gap=8, width=1, fill=(0, 0, 0, 255)):
+    x1, y1 = start
+    x2, y2 = end
+    dx = x2 - x1
+    dy = y2 - y1
+    length = float(np.hypot(dx, dy))
+    if length <= 0.0:
+        return
+    step_x = dx / length
+    step_y = dy / length
+    progress = 0.0
+    while progress < length:
+        seg_start = progress
+        seg_end = min(progress + dash, length)
+        sx = x1 + step_x * seg_start
+        sy = y1 + step_y * seg_start
+        ex = x1 + step_x * seg_end
+        ey = y1 + step_y * seg_end
+        draw.line((sx, sy, ex, ey), fill=fill, width=width)
+        progress += dash + gap
+
 def find_rgb_regions(image):
     """RGB/renkli bölgeleri tespit et ve kare kordinatlarını döndür"""
     # BGR'dan RGB'ye dönüştür
-    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    rgb_image = cv2.cvtColor(_as_bgr(image), cv2.COLOR_BGR2RGB)
     
     # Gri skala sapma toleransı
     TOLERANCE = 40  # Renk kanalları arası fark bu değerden azsa gri kabul edilecek
@@ -141,13 +230,13 @@ def create_blank_image_with_text(width, height, text="Interaction map not found"
     Returns:
         numpy.ndarray: Oluşturulan görüntü
     """
-    # Beyaz arka planlı boş bir görüntü oluştur
-    blank_image = np.ones((height, width, 3), dtype=np.uint8) * 255
+    # Şeffaf arka planlı boş bir görüntü oluştur
+    blank_image = np.zeros((height, width, 4), dtype=np.uint8)
     
     # Metin parametreleri
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 1.0
-    font_color = (100, 100, 100)  # Gri renk
+    font_color = (100, 100, 100, 255)  # Gri renk
     thickness = 2
     
     # Metin boyutunu hesapla
@@ -206,8 +295,8 @@ def create_visualization(input_filename, output_dir=OUTPUT_DIR, interaction_dir=
             return False
         
         # Görüntüleri yükle
-        far_view = cv2.imread(far_view_path)
-        close_view = cv2.imread(close_view_path)
+        far_view = _load_image_preserve_alpha(far_view_path)
+        close_view = _load_image_preserve_alpha(close_view_path)
         
         if far_view is None or close_view is None:
             print(f"Hata: Görüntüler okunamadı - Far: {far_view_path}, Close: {close_view_path}")
@@ -215,7 +304,7 @@ def create_visualization(input_filename, output_dir=OUTPUT_DIR, interaction_dir=
         
         # Interaction haritasını yükle veya boş bir görüntü oluştur
         if interaction_map_exists:
-            interaction_map = cv2.imread(interaction_map_path)
+            interaction_map = _load_image_preserve_alpha(interaction_map_path)
             if interaction_map is None:
                 print(f"Uyarı: Interaction haritası yüklenemedi, boş görüntü kullanılacak: {interaction_map_path}")
                 interaction_map = create_blank_image_with_text(close_view.shape[1], close_view.shape[0])
@@ -226,10 +315,16 @@ def create_visualization(input_filename, output_dir=OUTPUT_DIR, interaction_dir=
         # CLOSE_VIEW'da RGB bölgelerini bul ve kırp
         x_close, y_close, size_close, _ = find_rgb_regions(close_view)
         cropped_close = close_view[y_close:y_close+size_close, x_close:x_close+size_close].copy()
-        cv2.rectangle(cropped_close, (0, 0), (size_close-1, size_close-1), (0, 0, 0), BORDER_THICKNESS)
-    
+        cv2.rectangle(
+            cropped_close,
+            (0, 0),
+            (size_close-1, size_close-1),
+            _opaque_color(cropped_close, (0, 0, 0)),
+            BORDER_THICKNESS,
+        )
+
         # 2. görselin sol köşelerini kırmızı kürelerle işaretleyecek işaretleme kopyası
-        debug_close_view = cropped_close.copy()
+        debug_close_view = _as_bgr(cropped_close.copy())
         # Sol üst köşe - 1. görsel ile aynı boyutta olması için RED_CIRCLE_RADIUS değerini kullan
         cv2.circle(debug_close_view, (0, 0), RED_CIRCLE_RADIUS, (0, 0, 255), -1)
         # Sol alt köşe - 1. görsel ile aynı boyutta olması için RED_CIRCLE_RADIUS değerini kullan
@@ -239,7 +334,7 @@ def create_visualization(input_filename, output_dir=OUTPUT_DIR, interaction_dir=
         x_far, y_far, size_far, far_contours = find_rgb_regions(far_view)
         
         # DEBUG GÖRSELİ İÇİN FAR_VIEW KOPYASI
-        debug_far_view = far_view.copy()
+        debug_far_view = _as_bgr(far_view.copy())
         
         # RGB bölgelerini renklendir
         for contour in far_contours:
@@ -254,12 +349,12 @@ def create_visualization(input_filename, output_dir=OUTPUT_DIR, interaction_dir=
         cv2.circle(debug_far_view, right_top, RED_CIRCLE_RADIUS, (0, 0, 255), -1)  # Kırmızı küre
         cv2.circle(debug_far_view, right_bottom, RED_CIRCLE_RADIUS, (0, 0, 255), -1)  # Kırmızı küre
         
-        # BGR -> RGB dönüşümleri
+        # OpenCV/NumPy -> matplotlib RGBA/RGB dönüşümleri
         debug_far_view_rgb = cv2.cvtColor(debug_far_view, cv2.COLOR_BGR2RGB)
         debug_close_view_rgb = cv2.cvtColor(debug_close_view, cv2.COLOR_BGR2RGB)
-        far_view_rgb = cv2.cvtColor(far_view, cv2.COLOR_BGR2RGB)
-        cropped_close_rgb = cv2.cvtColor(cropped_close, cv2.COLOR_BGR2RGB)
-        interaction_map_rgb = cv2.cvtColor(interaction_map, cv2.COLOR_BGR2RGB)
+        far_view_rgb = _as_rgba(far_view)
+        cropped_close_rgb = _as_rgba(cropped_close)
+        interaction_map_rgb = _as_rgba(interaction_map)
     
         # Figür boyutlarını hesapla
         fig_width = FIG_WIDTH
@@ -291,6 +386,10 @@ def create_visualization(input_filename, output_dir=OUTPUT_DIR, interaction_dir=
         if DEBUG_OUTPUT:
             plt.ioff()  # Etkileşimli modu kapat
             fig, axs = plt.subplots(1, 3, figsize=(fig_width, fig_height), gridspec_kw={'width_ratios': WIDTH_RATIOS})
+            fig.patch.set_alpha(0)
+            for ax in axs:
+                ax.set_facecolor((1, 1, 1, 0))
+                ax.patch.set_alpha(0)
             
             # RGB bölgeleri ve kırmızı kürelerle işaretlenmiş far_view
             axs[0].imshow(debug_far_view_rgb)
@@ -324,7 +423,7 @@ def create_visualization(input_filename, output_dir=OUTPUT_DIR, interaction_dir=
             # Debug görselini kaydet
             output_filename = f"{pdb_id}_{zinc_id}_debug.png"
             debug_output_file = os.path.join(output_dir, output_filename)
-            plt.savefig(debug_output_file, dpi=DPI, bbox_inches='tight', pad_inches=0)
+            plt.savefig(debug_output_file, dpi=DPI, bbox_inches='tight', pad_inches=0, transparent=True)
             print(f"- Debug görsel: {debug_output_file}")
             
             plt.close(fig)
@@ -332,6 +431,10 @@ def create_visualization(input_filename, output_dir=OUTPUT_DIR, interaction_dir=
         # ----- FINAL GÖRSELİ OLUŞTUR -----
         plt.ioff()  # Etkileşimli modu kapat
         fig, axs = plt.subplots(1, 3, figsize=(fig_width, fig_height), gridspec_kw={'width_ratios': WIDTH_RATIOS})
+        fig.patch.set_alpha(0)
+        for ax in axs:
+            ax.set_facecolor((1, 1, 1, 0))
+            ax.patch.set_alpha(0)
         
         # Orijinal far_view
         axs[0].imshow(far_view_rgb)
@@ -354,22 +457,82 @@ def create_visualization(input_filename, output_dir=OUTPUT_DIR, interaction_dir=
         fig.canvas.draw()
         
         # Aynı koordinatları kullanarak çizgileri çiz (kırmızı noktasız)
-        connect_points_directly(
-            fig, axs[0], axs[1], 
-            far_right_top_data, close_left_top_data, 
-            color='black', linestyle='--', linewidth=CONNECTOR_THICKNESS
+        canvas_width = int(round(fig.get_figwidth() * DPI))
+        canvas_height = int(round(fig.get_figheight() * DPI))
+        pil_canvas = Image.new("RGBA", (canvas_width, canvas_height), (255, 255, 255, 0))
+
+        far_image = Image.fromarray(far_view_rgb, mode="RGBA")
+        close_image = Image.fromarray(cropped_close_rgb, mode="RGBA")
+        interaction_image = Image.fromarray(interaction_map_rgb, mode="RGBA")
+
+        for ax, image in zip(axs, (far_image, close_image, interaction_image)):
+            _alpha_compose_centered(
+                pil_canvas,
+                image,
+                _axis_bounds_in_pixels(ax, fig, canvas_width, canvas_height),
+            )
+
+        overlay = Image.new("RGBA", pil_canvas.size, (255, 255, 255, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        far_box_top_left = _data_point_to_canvas(
+            axs[0],
+            fig,
+            (x_far, y_far),
+            canvas_width,
+            canvas_height,
         )
-        
-        connect_points_directly(
-            fig, axs[0], axs[1], 
-            far_right_bottom_data, close_left_bottom_data, 
-            color='black', linestyle='--', linewidth=CONNECTOR_THICKNESS
+        far_box_bottom_right = _data_point_to_canvas(
+            axs[0],
+            fig,
+            (x_far + size_far, y_far + size_far),
+            canvas_width,
+            canvas_height,
         )
-        
+        draw.rectangle(
+            (far_box_top_left, far_box_bottom_right),
+            outline=(0, 0, 0, 255),
+            width=max(1, int(round(BORDER_THICKNESS))),
+        )
+
+        connector_start_top = _data_point_to_canvas(
+            axs[0],
+            fig,
+            far_right_top_data,
+            canvas_width,
+            canvas_height,
+        )
+        connector_start_bottom = _data_point_to_canvas(
+            axs[0],
+            fig,
+            far_right_bottom_data,
+            canvas_width,
+            canvas_height,
+        )
+        connector_end_top = _data_point_to_canvas(
+            axs[1],
+            fig,
+            close_left_top_data,
+            canvas_width,
+            canvas_height,
+        )
+        connector_end_bottom = _data_point_to_canvas(
+            axs[1],
+            fig,
+            close_left_bottom_data,
+            canvas_width,
+            canvas_height,
+        )
+        dash_width = max(1, int(round(CONNECTOR_THICKNESS)))
+        _draw_dashed_line(draw, connector_start_top, connector_end_top, width=dash_width)
+        _draw_dashed_line(draw, connector_start_bottom, connector_end_bottom, width=dash_width)
+
+        pil_canvas.alpha_composite(overlay)
+
         # Final görselini kaydet (sadece PNG olarak)
         output_filename = f"{pdb_id}_{zinc_id}_final.png"
         final_output_file = os.path.join(output_dir, output_filename)
-        plt.savefig(final_output_file, dpi=DPI, bbox_inches='tight', pad_inches=0)
+        pil_canvas.save(final_output_file, dpi=(DPI, DPI))
         plt.close(fig)
         
         print(f"Görselleştirme tamamlandı: {final_output_file}")

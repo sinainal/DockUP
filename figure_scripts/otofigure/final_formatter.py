@@ -219,6 +219,7 @@ def create_formatted_figures(df, output_dir=DEFAULT_OUTPUT_DIR, max_images=DEFAU
         
         # Figür oluştur
         fig = plt.figure(figsize=(5*actual_cols, 5*actual_rows), dpi=render_dpi)
+        fig.patch.set_alpha(0)
         gs = GridSpec(actual_rows, actual_cols, figure=fig)
         
         # Her grup için bir alt figür oluştur
@@ -237,6 +238,8 @@ def create_formatted_figures(df, output_dir=DEFAULT_OUTPUT_DIR, max_images=DEFAU
                     row_idx = i // actual_cols
                     col_idx = i % actual_cols
                     ax = fig.add_subplot(gs[row_idx, col_idx])
+                    ax.set_facecolor((1, 1, 1, 0))
+                    ax.patch.set_alpha(0)
                     
                     # Görüntüyü yükle
                     try:
@@ -257,7 +260,7 @@ def create_formatted_figures(df, output_dir=DEFAULT_OUTPUT_DIR, max_images=DEFAU
         
         # Dosyayı kaydet
         output_file = os.path.join(output_dir, f"formatted_figure_{page+1}.png")
-        plt.savefig(output_file, dpi=render_dpi, bbox_inches='tight')
+        plt.savefig(output_file, dpi=render_dpi, bbox_inches='tight', transparent=True)
         plt.close(fig)
         
         print(f"Formatlanmış görüntü oluşturuldu: {output_file}")

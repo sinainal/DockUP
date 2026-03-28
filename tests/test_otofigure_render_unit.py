@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -50,7 +50,10 @@ def test_otofigure_pipeline_stages_case_layout_and_copies_final_png(
             Image.new("RGBA", (400, 300), "white").save(Path(cwd, "results", "3pbl_unknown_far.png"))
             Image.new("RGBA", (400, 300), "white").save(Path(cwd, "results", "3pbl_unknown_close.png"))
         elif script_name == "create_visualization.py":
-            Image.new("RGBA", (1200, 320), "white").save(Path(cwd, "final_results", "3pbl_unknown_final.png"))
+            img = Image.new("RGBA", (1200, 320), (255, 255, 255, 0))
+            draw = ImageDraw.Draw(img)
+            draw.rectangle((150, 60, 260, 170), fill=(255, 255, 255, 255))
+            img.save(Path(cwd, "final_results", "3pbl_unknown_final.png"))
         elif script_name == "final_formatter.py":
             Image.new("RGBA", (1200, 320), "white").save(Path(cwd, "formatted_results", "formatted_figure_1.png"))
         else:
@@ -80,6 +83,7 @@ def test_otofigure_pipeline_stages_case_layout_and_copies_final_png(
     assert Path(result["formatted_png"]).exists()
     with Image.open(output_png) as copied_image:
         assert copied_image.convert("RGBA").getpixel((0, 0))[3] == 0
+        assert copied_image.convert("RGBA").getpixel((200, 100))[3] == 255
 
 
 @pytest.mark.unit
