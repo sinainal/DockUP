@@ -63,6 +63,7 @@ REPORT_CASE_RUN_RE = re.compile(r"^([A-Za-z0-9]+)_(.+)_run(\d+)$", re.IGNORECASE
 REPORT_MAX_DISCOVERY_DEPTH = 6
 REPORT_IMAGE_EXTENSIONS: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".webp", ".svg")
 REPORT_METADATA_FILENAME = ".docking_app_meta.json"
+REPORT_IMAGE_METADATA_SUFFIX = ".meta.json"
 REPORT_TEMPLATE_HEADINGS: tuple[str, ...] = (
     "Materials and Methods: Molecular Docking Simulations",
     "Results",
@@ -113,6 +114,24 @@ def _ligand_sort_key(name: str) -> tuple[str, str]:
 
 def _metadata_file_for_source(source_dir: Path) -> Path:
     return source_dir.resolve() / REPORT_METADATA_FILENAME
+
+
+def _image_metadata_path(image_path: Path) -> Path:
+    return image_path.with_name(f"{image_path.name}{REPORT_IMAGE_METADATA_SUFFIX}")
+
+
+def _read_image_metadata(image_path: Path) -> dict[str, Any]:
+    raw = read_json(_image_metadata_path(image_path), {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def _write_image_metadata(image_path: Path, payload: dict[str, Any]) -> None:
+    write_json(_image_metadata_path(image_path), payload)
+
+
+def _delete_image_artifacts(image_path: Path) -> None:
+    image_path.unlink(missing_ok=True)
+    _image_metadata_path(image_path).unlink(missing_ok=True)
 
 
 def _collect_source_entities(source_dir: Path) -> tuple[list[str], list[str]]:
@@ -650,6 +669,15 @@ def _list_generated_images(directory: Path, *, category: str, kind: str) -> list
         except OSError:
             mtime = 0
             size_bytes = 0
+        metadata = _read_image_metadata(png)
+        elapsed_seconds_raw = metadata.get("elapsed_seconds")
+        elapsed_seconds = None
+        if isinstance(elapsed_seconds_raw, (int, float)):
+            elapsed_seconds = round(max(0.0, float(elapsed_seconds_raw)), 3)
+        render_dpi_raw = metadata.get("render_dpi")
+        render_dpi = None
+        if isinstance(render_dpi_raw, (int, float)):
+            render_dpi = max(1, int(round(float(render_dpi_raw))))
         rows.append(
             {
                 "name": png.name,
@@ -658,6 +686,8 @@ def _list_generated_images(directory: Path, *, category: str, kind: str) -> list
                 "kind": kind,
                 "mtime": mtime,
                 "size_bytes": size_bytes,
+                "elapsed_seconds": elapsed_seconds,
+                "render_dpi": render_dpi,
             }
         )
     rows.sort(key=lambda item: (-(item.get("mtime") or 0), item.get("name") or ""))
@@ -2091,7 +2121,7 @@ def delete_all_report_images(payload: dict[str, Any]) -> JSONResponse:
         for image_path in directory.iterdir():
             if not image_path.is_file() or not _is_report_image_file(image_path):
                 continue
-            image_path.unlink(missing_ok=True)
+            _delete_image_artifacts(image_path)
             rel_path = relative_to_base(image_path)
             if rel_path:
                 deleted.append(rel_path)
@@ -2117,7 +2147,7 @@ def delete_report_image(payload: dict[str, Any]) -> JSONResponse:
         raise HTTPException(status_code=404, detail="Image not found")
     if not target.is_file():
         raise HTTPException(status_code=400, detail="Invalid image path")
-    target.unlink()
+    _delete_image_artifacts(target)
     return JSONResponse({"ok": True, "deleted": relative_to_base(target)})
 
 
@@ -2388,6 +2418,7 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
                     state["active_subprocess_label"] = ""
 
                 try:
+                    render_started_at = time.perf_counter()
                     if render_mode_key == REPORT_RENDER_MODE_OTOFIGURE:
                         panel_stem = f"{dtype}_{render_mode}_multirun_{started_stamp}_{idx:02d}"
                     else:
@@ -2408,8 +2439,24 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
                             "on_process_end": on_process_end,
                         },
                     )
+                    elapsed_seconds = max(0.001, time.perf_counter() - render_started_at)
+                    _write_image_metadata(
+                        out_path,
+                        {
+                            "version": 1,
+                            "kind": "render",
+                            "dtype": dtype,
+                            "render_mode": render_mode_key,
+                            "render_dpi": int(render_dpi),
+                            "preview_mode": bool(preview_mode),
+                            "requested_run": preferred_run,
+                            "requested_ligand": preferred_ligand,
+                            "used_runs": list(used_runs or []),
+                            "elapsed_seconds": round(elapsed_seconds, 3),
+                        },
+                    )
                     used_label = ", ".join(used_runs) if used_runs else "auto"
-                    logs.append(f"{dtype}: {out_path.name} (used: {used_label})")
+                    logs.append(f"{dtype}: {out_path.name} (used: {used_label}; {elapsed_seconds:.1f}s)")
                 except Exception as exc:
                     if state.get("cancel_requested"):
                         logs.append(f"{dtype}: cancelled")

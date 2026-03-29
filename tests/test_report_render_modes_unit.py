@@ -108,7 +108,12 @@ def test_trigger_render_dispatches_otofigure_builder(monkeypatch: pytest.MonkeyP
 
         assert called == ["otofigure"]
         render_dir = output_root / "render_images"
-        assert any(render_dir.glob("*_otofigure_*.png"))
+        render_paths = list(render_dir.glob("*_otofigure_*.png"))
+        assert render_paths
+        metadata = report._read_image_metadata(render_paths[0])
+        assert metadata.get("kind") == "render"
+        assert metadata.get("render_dpi") == 100
+        assert float(metadata.get("elapsed_seconds") or 0.0) > 0.0
     finally:
         REPORT_STATE.clear()
         REPORT_STATE.update(snapshot)
@@ -192,3 +197,61 @@ def test_stop_render_marks_report_state_stopping() -> None:
     finally:
         REPORT_STATE.clear()
         REPORT_STATE.update(snapshot)
+
+
+@pytest.mark.unit
+def test_list_generated_images_reads_elapsed_seconds_from_sidecar(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    render_dir = tmp_path / "render_images"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    image_path = render_dir / "D1_classic_run1.png"
+    Image.new("RGBA", (24, 24), (255, 255, 255, 0)).save(image_path)
+    report._write_image_metadata(
+        image_path,
+        {
+            "kind": "render",
+            "elapsed_seconds": 14.26,
+            "render_dpi": 240,
+        },
+    )
+    monkeypatch.setattr(report, "relative_to_base", lambda _path: f"data/dock/{image_path.name}")
+
+    rows = report._list_generated_images(render_dir, category="render", kind="rendered")
+
+    assert len(rows) == 1
+    assert rows[0]["name"] == image_path.name
+    assert rows[0]["elapsed_seconds"] == pytest.approx(14.26, rel=0, abs=0.001)
+    assert rows[0]["render_dpi"] == 240
+
+
+@pytest.mark.unit
+def test_delete_report_image_removes_sidecar(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    output_root = tmp_path / "report_outputs"
+    render_dir = output_root / "render_images"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    image_path = render_dir / "D1_classic_run1.png"
+    Image.new("RGB", (20, 20), "white").save(image_path)
+    report._write_image_metadata(image_path, {"elapsed_seconds": 9.5})
+
+    monkeypatch.setattr(report, "_resolve_report_root", lambda _root_path: tmp_path)
+    monkeypatch.setattr(report, "_resolve_report_source", lambda _report_root, _source_path: tmp_path / "source")
+    monkeypatch.setattr(report, "_resolve_report_output_root", lambda _report_root, _source_dir, _output_path: output_root)
+    monkeypatch.setattr(report, "_resolve_report_images_root", lambda _report_root, _output_root, _images_root_path: output_root)
+    monkeypatch.setattr(report, "_resolve_report_image_path", lambda _report_root, _images_root, _path: image_path)
+
+    response = report.delete_report_image(
+        {
+            "root_path": "data/dock",
+            "source_path": "data/dock/example",
+            "output_path": str(output_root),
+            "images_root_path": str(output_root),
+            "path": "data/dock/example/report_outputs/render_images/D1_classic_run1.png",
+        }
+    )
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert payload["ok"] is True
+    assert not image_path.exists()
+    assert not report._image_metadata_path(image_path).exists()

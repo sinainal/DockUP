@@ -5724,6 +5724,17 @@ function formatBytes(size) {
   return `${value.toFixed(value >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
 }
 
+function formatElapsedSeconds(seconds) {
+  const value = Number(seconds || 0);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  if (value < 10) return `${value.toFixed(1)}s`;
+  if (value < 60) return `${value.toFixed(value < 30 ? 1 : 0)}s`;
+  const total = Math.round(value);
+  const minutes = Math.floor(total / 60);
+  const remainder = total % 60;
+  return `${minutes}m ${String(remainder).padStart(2, "0")}s`;
+}
+
 function setReportMetaText(text) {
   if (els.reportMetaText && document.body.contains(els.reportMetaText)) {
     els.reportMetaText.textContent = text;
@@ -7146,7 +7157,13 @@ function renderReportDocImageGallery() {
 
     const category = document.createElement("div");
     category.className = "report-category";
-    category.textContent = `${formatBytes(img.size_bytes || 0)} | ${formatReportTime(img.mtime || 0)}`;
+    const categoryParts = [];
+    const renderDpi = Number(img.render_dpi || 0);
+    if (Number.isFinite(renderDpi) && renderDpi > 0) categoryParts.push(`${Math.round(renderDpi)} dpi`);
+    const elapsedText = formatElapsedSeconds(img.elapsed_seconds);
+    if (elapsedText) categoryParts.push(`actual ${elapsedText}`);
+    categoryParts.push(formatBytes(img.size_bytes || 0), formatReportTime(img.mtime || 0));
+    category.textContent = categoryParts.join(" | ");
 
     const actions = document.createElement("div");
     actions.className = "report-actions";
@@ -7472,7 +7489,13 @@ function renderReports(images, container, options = {}) {
 
     const category = document.createElement("div");
     category.className = "report-category";
-    category.textContent = `${img.category || "other"} | ${formatBytes(img.size_bytes || 0)} | ${formatReportTime(img.mtime || 0)}`;
+    const categoryParts = [img.category || "other"];
+    const renderDpi = Number(img.render_dpi || 0);
+    if (Number.isFinite(renderDpi) && renderDpi > 0) categoryParts.push(`${Math.round(renderDpi)} dpi`);
+    const elapsedText = formatElapsedSeconds(img.elapsed_seconds);
+    if (elapsedText) categoryParts.push(`actual ${elapsedText}`);
+    categoryParts.push(formatBytes(img.size_bytes || 0), formatReportTime(img.mtime || 0));
+    category.textContent = categoryParts.join(" | ");
 
     const actions = document.createElement("div");
     actions.className = "report-actions";
