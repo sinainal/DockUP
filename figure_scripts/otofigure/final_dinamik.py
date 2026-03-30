@@ -4,6 +4,7 @@ import os
 import math
 import glob
 import argparse
+import re
 import sys
 from pymol import cmd
 import numpy as np
@@ -164,6 +165,11 @@ def final_gorselleştirme(pdb_id=None, ligands_dir=None, output_dir="results", i
         if len(zinc_parts) > 1:
             zinc_id_full = "ZINC" + zinc_parts[1].split("_")[0]
             zinc_id = zinc_id_full[-4:] if len(zinc_id_full) >= 4 else zinc_id_full
+    else:
+        ligand_stem = os.path.splitext(first_ligand_name)[0].strip()
+        ligand_stem = re.sub(r"[^A-Za-z0-9]+", "_", ligand_stem).strip("_")
+        if ligand_stem:
+            zinc_id = ligand_stem
     
     # Ligandları yükle
     for i, ligand_file in enumerate(ligand_files):
@@ -203,11 +209,9 @@ def final_gorselleştirme(pdb_id=None, ligands_dir=None, output_dir="results", i
     
     # Renk ayarları (renkler.py'den)
     cmd.color("hydrogen")                # Hidrojen atomları
-    cmd.color("red", "1")                # 1. ligand: kırmızı
-    cmd.color("green", "2")              # 2. ligand: yeşil
-    cmd.color("blue", "3")               # 3. ligand: mavi
-    cmd.color("purple", "4")             # 4. ligand: mor
-    cmd.color("orange", "5")             # 5. ligand: turuncu
+    ligand_colors = ["red", "green", "blue", "purple", "orange"]
+    for ligand_name, ligand_color in zip(loaded_ligands, ligand_colors):
+        cmd.color(ligand_color, ligand_name)
     cmd.color("bluewhite", "protein")    # Protein: açık mavi
     
     # Genel görünüm ayarları

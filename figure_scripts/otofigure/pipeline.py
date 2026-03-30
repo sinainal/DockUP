@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -11,6 +12,7 @@ from typing import Any, Iterable
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 FINAL_DINAMIK_SCRIPT = PACKAGE_DIR / "final_dinamik.py"
+RENDER_INTERACTION_MAPS_SCRIPT = PACKAGE_DIR / "render_interaction_maps.py"
 CREATE_VISUALIZATION_SCRIPT = PACKAGE_DIR / "create_visualization.py"
 FINAL_FORMATTER_SCRIPT = PACKAGE_DIR / "final_formatter.py"
 NORMAL_BASE_RENDER_DPI = 120
@@ -203,11 +205,33 @@ def run(
         ["cv2", "pandas", "matplotlib"],
         env_var="DOCKUP_OTOFIGURE_VIZ_PYTHON",
     )
+    interaction_python = _find_python_with_modules(
+        ["rdkit", "PIL"],
+        env_var="DOCKUP_OTOFIGURE_VIZ_PYTHON",
+        extra_candidates=[viz_python],
+    )
 
     env = os.environ.copy()
     env.setdefault("MPLBACKEND", "Agg")
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
     env["MPLCONFIGDIR"] = str((work_root / ".matplotlib").resolve())
+
+    interaction_manifest = work_root / "interaction_manifest.json"
+    interaction_manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "receptor_id": str(receptor_id or "").lower(),
+                    "run_name": run_name,
+                    "run_dir": str(run_dir),
+                }
+                for run_name, run_dir in resolved_runs[:5]
+            ],
+            indent=2,
+        )
+    )
+    interaction_width = max(1400, width * 4)
+    interaction_height = max(900, height * 3)
 
     logs: dict[str, str] = {}
     logs["final_dinamik"] = _run_step(
@@ -226,6 +250,24 @@ def run(
             str(height),
             "--dpi",
             str(render_dpi),
+        ],
+        cwd=work_root,
+        env=env,
+        on_process_start=on_process_start,
+        on_process_end=on_process_end,
+    )
+    logs["interaction_maps"] = _run_step(
+        [
+            interaction_python,
+            str(RENDER_INTERACTION_MAPS_SCRIPT),
+            "--manifest",
+            str(interaction_manifest),
+            "--output_dir",
+            str(layout["interaction_dir"]),
+            "--width",
+            str(interaction_width),
+            "--height",
+            str(interaction_height),
         ],
         cwd=work_root,
         env=env,

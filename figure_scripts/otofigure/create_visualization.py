@@ -22,7 +22,7 @@ DEFAULT_DPI = 300  # Çıkış DPI değeri
 INPUT_DIR = "results"  # Giriş klasörü
 OUTPUT_DIR = "final_results"  # Çıkış klasörü
 INTERACTION_DIR = "interaction"  # Etkileşim haritaları klasörü
-WIDTH_RATIOS = [4, 3, 3]  # Görsellerin genişlik oranları [far_view, close_view, interaction_map]
+WIDTH_RATIOS = [4, 3, 4]  # Görsellerin genişlik oranları [far_view, close_view, interaction_map]
 FIG_WIDTH = 14  # Figür genişliği (inç olarak)
 PADDING_PERCENT = 7  # Kare etrafındaki ek boşluk (yüzde)
 BORDER_THICKNESS = 1  # Çerçeve kalınlığı
@@ -78,6 +78,23 @@ def _fit_image_to_box(image, width, height):
     return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
 
+def _trim_transparent_content(image, padding=28):
+    if image is None:
+        return image
+    if len(image.shape) != 3 or image.shape[2] != 4:
+        return image
+    alpha = image[:, :, 3]
+    points = cv2.findNonZero(alpha)
+    if points is None:
+        return image
+    x, y, width, height = cv2.boundingRect(points)
+    left = max(0, x - padding)
+    top = max(0, y - padding)
+    right = min(image.shape[1], x + width + padding)
+    bottom = min(image.shape[0], y + height + padding)
+    return image[top:bottom, left:right].copy()
+
+
 def _alpha_compose_centered(canvas, image, box):
     left, top, right, bottom = box
     target = _fit_image_to_box(image, right - left, bottom - top)
@@ -119,42 +136,34 @@ def _draw_dashed_line(draw, start, end, *, dash=14, gap=8, width=1, fill=(0, 0, 
 
 def find_rgb_regions(image):
     """RGB/renkli bölgeleri tespit et ve kare kordinatlarını döndür"""
-    # BGR'dan RGB'ye dönüştür
-    rgb_image = cv2.cvtColor(_as_bgr(image), cv2.COLOR_BGR2RGB)
-    
-    # Gri skala sapma toleransı
-    TOLERANCE = 40  # Renk kanalları arası fark bu değerden azsa gri kabul edilecek
-    MIN_INTENSITY = 80  # Bundan daha koyu renkler karanlık kabul edilecek
-    
-    # Kanalları ayır
-    r_channel = rgb_image[:, :, 0].astype(np.int16)
-    g_channel = rgb_image[:, :, 1].astype(np.int16)
-    b_channel = rgb_image[:, :, 2].astype(np.int16)
-    
-    # Gri skala kontrolü - her renk kanalı arasındaki maksimum fark
-    r_g_diff = np.abs(r_channel - g_channel)
-    r_b_diff = np.abs(r_channel - b_channel)
-    g_b_diff = np.abs(g_channel - b_channel)
-    
-    max_diff = np.maximum(np.maximum(r_g_diff, r_b_diff), g_b_diff)
-    
-    # Renkli pikselleri bul (gri olmayanlar)
-    mask = np.zeros_like(r_channel, dtype=np.uint8)
-    
-    # Koyu olmayan ve gri olmayan pikselleri işaretle
-    non_dark = (r_channel >= MIN_INTENSITY) | (g_channel >= MIN_INTENSITY) | (b_channel >= MIN_INTENSITY)
-    non_gray = max_diff > TOLERANCE
-    
-    # Hem koyu olmayan hem de gri olmayan pikselleri işaretle
-    mask[non_dark & non_gray] = 255
-    
-    # Morfolojik işlemler
-    kernel = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    
-    # Kontürleri bul
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    bgr_image = _as_bgr(image)
+    hsv_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2HSV)
+    rgb_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
+    max_channel = rgb_image.max(axis=2).astype(np.int16)
+    min_channel = rgb_image.min(axis=2).astype(np.int16)
+    chroma = max_channel - min_channel
+    value = hsv_image[:, :, 2].astype(np.int16)
+    saturation = hsv_image[:, :, 1].astype(np.int16)
+    alpha_mask = np.ones(rgb_image.shape[:2], dtype=np.uint8) * 255
+    if len(image.shape) == 3 and image.shape[2] == 4:
+        alpha_mask = image[:, :, 3]
+
+    contours = []
+    candidate_masks = [
+        (saturation >= 40) & (value >= 20),
+        (saturation >= 26) & (value >= 18),
+        (chroma >= 22) & (value >= 28),
+    ]
+    for active in candidate_masks:
+        mask = np.zeros_like(saturation, dtype=np.uint8)
+        mask[(alpha_mask > 18) & active] = 255
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = [contour for contour in contours if cv2.contourArea(contour) >= 6.0]
+        if contours:
+            break
     
     # Eğer kontür bulunamazsa varsayılan bir kare döndür
     if not contours:
@@ -174,6 +183,8 @@ def find_rgb_regions(image):
     width = x_max - x_min
     height = y_max - y_min
     max_side = max(width, height)
+    min_focus_size = max(44, int(round(min(image.shape[0], image.shape[1]) * 0.18)))
+    max_side = max(max_side, min_focus_size)
     
     # Merkez hesapla
     center_x = (x_min + x_max) // 2
@@ -317,6 +328,7 @@ def create_visualization(
         else:
             print(f"Uyarı: Interaction haritası bulunamadı, boş görüntü kullanılacak: {interaction_map_path}")
             interaction_map = create_blank_image_with_text(close_view.shape[1], close_view.shape[0])
+        interaction_map = _trim_transparent_content(interaction_map)
         
         # CLOSE_VIEW'da RGB bölgelerini bul ve kırp
         x_close, y_close, size_close, _ = find_rgb_regions(close_view)

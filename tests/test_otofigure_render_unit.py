@@ -5,12 +5,15 @@ from pathlib import Path
 
 import pytest
 from PIL import Image, ImageDraw
+from rdkit import Chem
+from rdkit.Chem import AllChem
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from figure_scripts.otofigure import pipeline
+from figure_scripts.otofigure import render_interaction_maps
 
 
 def _make_run_dir(root: Path, receptor_id: str, run_name: str) -> Path:
@@ -49,15 +52,17 @@ def test_otofigure_pipeline_stages_case_layout_and_copies_final_png(
         if script_name == "final_dinamik.py":
             dpi_arg = cmd[cmd.index("--dpi") + 1]
             assert dpi_arg == "30"
-            Image.new("RGBA", (400, 300), "white").save(Path(cwd, "results", "3pbl_unknown_far.png"))
-            Image.new("RGBA", (400, 300), "white").save(Path(cwd, "results", "3pbl_unknown_close.png"))
+            Image.new("RGBA", (400, 300), "white").save(Path(cwd, "results", "3pbl_run1_far.png"))
+            Image.new("RGBA", (400, 300), "white").save(Path(cwd, "results", "3pbl_run1_close.png"))
+        elif script_name == "render_interaction_maps.py":
+            Image.new("RGBA", (500, 240), (255, 255, 255, 0)).save(Path(cwd, "interaction", "3pbl_run1_interaction.png"))
         elif script_name == "create_visualization.py":
             dpi_arg = cmd[cmd.index("--dpi") + 1]
             assert dpi_arg == "30"
             img = Image.new("RGBA", (1200, 320), (255, 255, 255, 0))
             draw = ImageDraw.Draw(img)
             draw.rectangle((150, 60, 260, 170), fill=(255, 255, 255, 255))
-            img.save(Path(cwd, "final_results", "3pbl_unknown_final.png"))
+            img.save(Path(cwd, "final_results", "3pbl_run1_final.png"))
         elif script_name == "final_formatter.py":
             dpi_arg = cmd[cmd.index("--render_dpi") + 1]
             assert dpi_arg == "30"
@@ -112,12 +117,14 @@ def test_otofigure_pipeline_limits_to_first_five_runs(tmp_path: Path, monkeypatc
         if script_name == "final_dinamik.py":
             dpi_arg = cmd[cmd.index("--dpi") + 1]
             assert dpi_arg == "30"
-            Image.new("RGBA", (200, 150), "white").save(Path(cwd, "results", "6cm4_unknown_far.png"))
-            Image.new("RGBA", (200, 150), "white").save(Path(cwd, "results", "6cm4_unknown_close.png"))
+            Image.new("RGBA", (200, 150), "white").save(Path(cwd, "results", "6cm4_run1_far.png"))
+            Image.new("RGBA", (200, 150), "white").save(Path(cwd, "results", "6cm4_run1_close.png"))
+        elif script_name == "render_interaction_maps.py":
+            Image.new("RGBA", (260, 180), (255, 255, 255, 0)).save(Path(cwd, "interaction", "6cm4_run1_interaction.png"))
         elif script_name == "create_visualization.py":
             dpi_arg = cmd[cmd.index("--dpi") + 1]
             assert dpi_arg == "30"
-            Image.new("RGBA", (600, 180), "white").save(Path(cwd, "final_results", "6cm4_unknown_final.png"))
+            Image.new("RGBA", (600, 180), "white").save(Path(cwd, "final_results", "6cm4_run1_final.png"))
         elif script_name == "final_formatter.py":
             dpi_arg = cmd[cmd.index("--render_dpi") + 1]
             assert dpi_arg == "30"
@@ -144,3 +151,23 @@ def test_otofigure_render_settings_scale_pixels_with_requested_dpi() -> None:
     assert pipeline._render_settings(120, preview_mode=False) == (400, 300, 120)
     assert pipeline._render_settings(300, preview_mode=False) == (1000, 750, 300)
     assert pipeline._render_settings(72, preview_mode=True) == (320, 240, 72)
+
+
+@pytest.mark.unit
+def test_prepare_draw_mol_normalizes_only_stereoany_double_bonds() -> None:
+    mol = Chem.MolFromSmiles("CC=CC=C")
+    assert mol is not None
+    mol = Chem.AddHs(mol)
+    AllChem.EmbedMolecule(mol, randomSeed=7)
+
+    double_bonds = [bond for bond in mol.GetBonds() if bond.GetBondTypeAsDouble() == 2]
+    assert len(double_bonds) == 2
+    double_bonds[0].SetStereo(Chem.rdchem.BondStereo.STEREOANY)
+    double_bonds[1].SetStereo(Chem.rdchem.BondStereo.STEREONONE)
+
+    draw_mol = render_interaction_maps._prepare_draw_mol(mol)
+    draw_double_bonds = [bond for bond in draw_mol.GetBonds() if bond.GetBondTypeAsDouble() == 2]
+
+    assert len(draw_double_bonds) == 2
+    assert str(draw_double_bonds[0].GetStereo()) == "STEREONONE"
+    assert str(draw_double_bonds[1].GetStereo()) == "STEREONONE"

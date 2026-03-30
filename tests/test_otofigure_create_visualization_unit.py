@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
@@ -58,3 +59,15 @@ def test_create_visualization_preserves_transparent_background(tmp_path: Path) -
         assert any(pixel[3] == 0 for pixel in rgba.getdata())
         assert any(pixel[3] > 0 and max(pixel[:3]) > 200 for pixel in rgba.getdata())
         assert image_obj.info.get("dpi") == pytest.approx((120, 120), rel=0.01)
+
+
+def test_trim_transparent_content_reduces_empty_canvas() -> None:
+    image = np.zeros((120, 240, 4), dtype=np.uint8)
+    image[42:68, 96:138] = (255, 0, 0, 255)
+
+    cropped = create_visualization._trim_transparent_content(image, padding=8)
+
+    assert cropped.shape[0] < image.shape[0]
+    assert cropped.shape[1] < image.shape[1]
+    assert cropped.shape[2] == 4
+    assert cropped[:, :, 3].max() == 255
