@@ -98,10 +98,13 @@ def normalize_background_mode(raw_value):
 
 def get_style_config(style_preset, overrides=None):
     style = dict(STYLE_PRESETS.get(normalize_style_preset(style_preset), STYLE_PRESETS["balanced"]))
-    for key, value in dict(overrides or {}).items():
+    normalized_overrides = dict(overrides or {})
+    for key, value in normalized_overrides.items():
         if value is None:
             continue
         style[key] = value
+    if normalized_overrides.get("protein_color") and normalized_overrides.get("cartoon_color") is None:
+        style["cartoon_color"] = style["protein_color"]
     return style
 
 
