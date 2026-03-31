@@ -2378,14 +2378,15 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
         "render_engine": otofigure_render_engine,
         "background": otofigure_background,
         "surface_enabled": bool(payload.otofigure_surface_enabled),
-        "surface_opacity": max(0.0, min(1.0, float(payload.otofigure_surface_opacity or 0.50))),
+        "surface_opacity": max(0.0, min(1.0, float(payload.otofigure_surface_opacity))),
         "protein_color": otofigure_protein_color,
-        "ligand_thickness": max(0.05, min(0.8, float(payload.otofigure_ligand_thickness or 0.22))),
-        "far_ratio": max(1, min(9, int(payload.otofigure_far_ratio or 4))),
-        "close_ratio": max(1, min(9, int(payload.otofigure_close_ratio or 2))),
-        "interaction_ratio": max(1, min(9, int(payload.otofigure_interaction_ratio or 3))),
-        "far_padding": max(0.0, min(0.5, float(payload.otofigure_far_padding or 0.03))),
-        "close_padding": max(0.0, min(1.0, float(payload.otofigure_close_padding or 0.20))),
+        "ligand_thickness": max(0.05, min(0.8, float(payload.otofigure_ligand_thickness))),
+        "far_ratio": max(1, min(9, int(payload.otofigure_far_ratio))),
+        "close_ratio": max(1, min(9, int(payload.otofigure_close_ratio))),
+        "interaction_ratio": max(1, min(9, int(payload.otofigure_interaction_ratio))),
+        "far_padding": max(0.0, min(0.5, float(payload.otofigure_far_padding))),
+        "far_frame_margin": max(0.0, min(0.15, float(payload.otofigure_far_frame_margin))),
+        "close_padding": max(0.0, min(1.0, float(payload.otofigure_close_padding))),
     }
     render_panel_builder = _get_render_panel_builder(render_mode)
     render_mode_label = "OtoFigure" if render_mode == REPORT_RENDER_MODE_OTOFIGURE else "Classic"

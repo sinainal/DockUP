@@ -72,6 +72,7 @@ def test_otofigure_pipeline_stages_case_layout_and_copies_final_png(
             assert cmd[cmd.index("--far-ratio") + 1] == "5"
             assert cmd[cmd.index("--close-ratio") + 1] == "2"
             assert cmd[cmd.index("--interaction-ratio") + 1] == "4"
+            assert cmd[cmd.index("--far-frame-margin") + 1] == "0.025"
             assert cmd[cmd.index("--background") + 1] == "white"
             img = Image.new("RGBA", (1200, 320), (255, 255, 255, 0))
             draw = ImageDraw.Draw(img)
@@ -112,6 +113,7 @@ def test_otofigure_pipeline_stages_case_layout_and_copies_final_png(
             "far_ratio": 5,
             "close_ratio": 2,
             "interaction_ratio": 4,
+            "far_frame_margin": 0.025,
         },
         preview_mode=False,
     )
@@ -159,6 +161,7 @@ def test_otofigure_pipeline_limits_to_first_five_runs(tmp_path: Path, monkeypatc
             assert cmd[cmd.index("--far-ratio") + 1] == "4"
             assert cmd[cmd.index("--close-ratio") + 1] == "2"
             assert cmd[cmd.index("--interaction-ratio") + 1] == "3"
+            assert cmd[cmd.index("--far-frame-margin") + 1] == "0.03"
             Image.new("RGBA", (600, 180), "white").save(Path(cwd, "final_results", "6cm4_run1_final.png"))
         elif script_name == "final_formatter.py":
             dpi_arg = cmd[cmd.index("--render_dpi") + 1]

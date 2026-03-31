@@ -23,6 +23,7 @@ INPUT_DIR = "results"  # Giriş klasörü
 OUTPUT_DIR = "final_results"  # Çıkış klasörü
 INTERACTION_DIR = "interaction"  # Etkileşim haritaları klasörü
 WIDTH_RATIOS = [4, 2, 3]  # Görsellerin genişlik oranları [far_view, close_view, interaction_map]
+DEFAULT_FAR_FRAME_MARGIN = 0.03  # Far panelde görünür içerik etrafındaki ekstra crop payı
 FIG_WIDTH = 14  # Figür genişliği (inç olarak)
 PADDING_PERCENT = 7  # Kare etrafındaki ek boşluk (yüzde)
 BORDER_THICKNESS = 1  # Çerçeve kalınlığı
@@ -321,6 +322,7 @@ def create_visualization(
     close_ratio=None,
     interaction_ratio=None,
     background_mode="transparent",
+    far_frame_margin=DEFAULT_FAR_FRAME_MARGIN,
 ):
     """
     Belirtilen dosyaları kullanarak görselleştirmeyi oluştur
@@ -385,7 +387,11 @@ def create_visualization(
             if helper_image is not None:
                 far_focus_view = helper_image
 
-        far_crop_padding = max(8, int(round(min(far_view.shape[0], far_view.shape[1]) * 0.03)))
+        try:
+            far_frame_margin = max(0.0, min(0.15, float(far_frame_margin)))
+        except Exception:
+            far_frame_margin = DEFAULT_FAR_FRAME_MARGIN
+        far_crop_padding = max(0, int(round(min(far_view.shape[0], far_view.shape[1]) * far_frame_margin)))
         far_crop_bbox = _content_bbox(far_view, padding=far_crop_padding)
         if far_crop_bbox is not None:
             far_view = _crop_to_bbox(far_view, far_crop_bbox)
@@ -659,6 +665,7 @@ def process_results_dir(
     close_ratio=None,
     interaction_ratio=None,
     background_mode="transparent",
+    far_frame_margin=DEFAULT_FAR_FRAME_MARGIN,
 ):
     """
     Results klasöründeki tüm PNG dosyalarını işler.
@@ -723,6 +730,7 @@ def process_results_dir(
                     close_ratio=close_ratio,
                     interaction_ratio=interaction_ratio,
                     background_mode=background_mode,
+                    far_frame_margin=far_frame_margin,
                 )
                 
                 # Kombinasyonu işlenmiş olarak işaretle
@@ -765,6 +773,7 @@ def main():
     parser.add_argument('--far-ratio', type=int, default=WIDTH_RATIOS[0], help='Far panel width ratio')
     parser.add_argument('--close-ratio', type=int, default=WIDTH_RATIOS[1], help='Close panel width ratio')
     parser.add_argument('--interaction-ratio', type=int, default=WIDTH_RATIOS[2], help='Interaction panel width ratio')
+    parser.add_argument('--far-frame-margin', type=float, default=DEFAULT_FAR_FRAME_MARGIN, help='Extra crop margin around visible far-panel content')
     parser.add_argument('--background', type=str, default='transparent', help='Final background: transparent/white')
     parser.add_argument('--debug', action='store_true', help='Debug modunu etkinleştir')
     
@@ -780,6 +789,7 @@ def main():
         far_ratio=args.far_ratio,
         close_ratio=args.close_ratio,
         interaction_ratio=args.interaction_ratio,
+        far_frame_margin=args.far_frame_margin,
         background_mode=args.background,
     )
 

@@ -51,6 +51,7 @@ class RenderPayload(BaseModel):
     otofigure_close_ratio: int = 2
     otofigure_interaction_ratio: int = 3
     otofigure_far_padding: float = 0.03
+    otofigure_far_frame_margin: float = 0.03
     otofigure_close_padding: float = 0.20
     receptors: list[str] = []
     run_by_receptor: dict[str, str] = {}

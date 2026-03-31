@@ -76,6 +76,7 @@ const DEFAULT_OTOFIGURE_OPTIONS = {
   closeRatio: 2,
   interactionRatio: 3,
   farPadding: 0.03,
+  farFrameMargin: 0.03,
   closePadding: 0.20,
 };
 
@@ -358,6 +359,7 @@ function initElements() {
   els.reportOtofigureCloseRatio = document.getElementById("reportOtofigureCloseRatio");
   els.reportOtofigureInteractionRatio = document.getElementById("reportOtofigureInteractionRatio");
   els.reportOtofigureFarPadding = document.getElementById("reportOtofigureFarPadding");
+  els.reportOtofigureFarFrameMargin = document.getElementById("reportOtofigureFarFrameMargin");
   els.reportOtofigureClosePadding = document.getElementById("reportOtofigureClosePadding");
   els.reportOtofigurePreviewStrip = document.getElementById("reportOtofigurePreviewStrip");
   els.reportOtofigurePreviewFarSafe = document.getElementById("reportOtofigurePreviewFarSafe");
@@ -3274,6 +3276,7 @@ function saveUIState() {
         reportOtofigureCloseRatio: String(els.reportOtofigureCloseRatio?.value || ""),
         reportOtofigureInteractionRatio: String(els.reportOtofigureInteractionRatio?.value || ""),
         reportOtofigureFarPadding: String(els.reportOtofigureFarPadding?.value || ""),
+        reportOtofigureFarFrameMargin: String(els.reportOtofigureFarFrameMargin?.value || ""),
         reportOtofigureClosePadding: String(els.reportOtofigureClosePadding?.value || ""),
         reportActiveTab: String(reportActiveTab || "images"),
         reportSelectedReceptors: Array.from(reportSelectedReceptors || []),
@@ -3364,6 +3367,7 @@ async function restoreUIState() {
   if (els.reportOtofigureCloseRatio && ui.reportOtofigureCloseRatio !== undefined) els.reportOtofigureCloseRatio.value = String(ui.reportOtofigureCloseRatio || DEFAULT_OTOFIGURE_OPTIONS.closeRatio);
   if (els.reportOtofigureInteractionRatio && ui.reportOtofigureInteractionRatio !== undefined) els.reportOtofigureInteractionRatio.value = String(ui.reportOtofigureInteractionRatio || DEFAULT_OTOFIGURE_OPTIONS.interactionRatio);
   if (els.reportOtofigureFarPadding && ui.reportOtofigureFarPadding !== undefined) els.reportOtofigureFarPadding.value = String(ui.reportOtofigureFarPadding || DEFAULT_OTOFIGURE_OPTIONS.farPadding);
+  if (els.reportOtofigureFarFrameMargin && ui.reportOtofigureFarFrameMargin !== undefined) els.reportOtofigureFarFrameMargin.value = String(ui.reportOtofigureFarFrameMargin || DEFAULT_OTOFIGURE_OPTIONS.farFrameMargin);
   if (els.reportOtofigureClosePadding && ui.reportOtofigureClosePadding !== undefined) els.reportOtofigureClosePadding.value = String(ui.reportOtofigureClosePadding || DEFAULT_OTOFIGURE_OPTIONS.closePadding);
   renderOtofigureLayoutPreview();
   reportActiveTab = String(ui.reportActiveTab || reportActiveTab || "images") || "images";
@@ -5221,6 +5225,7 @@ function bindEvents() {
     els.reportOtofigureCloseRatio,
     els.reportOtofigureInteractionRatio,
     els.reportOtofigureFarPadding,
+    els.reportOtofigureFarFrameMargin,
     els.reportOtofigureClosePadding,
   ].forEach((el) => {
     if (!el) return;
@@ -5581,6 +5586,7 @@ function bindEvents() {
     els.reportOtofigureCloseRatio,
     els.reportOtofigureInteractionRatio,
     els.reportOtofigureFarPadding,
+    els.reportOtofigureFarFrameMargin,
     els.reportOtofigureClosePadding,
     els.fixedGridSize,
     document.getElementById("testModeCheck"),
@@ -6473,6 +6479,7 @@ function getOtofigureSettingsFromUI() {
     closeRatio: clampInt(els.reportOtofigureCloseRatio?.value, DEFAULT_OTOFIGURE_OPTIONS.closeRatio, 1, 9),
     interactionRatio: clampInt(els.reportOtofigureInteractionRatio?.value, DEFAULT_OTOFIGURE_OPTIONS.interactionRatio, 1, 9),
     farPadding: clampFloat(els.reportOtofigureFarPadding?.value, DEFAULT_OTOFIGURE_OPTIONS.farPadding, 0, 0.5),
+    farFrameMargin: clampFloat(els.reportOtofigureFarFrameMargin?.value, DEFAULT_OTOFIGURE_OPTIONS.farFrameMargin, 0, 0.15),
     closePadding: clampFloat(els.reportOtofigureClosePadding?.value, DEFAULT_OTOFIGURE_OPTIONS.closePadding, 0, 1),
   };
 }
@@ -6481,7 +6488,7 @@ function renderOtofigureLayoutPreview() {
   if (!els.reportOtofigurePreviewStrip) return;
   const settings = getOtofigureSettingsFromUI();
   els.reportOtofigurePreviewStrip.style.gridTemplateColumns = `${settings.farRatio}fr ${settings.closeRatio}fr ${settings.interactionRatio}fr`;
-  const farInset = `${Math.max(6, Math.min(24, 6 + Math.round(settings.farPadding * 120)))}%`;
+  const farInset = `${Math.max(4, Math.min(22, 4 + Math.round(settings.farPadding * 70) + Math.round(settings.farFrameMargin * 120)))}%`;
   const closeInset = `${Math.max(10, Math.min(26, 8 + Math.round(settings.closePadding * 45)))}%`;
   if (els.reportOtofigurePreviewFarSafe) els.reportOtofigurePreviewFarSafe.style.inset = farInset;
   if (els.reportOtofigurePreviewCloseSafe) els.reportOtofigurePreviewCloseSafe.style.inset = closeInset;
@@ -6504,6 +6511,7 @@ function resetOtofigureOptionsToDefault() {
   if (els.reportOtofigureCloseRatio) els.reportOtofigureCloseRatio.value = String(DEFAULT_OTOFIGURE_OPTIONS.closeRatio);
   if (els.reportOtofigureInteractionRatio) els.reportOtofigureInteractionRatio.value = String(DEFAULT_OTOFIGURE_OPTIONS.interactionRatio);
   if (els.reportOtofigureFarPadding) els.reportOtofigureFarPadding.value = String(DEFAULT_OTOFIGURE_OPTIONS.farPadding);
+  if (els.reportOtofigureFarFrameMargin) els.reportOtofigureFarFrameMargin.value = String(DEFAULT_OTOFIGURE_OPTIONS.farFrameMargin);
   if (els.reportOtofigureClosePadding) els.reportOtofigureClosePadding.value = String(DEFAULT_OTOFIGURE_OPTIONS.closePadding);
   applyOtofigureStylePreset(DEFAULT_OTOFIGURE_OPTIONS.style);
 }
@@ -7881,6 +7889,7 @@ async function initiateRender(isPreview) {
       otofigure_close_ratio: otofigureSettings.closeRatio,
       otofigure_interaction_ratio: otofigureSettings.interactionRatio,
       otofigure_far_padding: otofigureSettings.farPadding,
+      otofigure_far_frame_margin: otofigureSettings.farFrameMargin,
       otofigure_close_padding: otofigureSettings.closePadding,
       receptors,
       run_by_receptor: runByReceptor,

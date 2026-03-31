@@ -217,6 +217,10 @@ def run(
     except Exception:
         far_padding = 0.03
     try:
+        far_frame_margin = max(0.0, min(0.15, float(render_options.get("far_frame_margin", 0.03))))
+    except Exception:
+        far_frame_margin = 0.03
+    try:
         close_padding = max(0.0, min(1.0, float(render_options.get("close_padding", 0.20))))
     except Exception:
         close_padding = 0.20
@@ -352,6 +356,8 @@ def run(
             str(close_ratio),
             "--interaction-ratio",
             str(interaction_ratio),
+            "--far-frame-margin",
+            str(far_frame_margin),
             "--background",
             background_mode,
         ],
@@ -411,5 +417,6 @@ def run(
         "close_ratio": close_ratio,
         "interaction_ratio": interaction_ratio,
         "far_padding": far_padding,
+        "far_frame_margin": far_frame_margin,
         "close_padding": close_padding,
     }
