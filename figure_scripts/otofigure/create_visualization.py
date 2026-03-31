@@ -118,6 +118,32 @@ def _trim_transparent_content(image, padding=28):
     return image[top:bottom, left:right].copy()
 
 
+def _content_bbox(image, padding=0):
+    if image is None:
+        return None
+    if len(image.shape) == 3 and image.shape[2] == 4:
+        active = image[:, :, 3] > 10
+    else:
+        bgr = _as_bgr(image)
+        active = np.any(bgr < 245, axis=2)
+    points = cv2.findNonZero(active.astype(np.uint8))
+    if points is None:
+        return None
+    x, y, width, height = cv2.boundingRect(points)
+    left = max(0, x - padding)
+    top = max(0, y - padding)
+    right = min(image.shape[1], x + width + padding)
+    bottom = min(image.shape[0], y + height + padding)
+    return left, top, right, bottom
+
+
+def _crop_to_bbox(image, bbox):
+    if image is None or bbox is None:
+        return image
+    left, top, right, bottom = bbox
+    return image[top:bottom, left:right].copy()
+
+
 def _alpha_compose_centered(canvas, image, box):
     left, top, right, bottom = box
     target = _fit_image_to_box(image, right - left, bottom - top)
@@ -350,6 +376,22 @@ def create_visualization(
             print(f"Hata: Görüntüler okunamadı - Far: {far_view_path}, Close: {close_view_path}")
             return False
         
+        original_far_shape = far_view.shape[:2]
+
+        # FAR_VIEW için mümkünse ligand-only yardımcı çıktıyı kullan
+        far_focus_view = far_view
+        if os.path.exists(far_focus_path):
+            helper_image = _load_image_preserve_alpha(far_focus_path)
+            if helper_image is not None:
+                far_focus_view = helper_image
+
+        far_crop_padding = max(8, int(round(min(far_view.shape[0], far_view.shape[1]) * 0.03)))
+        far_crop_bbox = _content_bbox(far_view, padding=far_crop_padding)
+        if far_crop_bbox is not None:
+            far_view = _crop_to_bbox(far_view, far_crop_bbox)
+            if far_focus_view is not None and far_focus_view.shape[:2] == original_far_shape:
+                far_focus_view = _crop_to_bbox(far_focus_view, far_crop_bbox)
+
         # Interaction haritasını yükle veya boş bir görüntü oluştur
         if interaction_map_exists:
             interaction_map = _load_image_preserve_alpha(interaction_map_path)
@@ -378,13 +420,6 @@ def create_visualization(
         cv2.circle(debug_close_view, (0, 0), RED_CIRCLE_RADIUS, (0, 0, 255), -1)
         # Sol alt köşe - 1. görsel ile aynı boyutta olması için RED_CIRCLE_RADIUS değerini kullan
         cv2.circle(debug_close_view, (0, size_close-1), RED_CIRCLE_RADIUS, (0, 0, 255), -1)
-        
-        # FAR_VIEW için mümkünse ligand-only yardımcı çıktıyı kullan
-        far_focus_view = far_view
-        if os.path.exists(far_focus_path):
-            helper_image = _load_image_preserve_alpha(far_focus_path)
-            if helper_image is not None:
-                far_focus_view = helper_image
 
         # FAR_VIEW'da RGB bölgelerini bul
         x_far, y_far, size_far, far_contours = find_rgb_regions(far_focus_view)

@@ -73,6 +73,22 @@ def test_trim_transparent_content_reduces_empty_canvas() -> None:
     assert cropped[:, :, 3].max() == 255
 
 
+def test_content_bbox_detects_visible_region_inside_transparent_far_panel() -> None:
+    image = np.zeros((180, 320, 4), dtype=np.uint8)
+    image[48:136, 92:236] = (220, 225, 244, 180)
+
+    bbox = create_visualization._content_bbox(image, padding=10)
+
+    assert bbox is not None
+    left, top, right, bottom = bbox
+    assert left < 92
+    assert top < 48
+    assert right > 236
+    assert bottom > 136
+    assert (right - left) < image.shape[1]
+    assert (bottom - top) < image.shape[0]
+
+
 def test_create_visualization_supports_white_background_and_custom_ratios(tmp_path: Path) -> None:
     input_dir = tmp_path / "results"
     output_dir = tmp_path / "final_results"
