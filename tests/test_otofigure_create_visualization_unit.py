@@ -71,3 +71,44 @@ def test_trim_transparent_content_reduces_empty_canvas() -> None:
     assert cropped.shape[1] < image.shape[1]
     assert cropped.shape[2] == 4
     assert cropped[:, :, 3].max() == 255
+
+
+def test_create_visualization_supports_white_background_and_custom_ratios(tmp_path: Path) -> None:
+    input_dir = tmp_path / "results"
+    output_dir = tmp_path / "final_results"
+    interaction_dir = tmp_path / "interaction"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    interaction_dir.mkdir(parents=True, exist_ok=True)
+
+    _make_transparent_panel(
+        input_dir / "6cm4_demo_far.png",
+        size=(420, 300),
+        ligand_box=(180, 90, 250, 180),
+    )
+    _make_transparent_panel(
+        input_dir / "6cm4_demo_close.png",
+        size=(300, 300),
+        ligand_box=(95, 55, 205, 245),
+    )
+
+    ok = create_visualization.create_visualization(
+        str(input_dir / "6cm4_demo_far.png"),
+        output_dir=str(output_dir),
+        interaction_dir=str(interaction_dir),
+        debug=False,
+        dpi=120,
+        far_ratio=5,
+        close_ratio=2,
+        interaction_ratio=4,
+        background_mode="white",
+    )
+
+    assert ok is True
+    out_path = output_dir / "6cm4_demo_final.png"
+    assert out_path.exists()
+
+    with Image.open(out_path) as image_obj:
+        rgba = image_obj.convert("RGBA")
+        assert rgba.getpixel((0, 0))[3] == 255
+        assert image_obj.size[0] > image_obj.size[1]

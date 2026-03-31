@@ -52,6 +52,16 @@ def test_otofigure_pipeline_stages_case_layout_and_copies_final_png(
         if script_name == "final_dinamik.py":
             dpi_arg = cmd[cmd.index("--dpi") + 1]
             assert dpi_arg == "30"
+            assert cmd[cmd.index("--style-preset") + 1] == "ligand_focus"
+            assert cmd[cmd.index("--ray-trace") + 1] == "0"
+            assert cmd[cmd.index("--render-engine") + 1] == "fast_draw"
+            assert cmd[cmd.index("--background") + 1] == "white"
+            assert cmd[cmd.index("--surface-mode") + 1] == "0"
+            assert cmd[cmd.index("--surface-opacity") + 1] == "0.65"
+            assert cmd[cmd.index("--protein-color") + 1] == "slate"
+            assert cmd[cmd.index("--ligand-thickness") + 1] == "0.31"
+            assert cmd[cmd.index("--far-padding") + 1] == "0.04"
+            assert cmd[cmd.index("--close-padding") + 1] == "0.18"
             Image.new("RGBA", (400, 300), "white").save(Path(cwd, "results", "3pbl_run1_far.png"))
             Image.new("RGBA", (400, 300), "white").save(Path(cwd, "results", "3pbl_run1_close.png"))
         elif script_name == "render_interaction_maps.py":
@@ -59,6 +69,10 @@ def test_otofigure_pipeline_stages_case_layout_and_copies_final_png(
         elif script_name == "create_visualization.py":
             dpi_arg = cmd[cmd.index("--dpi") + 1]
             assert dpi_arg == "30"
+            assert cmd[cmd.index("--far-ratio") + 1] == "5"
+            assert cmd[cmd.index("--close-ratio") + 1] == "2"
+            assert cmd[cmd.index("--interaction-ratio") + 1] == "4"
+            assert cmd[cmd.index("--background") + 1] == "white"
             img = Image.new("RGBA", (1200, 320), (255, 255, 255, 0))
             draw = ImageDraw.Draw(img)
             draw.rectangle((150, 60, 260, 170), fill=(255, 255, 255, 255))
@@ -84,6 +98,21 @@ def test_otofigure_pipeline_stages_case_layout_and_copies_final_png(
         output_png=output_png,
         work_dir=tmp_path / "work",
         dpi=30,
+        style_preset="ligand_focus",
+        ray_trace=False,
+        options={
+            "render_engine": "fast_draw",
+            "background": "white",
+            "surface_enabled": False,
+            "surface_opacity": 0.65,
+            "protein_color": "slate",
+            "ligand_thickness": 0.31,
+            "far_padding": 0.04,
+            "close_padding": 0.18,
+            "far_ratio": 5,
+            "close_ratio": 2,
+            "interaction_ratio": 4,
+        },
         preview_mode=False,
     )
 
@@ -117,6 +146,9 @@ def test_otofigure_pipeline_limits_to_first_five_runs(tmp_path: Path, monkeypatc
         if script_name == "final_dinamik.py":
             dpi_arg = cmd[cmd.index("--dpi") + 1]
             assert dpi_arg == "30"
+            assert cmd[cmd.index("--style-preset") + 1] == "balanced"
+            assert cmd[cmd.index("--ray-trace") + 1] == "1"
+            assert cmd[cmd.index("--render-engine") + 1] == "ray"
             Image.new("RGBA", (200, 150), "white").save(Path(cwd, "results", "6cm4_run1_far.png"))
             Image.new("RGBA", (200, 150), "white").save(Path(cwd, "results", "6cm4_run1_close.png"))
         elif script_name == "render_interaction_maps.py":
@@ -124,6 +156,9 @@ def test_otofigure_pipeline_limits_to_first_five_runs(tmp_path: Path, monkeypatc
         elif script_name == "create_visualization.py":
             dpi_arg = cmd[cmd.index("--dpi") + 1]
             assert dpi_arg == "30"
+            assert cmd[cmd.index("--far-ratio") + 1] == "4"
+            assert cmd[cmd.index("--close-ratio") + 1] == "2"
+            assert cmd[cmd.index("--interaction-ratio") + 1] == "3"
             Image.new("RGBA", (600, 180), "white").save(Path(cwd, "final_results", "6cm4_run1_final.png"))
         elif script_name == "final_formatter.py":
             dpi_arg = cmd[cmd.index("--render_dpi") + 1]

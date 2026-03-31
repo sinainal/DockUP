@@ -22,12 +22,35 @@ DEFAULT_DPI = 300  # Çıkış DPI değeri
 INPUT_DIR = "results"  # Giriş klasörü
 OUTPUT_DIR = "final_results"  # Çıkış klasörü
 INTERACTION_DIR = "interaction"  # Etkileşim haritaları klasörü
-WIDTH_RATIOS = [4, 3, 4]  # Görsellerin genişlik oranları [far_view, close_view, interaction_map]
+WIDTH_RATIOS = [4, 2, 3]  # Görsellerin genişlik oranları [far_view, close_view, interaction_map]
 FIG_WIDTH = 14  # Figür genişliği (inç olarak)
 PADDING_PERCENT = 7  # Kare etrafındaki ek boşluk (yüzde)
 BORDER_THICKNESS = 1  # Çerçeve kalınlığı
 CONNECTOR_THICKNESS = 0.75  # Bağlantı çizgilerinin kalınlığı
 RED_CIRCLE_RADIUS = 7  # Kırmızı kürelerin yarıçapı
+
+
+def _normalize_width_ratios(far_ratio=None, close_ratio=None, interaction_ratio=None):
+    raw_values = [
+        WIDTH_RATIOS[0] if far_ratio is None else far_ratio,
+        WIDTH_RATIOS[1] if close_ratio is None else close_ratio,
+        WIDTH_RATIOS[2] if interaction_ratio is None else interaction_ratio,
+    ]
+    normalized = []
+    for value in raw_values:
+        try:
+            number = int(round(float(value)))
+        except Exception:
+            number = 1
+        normalized.append(max(1, min(9, number)))
+    return normalized
+
+
+def _normalize_background_mode(raw_value):
+    value = str(raw_value or "").strip().lower()
+    if value in {"transparent", "white"}:
+        return value
+    return "transparent"
 
 
 def _load_image_preserve_alpha(path):
@@ -268,6 +291,10 @@ def create_visualization(
     interaction_dir=INTERACTION_DIR,
     debug=False,
     dpi=DEFAULT_DPI,
+    far_ratio=None,
+    close_ratio=None,
+    interaction_ratio=None,
+    background_mode="transparent",
 ):
     """
     Belirtilen dosyaları kullanarak görselleştirmeyi oluştur
@@ -283,6 +310,9 @@ def create_visualization(
     """
     global DEBUG_OUTPUT
     DEBUG_OUTPUT = debug
+    width_ratios = _normalize_width_ratios(far_ratio, close_ratio, interaction_ratio)
+    background_mode = _normalize_background_mode(background_mode)
+    canvas_background = (255, 255, 255, 0) if background_mode == "transparent" else (255, 255, 255, 255)
     
     try:
         # Dosya adından bilgileri çıkar
@@ -301,6 +331,7 @@ def create_visualization(
         base_dir = os.path.dirname(input_filename)
         far_view_path = os.path.join(base_dir, f"{pdb_id}_{zinc_id}_far.png")
         close_view_path = os.path.join(base_dir, f"{pdb_id}_{zinc_id}_close.png")
+        far_focus_path = os.path.join(base_dir, f"{pdb_id}_{zinc_id}_far_focus.png")
         
         # Interaction haritası dosya yolunu belirle
         interaction_map_path = os.path.join(interaction_dir, f"{pdb_id}_{zinc_id}_interaction.png")
@@ -348,8 +379,15 @@ def create_visualization(
         # Sol alt köşe - 1. görsel ile aynı boyutta olması için RED_CIRCLE_RADIUS değerini kullan
         cv2.circle(debug_close_view, (0, size_close-1), RED_CIRCLE_RADIUS, (0, 0, 255), -1)
         
+        # FAR_VIEW için mümkünse ligand-only yardımcı çıktıyı kullan
+        far_focus_view = far_view
+        if os.path.exists(far_focus_path):
+            helper_image = _load_image_preserve_alpha(far_focus_path)
+            if helper_image is not None:
+                far_focus_view = helper_image
+
         # FAR_VIEW'da RGB bölgelerini bul
-        x_far, y_far, size_far, far_contours = find_rgb_regions(far_view)
+        x_far, y_far, size_far, far_contours = find_rgb_regions(far_focus_view)
         
         # DEBUG GÖRSELİ İÇİN FAR_VIEW KOPYASI
         debug_far_view = _as_bgr(far_view.copy())
@@ -379,7 +417,7 @@ def create_visualization(
         
         # En/boy oranını koruyarak figür yüksekliğini hesapla
         normalized_heights = []
-        for i, ratio in enumerate(WIDTH_RATIOS):
+        for i, ratio in enumerate(width_ratios):
             if i == 0:
                 normalized_heights.append(far_view.shape[0] / far_view.shape[1] * ratio)
             elif i == 1:
@@ -388,7 +426,7 @@ def create_visualization(
                 normalized_heights.append(interaction_map.shape[0] / interaction_map.shape[1] * ratio)
         
         # Yükseklik faktörünü hesapla
-        height_factor = max(normalized_heights) / sum(WIDTH_RATIOS)
+        height_factor = max(normalized_heights) / sum(width_ratios)
         
         # Figür yüksekliğini hesapla
         fig_height = fig_width * height_factor * 1.2  # 1.2 faktörü biraz daha yükseklik ekler
@@ -403,11 +441,18 @@ def create_visualization(
         # ----- DEBUG GÖRSELİ OLUŞTUR -----
         if DEBUG_OUTPUT:
             plt.ioff()  # Etkileşimli modu kapat
-            fig, axs = plt.subplots(1, 3, figsize=(fig_width, fig_height), gridspec_kw={'width_ratios': WIDTH_RATIOS})
-            fig.patch.set_alpha(0)
+            fig, axs = plt.subplots(1, 3, figsize=(fig_width, fig_height), gridspec_kw={'width_ratios': width_ratios})
+            if background_mode == "transparent":
+                fig.patch.set_alpha(0)
+            else:
+                fig.patch.set_facecolor((1, 1, 1, 1))
             for ax in axs:
-                ax.set_facecolor((1, 1, 1, 0))
-                ax.patch.set_alpha(0)
+                if background_mode == "transparent":
+                    ax.set_facecolor((1, 1, 1, 0))
+                    ax.patch.set_alpha(0)
+                else:
+                    ax.set_facecolor((1, 1, 1, 1))
+                    ax.patch.set_alpha(1)
             
             # RGB bölgeleri ve kırmızı kürelerle işaretlenmiş far_view
             axs[0].imshow(debug_far_view_rgb)
@@ -448,11 +493,18 @@ def create_visualization(
         
         # ----- FINAL GÖRSELİ OLUŞTUR -----
         plt.ioff()  # Etkileşimli modu kapat
-        fig, axs = plt.subplots(1, 3, figsize=(fig_width, fig_height), gridspec_kw={'width_ratios': WIDTH_RATIOS})
-        fig.patch.set_alpha(0)
+        fig, axs = plt.subplots(1, 3, figsize=(fig_width, fig_height), gridspec_kw={'width_ratios': width_ratios})
+        if background_mode == "transparent":
+            fig.patch.set_alpha(0)
+        else:
+            fig.patch.set_facecolor((1, 1, 1, 1))
         for ax in axs:
-            ax.set_facecolor((1, 1, 1, 0))
-            ax.patch.set_alpha(0)
+            if background_mode == "transparent":
+                ax.set_facecolor((1, 1, 1, 0))
+                ax.patch.set_alpha(0)
+            else:
+                ax.set_facecolor((1, 1, 1, 1))
+                ax.patch.set_alpha(1)
         
         # Orijinal far_view
         axs[0].imshow(far_view_rgb)
@@ -477,7 +529,7 @@ def create_visualization(
         # Aynı koordinatları kullanarak çizgileri çiz (kırmızı noktasız)
         canvas_width = int(round(fig.get_figwidth() * dpi))
         canvas_height = int(round(fig.get_figheight() * dpi))
-        pil_canvas = Image.new("RGBA", (canvas_width, canvas_height), (255, 255, 255, 0))
+        pil_canvas = Image.new("RGBA", (canvas_width, canvas_height), canvas_background)
 
         far_image = Image.fromarray(far_view_rgb, mode="RGBA")
         close_image = Image.fromarray(cropped_close_rgb, mode="RGBA")
@@ -568,6 +620,10 @@ def process_results_dir(
     interaction_dir=INTERACTION_DIR,
     debug=False,
     dpi=DEFAULT_DPI,
+    far_ratio=None,
+    close_ratio=None,
+    interaction_ratio=None,
+    background_mode="transparent",
 ):
     """
     Results klasöründeki tüm PNG dosyalarını işler.
@@ -622,7 +678,17 @@ def process_results_dir(
                 log_file.write(log_message + "\n")
                 
                 # Görselleştirmeyi oluştur
-                result = create_visualization(png_file, output_dir, interaction_dir, debug, dpi=dpi)
+                result = create_visualization(
+                    png_file,
+                    output_dir,
+                    interaction_dir,
+                    debug,
+                    dpi=dpi,
+                    far_ratio=far_ratio,
+                    close_ratio=close_ratio,
+                    interaction_ratio=interaction_ratio,
+                    background_mode=background_mode,
+                )
                 
                 # Kombinasyonu işlenmiş olarak işaretle
                 processed_combinations.add((pdb_id, zinc_id))
@@ -661,12 +727,26 @@ def main():
     parser.add_argument('--output_dir', type=str, default=OUTPUT_DIR, help='Çıkış klasörünün yolu')
     parser.add_argument('--interaction_dir', type=str, default=INTERACTION_DIR, help='Etkileşim haritaları klasörünün yolu')
     parser.add_argument('--dpi', type=int, default=DEFAULT_DPI, help='Çıkış DPI değeri')
+    parser.add_argument('--far-ratio', type=int, default=WIDTH_RATIOS[0], help='Far panel width ratio')
+    parser.add_argument('--close-ratio', type=int, default=WIDTH_RATIOS[1], help='Close panel width ratio')
+    parser.add_argument('--interaction-ratio', type=int, default=WIDTH_RATIOS[2], help='Interaction panel width ratio')
+    parser.add_argument('--background', type=str, default='transparent', help='Final background: transparent/white')
     parser.add_argument('--debug', action='store_true', help='Debug modunu etkinleştir')
     
     args = parser.parse_args()
     
     # Results klasöründeki tüm PNG dosyalarını işle
-    process_results_dir(args.input_dir, args.output_dir, args.interaction_dir, args.debug, dpi=args.dpi)
+    process_results_dir(
+        args.input_dir,
+        args.output_dir,
+        args.interaction_dir,
+        args.debug,
+        dpi=args.dpi,
+        far_ratio=args.far_ratio,
+        close_ratio=args.close_ratio,
+        interaction_ratio=args.interaction_ratio,
+        background_mode=args.background,
+    )
 
 if __name__ == "__main__":
     main() 

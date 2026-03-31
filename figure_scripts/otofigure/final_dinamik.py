@@ -20,7 +20,7 @@ IMAGE_DPI = 10          # Görsel çözünürlüğü (DPI)
 
 # Padding Ayarları (Görünüm alanı payı)
 # Not: Bu değerler, hesaplanan protein/ligand köşegeninin çarpım faktörüdür
-FAR_PADDING_FACTOR = 0.03    # Uzak görünüm payı (proteinin köşegeni × bu faktör)
+FAR_PADDING_FACTOR = 0.015    # Uzak görünüm payı (proteinin köşegeni × bu faktör)
 CLOSE_PADDING_FACTOR = 0.2   # Yakın görünüm payı (ligandların köşegeni × bu faktör)
 
 # Sabit değerler istenirse, bu değişkenleri kullanın (0 = otomatik hesaplama)
@@ -38,7 +38,134 @@ VECTOR_CYLINDER_RADIUS = 0.3  # Merkezler arası vektör kalınlığı
 # Ligand dik pozisyon ayarları
 Z_ROTATION_ANGLE = 90   # Z ekseni etrafında rotasyon açısı (derece)
 
+STYLE_PRESETS = {
+    "balanced": {
+        "protein_color": "bluewhite",
+        "cartoon_color": "gray70",
+        "surface_transparency": 0.62,
+        "cartoon_transparency": 0.0,
+        "stick_radius": 0.22,
+        "stick_transparency": 0.0,
+        "surface_mode": True,
+    },
+    "ligand_focus": {
+        "protein_color": "gray80",
+        "cartoon_color": "gray60",
+        "surface_transparency": 0.66,
+        "cartoon_transparency": 0.10,
+        "stick_radius": 0.28,
+        "stick_transparency": 0.0,
+        "surface_mode": True,
+    },
+    "surface_focus": {
+        "protein_color": "lightblue",
+        "cartoon_color": "gray70",
+        "surface_transparency": 0.34,
+        "cartoon_transparency": 0.0,
+        "stick_radius": 0.20,
+        "stick_transparency": 0.0,
+        "surface_mode": True,
+    },
+}
+
 # ==========================================
+
+
+def _clamp_float(value, minimum, maximum):
+    return max(minimum, min(maximum, float(value)))
+
+
+def normalize_style_preset(raw_value):
+    value = str(raw_value or "").strip().lower()
+    if value in STYLE_PRESETS:
+        return value
+    return "balanced"
+
+
+def normalize_render_engine(raw_value):
+    value = str(raw_value or "").strip().lower()
+    if value in {"ray", "opengl", "fast_draw"}:
+        return value
+    return "ray"
+
+
+def normalize_background_mode(raw_value):
+    value = str(raw_value or "").strip().lower()
+    if value in {"transparent", "white"}:
+        return value
+    return "transparent"
+
+
+def get_style_config(style_preset, overrides=None):
+    style = dict(STYLE_PRESETS.get(normalize_style_preset(style_preset), STYLE_PRESETS["balanced"]))
+    for key, value in dict(overrides or {}).items():
+        if value is None:
+            continue
+        style[key] = value
+    return style
+
+
+def apply_scene_style(loaded_ligands, style_preset, overrides=None):
+    style = get_style_config(style_preset, overrides=overrides)
+    cmd.hide("everything")
+    cmd.show("cartoon", "protein")
+    if style.get("surface_mode", True):
+        cmd.show("surface", "protein")
+    else:
+        cmd.hide("surface", "protein")
+    cmd.set("transparency", float(style["surface_transparency"]), "protein")
+    cmd.set("cartoon_transparency", float(style["cartoon_transparency"]), "protein")
+    cmd.color(str(style["protein_color"]), "protein")
+    try:
+        cmd.color(str(style.get("protein_color", "bluewhite")), "protein and rep surface")
+        cmd.color(str(style.get("cartoon_color", "gray70")), "protein and rep cartoon")
+    except Exception:
+        pass
+
+    ligand_selector = " or ".join(loaded_ligands)
+    if ligand_selector:
+        cmd.show("sticks", ligand_selector)
+        cmd.set_bond("stick_radius", float(style["stick_radius"]), ligand_selector)
+        cmd.set_bond("stick_transparency", float(style["stick_transparency"]), ligand_selector)
+    return ligand_selector, style
+
+
+def render_far_focus_helper(output_path, loaded_ligands, *, image_width, image_height, image_dpi, use_ray_trace, style):
+    if not loaded_ligands:
+        return
+    helper_view = cmd.get_view()
+    cmd.hide("everything")
+    ligand_selector = " or ".join(loaded_ligands)
+    cmd.show("sticks", ligand_selector)
+    helper_radius = max(0.28, float(style.get("stick_radius", 0.22)) * 1.35)
+    cmd.set_bond("stick_radius", helper_radius, ligand_selector)
+    cmd.set_bond("stick_transparency", 0.0, ligand_selector)
+    ligand_colors = ["red", "green", "blue", "purple", "orange"]
+    for ligand_name, ligand_color in zip(loaded_ligands, ligand_colors):
+        cmd.color(ligand_color, ligand_name)
+    cmd.set_view(helper_view)
+    cmd.png(output_path, width=image_width, height=image_height, dpi=image_dpi, ray=1 if use_ray_trace else 0)
+    cmd.set_view(helper_view)
+
+
+def configure_render_options(render_engine, *, background_mode="transparent"):
+    mode = normalize_render_engine(render_engine)
+    use_ray_trace = mode == "ray"
+    use_draw_mode = mode == "fast_draw"
+    cmd.set("ray_trace_mode", 0)
+    cmd.set("ray_shadows", 0)
+    cmd.set("ray_opaque_background", 0 if normalize_background_mode(background_mode) == "transparent" else 1)
+    cmd.set("depth_cue", 0)
+    cmd.set("orthoscopic", 1)
+    cmd.set("surface_quality", 0)
+    if use_ray_trace:
+        antialias_value = 2
+    elif use_draw_mode:
+        antialias_value = 0
+    else:
+        antialias_value = 1
+    cmd.set("antialias", antialias_value)
+    return use_ray_trace, use_draw_mode
 
 def bul_protein_dosyasi(protein_klasoru):
     """
@@ -55,7 +182,24 @@ def bul_protein_dosyasi(protein_klasoru):
         return pdb_dosyalari[0]  # İlk bulunan PDB dosyasını döndür
     return None
 
-def final_gorselleştirme(pdb_id=None, ligands_dir=None, output_dir="results", image_width=IMAGE_WIDTH, image_height=IMAGE_HEIGHT, image_dpi=IMAGE_DPI):
+def final_gorselleştirme(
+    pdb_id=None,
+    ligands_dir=None,
+    output_dir="results",
+    image_width=IMAGE_WIDTH,
+    image_height=IMAGE_HEIGHT,
+    image_dpi=IMAGE_DPI,
+    style_preset="balanced",
+    ray_trace=True,
+    render_engine="ray",
+    background_mode="transparent",
+    surface_mode=None,
+    surface_opacity=None,
+    protein_color=None,
+    ligand_stick_radius=None,
+    far_padding_factor=None,
+    close_padding_factor=None,
+):
     """
     Hizala3.py'nin poz mekanizması ve renkler.py'nin renk ayarlarını birleştiren sade kod.
     Protein ve ligand boyutlarına göre padding'i otomatik hesaplar.
@@ -79,6 +223,29 @@ def final_gorselleştirme(pdb_id=None, ligands_dir=None, output_dir="results", i
     IMAGE_WIDTH = image_width
     IMAGE_HEIGHT = image_height
     IMAGE_DPI = image_dpi
+    style_preset = normalize_style_preset(style_preset)
+    background_mode = normalize_background_mode(background_mode)
+    normalized_engine = normalize_render_engine(render_engine)
+    if normalized_engine == "ray":
+        normalized_engine = "ray" if bool(ray_trace) else "opengl"
+    use_ray_trace = normalized_engine == "ray"
+    use_draw_mode = normalized_engine == "fast_draw"
+    effective_far_padding_factor = _clamp_float(
+        FAR_PADDING_FACTOR if far_padding_factor is None else far_padding_factor,
+        0.0,
+        0.5,
+    )
+    effective_close_padding_factor = _clamp_float(
+        CLOSE_PADDING_FACTOR if close_padding_factor is None else close_padding_factor,
+        0.0,
+        1.0,
+    )
+    style_overrides = {
+        "surface_mode": bool(surface_mode) if surface_mode is not None else None,
+        "surface_transparency": _clamp_float(surface_opacity, 0.0, 1.0) if surface_opacity is not None else None,
+        "protein_color": str(protein_color).strip() if protein_color else None,
+        "stick_radius": _clamp_float(ligand_stick_radius, 0.05, 0.8) if ligand_stick_radius is not None else None,
+    }
     
     print("Görsel ayarları:")
     print(f"  * Boyut: {IMAGE_WIDTH}x{IMAGE_HEIGHT} piksel")
@@ -87,15 +254,18 @@ def final_gorselleştirme(pdb_id=None, ligands_dir=None, output_dir="results", i
     if FIXED_FAR_PADDING > 0:
         print(f"  * Uzak görünüm payı: {FIXED_FAR_PADDING} Å (sabit)")
     else:
-        print(f"  * Uzak görünüm payı: protein köşegeninin {FAR_PADDING_FACTOR*100}%'i")
+        print(f"  * Uzak görünüm payı: protein köşegeninin {effective_far_padding_factor*100}%'i")
     
     if FIXED_CLOSE_PADDING > 0:
         print(f"  * Yakın görünüm payı: {FIXED_CLOSE_PADDING} Å (sabit)")
     else:
-        print(f"  * Yakın görünüm payı: ligand köşegeninin {CLOSE_PADDING_FACTOR*100}%'i")
+        print(f"  * Yakın görünüm payı: ligand köşegeninin {effective_close_padding_factor*100}%'i")
     
-    print(f"Ligand pozisyon ayarları:")
+    print("Ligand pozisyon ayarları:")
     print(f"  * Z ekseni rotasyon açısı: {Z_ROTATION_ANGLE} derece")
+    print(f"  * Görsel stil: {style_preset}")
+    print(f"  * Render engine: {normalized_engine}")
+    print(f"  * Ray trace: {'on' if use_ray_trace else 'off'}")
     
     # Çalışma klasörünü belirle
     current_dir = os.getcwd()
@@ -191,38 +361,23 @@ def final_gorselleştirme(pdb_id=None, ligands_dir=None, output_dir="results", i
         print("Hata: Hiçbir ligand başarıyla yüklenemedi!")
         return False
     
-    # ----- RENKLER.PY'DEN ALINAN RENK AYARLARI -----
-    
-    # Tüm görünümleri gizle önce
-    cmd.hide("everything")
-    
-    # Protein görünümünü ayarla
-    cmd.show("cartoon", "protein")
-    cmd.show("surface", "protein")
-    cmd.set("transparency", 0.5, "protein")
-    
-    # Ligandları stick olarak göster - her bir ligandı tek tek ayarla
-    ligand_selector = " or ".join(loaded_ligands)
+    # ----- RENK VE SAHNE AYARLARI -----
+
+    ligand_selector, resolved_style = apply_scene_style(loaded_ligands, style_preset, overrides=style_overrides)
     if ligand_selector:
         print(f"Gösterilecek ligandlar: {ligand_selector}")
-        cmd.show("sticks", ligand_selector)
-    
-    # Renk ayarları (renkler.py'den)
+
     cmd.color("hydrogen")                # Hidrojen atomları
     ligand_colors = ["red", "green", "blue", "purple", "orange"]
     for ligand_name, ligand_color in zip(loaded_ligands, ligand_colors):
         cmd.color(ligand_color, ligand_name)
-    cmd.color("bluewhite", "protein")    # Protein: açık mavi
     
     # Genel görünüm ayarları
-    cmd.bg_color("white")                # Arka plan: beyaz
+    cmd.bg_color("white")
     cmd.space("cmyk")                    # Renk uzayı: cmyk
     
     # Render ayarlarını optimize et
-    cmd.set("ray_trace_mode", 0)         # Kaliteli render modu
-    cmd.set("ray_shadows", 0)            # Gölgeleri kapat (hızlandırmak için)
-    cmd.set("ray_opaque_background", 0)  # Opak arka plan
-    cmd.set("depth_cue", 0)              # Derinlik efektini kapat
+    use_ray_trace, use_draw_mode = configure_render_options(normalized_engine, background_mode=background_mode)
     
     # ----- DAHA HASSAS PADDİNG HESAPLAMA (REVİZE EDİLMİŞ) -----
     
@@ -255,12 +410,12 @@ def final_gorselleştirme(pdb_id=None, ligands_dir=None, output_dir="results", i
     if FIXED_FAR_PADDING > 0:
         far_padding = FIXED_FAR_PADDING
     else:
-        far_padding = protein_diagonal * FAR_PADDING_FACTOR
+        far_padding = protein_diagonal * effective_far_padding_factor
     
     if FIXED_CLOSE_PADDING > 0:
         close_padding = FIXED_CLOSE_PADDING
     else:
-        close_padding = ligand_diagonal * CLOSE_PADDING_FACTOR
+        close_padding = ligand_diagonal * effective_close_padding_factor
     
     print(f"\nHesaplanan değerler:")
     print(f"  * Protein köşegen boyutu: {protein_diagonal:.2f} Å")
@@ -331,14 +486,7 @@ def final_gorselleştirme(pdb_id=None, ligands_dir=None, output_dir="results", i
     print("\nUzak görünüm (protein odaklı) oluşturuluyor...")
     
     # Tüm seçimleri ve görünümleri yeniden ayarla
-    cmd.hide("everything")
-    cmd.show("cartoon", "protein")
-    cmd.show("surface", "protein")
-    cmd.set("transparency", 0.5, "protein")
-    
-    if loaded_ligands:
-        # Her bir ligandı tek tek ayarla
-        cmd.show("sticks", ligand_selector)
+    ligand_selector, _ = apply_scene_style(loaded_ligands, style_preset, overrides=style_overrides)
     
     # Eğer ağırlık merkezlerini göster seçeneği aktifse, onları da göster
     if SHOW_CENTERS:
@@ -399,23 +547,28 @@ def final_gorselleştirme(pdb_id=None, ligands_dir=None, output_dir="results", i
     
     # Uzak görünümün PNG görselini oluştur
     far_image_file = os.path.join(output_dir, f"{far_base_name}.png")
+    far_focus_file = os.path.join(output_dir, f"{pdb_id}_{zinc_id}_far_focus.png")
     
     # Ray-traced render ile görsel oluştur
     print(f"Uzak görünüm render ediliyor... ({IMAGE_WIDTH}x{IMAGE_HEIGHT}, {IMAGE_DPI} dpi)")
-    cmd.png(far_image_file, width=IMAGE_WIDTH, height=IMAGE_HEIGHT, dpi=IMAGE_DPI, ray=1)
+    if use_draw_mode and not use_ray_trace:
+        cmd.draw()
+    cmd.png(far_image_file, width=IMAGE_WIDTH, height=IMAGE_HEIGHT, dpi=IMAGE_DPI, ray=1 if use_ray_trace else 0)
+    render_far_focus_helper(
+        far_focus_file,
+        loaded_ligands,
+        image_width=IMAGE_WIDTH,
+        image_height=IMAGE_HEIGHT,
+        image_dpi=IMAGE_DPI,
+        use_ray_trace=use_ray_trace,
+        style=resolved_style,
+    )
     
     # ----- 2) YAKIN POZ (CLOSE VIEW) OLUŞTUR -----
     print("\nYakın görünüm (ligand odaklı) oluşturuluyor...")
     
     # Tüm seçimleri ve görünümleri yeniden ayarla
-    cmd.hide("everything")
-    cmd.show("cartoon", "protein")
-    cmd.show("surface", "protein")
-    cmd.set("transparency", 0.5, "protein")
-    
-    if loaded_ligands:
-        # Her bir ligandı tek tek ayarla
-        cmd.show("sticks", ligand_selector)
+    ligand_selector, _ = apply_scene_style(loaded_ligands, style_preset, overrides=style_overrides)
     
     # Eğer ağırlık merkezlerini göster seçeneği aktifse, onları da göster
     if SHOW_CENTERS:
@@ -444,7 +597,9 @@ def final_gorselleştirme(pdb_id=None, ligands_dir=None, output_dir="results", i
     
     # Ray-traced render ile görsel oluştur
     print(f"Yakın görünüm render ediliyor... ({IMAGE_WIDTH}x{IMAGE_HEIGHT}, {IMAGE_DPI} dpi)")
-    cmd.png(close_image_file, width=IMAGE_WIDTH, height=IMAGE_HEIGHT, dpi=IMAGE_DPI, ray=1)
+    if use_draw_mode and not use_ray_trace:
+        cmd.draw()
+    cmd.png(close_image_file, width=IMAGE_WIDTH, height=IMAGE_HEIGHT, dpi=IMAGE_DPI, ray=1 if use_ray_trace else 0)
     
     print(f"\nİşlem tamamlandı. İki farklı görünüm kaydedildi:")
     print(f"  * Uzak görünüm: {far_session_file}")
@@ -458,7 +613,8 @@ def final_gorselleştirme(pdb_id=None, ligands_dir=None, output_dir="results", i
     print("\nUygulanan ayarlar:")
     print("  * bg_color white")
     print("  * space cmyk")
-    print("  * Protein: bluewhite (cartoon ve surface)")
+    style = resolved_style
+    print(f"  * Protein: {style['protein_color']} (cartoon ve surface)")
     print("  * Ligand 1: kırmızı")
     print("  * Ligand 2: yeşil")
     print("  * Ligand 3: mavi")
@@ -474,7 +630,8 @@ def final_gorselleştirme(pdb_id=None, ligands_dir=None, output_dir="results", i
     print("\nRender özellikleri:")
     print(f"  * Çözünürlük: {IMAGE_DPI} dpi")
     print(f"  * Görsel boyutu: {IMAGE_WIDTH}x{IMAGE_HEIGHT} piksel")
-    print("  * Ray-traced kaliteli render")
+    print(f"  * Render engine: {normalized_engine}")
+    print(f"  * Ray trace: {'on' if use_ray_trace else 'off'}")
     
     return True
 
@@ -487,6 +644,16 @@ def main():
     parser.add_argument('--width', type=int, default=IMAGE_WIDTH, help='Görsel genişliği (piksel)')
     parser.add_argument('--height', type=int, default=IMAGE_HEIGHT, help='Görsel yüksekliği (piksel)')
     parser.add_argument('--dpi', type=int, default=IMAGE_DPI, help='Görsel çözünürlüğü (DPI)')
+    parser.add_argument('--style-preset', type=str, default='balanced', help='Görsel stil ön ayarı')
+    parser.add_argument('--ray-trace', type=int, choices=[0, 1], default=1, help='Ray trace açık=1 kapalı=0')
+    parser.add_argument('--render-engine', type=str, default='ray', help='Render engine: ray/opengl/fast_draw')
+    parser.add_argument('--background', type=str, default='transparent', help='Background mode: transparent/white')
+    parser.add_argument('--surface-mode', type=int, choices=[0, 1], default=None, help='Surface açık=1 kapalı=0')
+    parser.add_argument('--surface-opacity', type=float, default=None, help='Surface transparency 0..1')
+    parser.add_argument('--protein-color', type=str, default='', help='Protein color name')
+    parser.add_argument('--ligand-thickness', type=float, default=None, help='Ligand stick radius')
+    parser.add_argument('--far-padding', type=float, default=None, help='Far padding factor')
+    parser.add_argument('--close-padding', type=float, default=None, help='Close padding factor')
     
     args = parser.parse_args()
     
@@ -497,7 +664,17 @@ def main():
         output_dir=args.output_dir,
         image_width=args.width,
         image_height=args.height,
-        image_dpi=args.dpi
+        image_dpi=args.dpi,
+        style_preset=args.style_preset,
+        ray_trace=bool(args.ray_trace),
+        render_engine=args.render_engine,
+        background_mode=args.background,
+        surface_mode=(None if args.surface_mode is None else bool(args.surface_mode)),
+        surface_opacity=args.surface_opacity,
+        protein_color=args.protein_color,
+        ligand_stick_radius=args.ligand_thickness,
+        far_padding_factor=args.far_padding,
+        close_padding_factor=args.close_padding,
     )
     
     # Başarı durumuna göre çıkış kodu döndür

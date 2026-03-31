@@ -403,6 +403,12 @@
                         <label class="field-label" for="reportDpi">Render DPI</label>
                         <input type="number" id="reportDpi" min="30" max="600" step="10" value="120">
                       </div>
+                      <div class="field report-workbench-field report-otofigure-controls" id="reportOtofigureControls" hidden>
+                        <label class="field-label">OtoFigure Options</label>
+                        <button class="secondary report-options-trigger" id="openReportOtofigureOptions" type="button">
+                          Layout, appearance and speed
+                        </button>
+                      </div>
                     </div>
 
                     <div class="report-render-state-card">
@@ -1056,6 +1062,135 @@
             <div class="helper">Load report context to discover docking roots.</div>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="reportOtofigureOptionsModal" class="report-modal" role="dialog" aria-modal="true" aria-labelledby="reportOtofigureOptionsTitle">
+    <div class="report-modal-card otofigure-options-modal-card">
+      <div class="report-modal-header">
+        <div>
+          <div class="section-title" id="reportOtofigureOptionsTitle" style="margin-bottom: 2px;">OtoFigure Options</div>
+          <div class="helper">Fine-tune layout, appearance and speed without changing the core render flow.</div>
+        </div>
+        <button class="secondary" id="closeReportOtofigureOptions" type="button">Close</button>
+      </div>
+
+      <div class="otofigure-options-layout">
+        <div class="otofigure-options-stack">
+          <section class="otofigure-options-section">
+            <div class="field-label">Render</div>
+            <div class="otofigure-options-grid">
+              <div class="field">
+                <label class="field-label" for="reportOtofigureEngine">Render Engine</label>
+                <select id="reportOtofigureEngine">
+                  <option value="ray">Ray Trace</option>
+                  <option value="opengl">OpenGL</option>
+                  <option value="fast_draw">Fast Draw</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-label" for="reportOtofigureStyle">Base Style</label>
+                <select id="reportOtofigureStyle">
+                  <option value="balanced">Balanced</option>
+                  <option value="ligand_focus">Ligand Focus</option>
+                  <option value="surface_focus">Surface Focus</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-label" for="reportOtofigureBackground">Background</label>
+                <select id="reportOtofigureBackground">
+                  <option value="transparent">Transparent</option>
+                  <option value="white">White</option>
+                </select>
+              </div>
+            </div>
+          </section>
+
+          <section class="otofigure-options-section">
+            <div class="field-label">Scene</div>
+            <div class="otofigure-options-grid">
+              <div class="field">
+                <label class="field-label" for="reportOtofigureSurfaceEnabled">Surface</label>
+                <label class="report-inline-check">
+                  <input type="checkbox" id="reportOtofigureSurfaceEnabled" checked>
+                  <span>Show protein surface</span>
+                </label>
+              </div>
+              <div class="field">
+                <label class="field-label" for="reportOtofigureSurfaceOpacity">Surface Opacity</label>
+                <input type="number" id="reportOtofigureSurfaceOpacity" min="0" max="1" step="0.05" value="0.50">
+              </div>
+              <div class="field">
+                <label class="field-label" for="reportOtofigureProteinColor">Protein Color</label>
+                <select id="reportOtofigureProteinColor">
+                  <option value="bluewhite">Blue White</option>
+                  <option value="gray80">Soft Gray</option>
+                  <option value="lightblue">Light Blue</option>
+                  <option value="slate">Slate</option>
+                  <option value="white">White</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-label" for="reportOtofigureLigandThickness">Ligand Thickness</label>
+                <input type="number" id="reportOtofigureLigandThickness" min="0.05" max="0.80" step="0.02" value="0.22">
+              </div>
+            </div>
+          </section>
+
+          <section class="otofigure-options-section">
+            <div class="field-label">Layout</div>
+            <div class="otofigure-options-grid">
+              <div class="field">
+                <label class="field-label" for="reportOtofigureFarRatio">Far Ratio</label>
+                <input type="number" id="reportOtofigureFarRatio" min="1" max="9" step="1" value="4">
+              </div>
+              <div class="field">
+                <label class="field-label" for="reportOtofigureCloseRatio">Close Ratio</label>
+                <input type="number" id="reportOtofigureCloseRatio" min="1" max="9" step="1" value="2">
+              </div>
+              <div class="field">
+                <label class="field-label" for="reportOtofigureInteractionRatio">Interaction Ratio</label>
+                <input type="number" id="reportOtofigureInteractionRatio" min="1" max="9" step="1" value="3">
+              </div>
+              <div class="field">
+                <label class="field-label" for="reportOtofigureFarPadding">Far Padding</label>
+                <input type="number" id="reportOtofigureFarPadding" min="0" max="0.50" step="0.01" value="0.03">
+              </div>
+              <div class="field">
+                <label class="field-label" for="reportOtofigureClosePadding">Close Padding</label>
+                <input type="number" id="reportOtofigureClosePadding" min="0" max="1.00" step="0.01" value="0.20">
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <aside class="otofigure-options-preview-panel">
+          <div class="field-label">Layout Preview</div>
+          <div class="helper">Schematic preview only. Ratios and crop padding update instantly.</div>
+          <div class="otofigure-preview-strip" id="reportOtofigurePreviewStrip">
+            <div class="otofigure-preview-panel otofigure-preview-panel--far">
+              <span>Far</span>
+              <div class="otofigure-preview-safe" id="reportOtofigurePreviewFarSafe"></div>
+            </div>
+            <div class="otofigure-preview-panel otofigure-preview-panel--close">
+              <span>Close</span>
+              <div class="otofigure-preview-safe" id="reportOtofigurePreviewCloseSafe"></div>
+            </div>
+            <div class="otofigure-preview-panel otofigure-preview-panel--interaction">
+              <span>Interaction</span>
+              <div class="otofigure-preview-wire"></div>
+            </div>
+          </div>
+          <div class="otofigure-options-note">
+            Fast Draw keeps the same panel compose but uses a lighter PyMOL capture path.
+          </div>
+        </aside>
+      </div>
+
+      <div class="report-source-folder-actions">
+        <button class="secondary" id="reportOtofigureReset" type="button">Reset to Standard</button>
+        <button class="primary" id="reportOtofigureDone" type="button">Done</button>
       </div>
     </div>
   </div>

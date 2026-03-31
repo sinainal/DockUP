@@ -184,6 +184,9 @@ def run(
     output_png: str | Path,
     work_dir: str | Path,
     dpi: int = 30,
+    style_preset: str = "balanced",
+    ray_trace: bool = True,
+    options: dict[str, Any] | None = None,
     preview_mode: bool = False,
     on_process_start=None,
     on_process_end=None,
@@ -192,6 +195,43 @@ def run(
         raise FileNotFoundError(f"No OtoFigure run entries found for {receptor_id}/{ligand_name}")
 
     resolved_runs = [(str(run_name), Path(run_dir).resolve()) for run_name, run_dir in run_entries]
+    render_options = dict(options or {})
+    render_engine = str(render_options.get("render_engine") or ("ray" if bool(ray_trace) else "opengl")).strip().lower()
+    if render_engine not in {"ray", "opengl", "fast_draw"}:
+        render_engine = "ray" if bool(ray_trace) else "opengl"
+    background_mode = str(render_options.get("background") or "transparent").strip().lower()
+    if background_mode not in {"transparent", "white"}:
+        background_mode = "transparent"
+    surface_enabled = bool(render_options.get("surface_enabled", True))
+    try:
+        surface_opacity = max(0.0, min(1.0, float(render_options.get("surface_opacity", 0.50))))
+    except Exception:
+        surface_opacity = 0.50
+    protein_color = str(render_options.get("protein_color") or "bluewhite").strip() or "bluewhite"
+    try:
+        ligand_thickness = max(0.05, min(0.8, float(render_options.get("ligand_thickness", 0.22))))
+    except Exception:
+        ligand_thickness = 0.22
+    try:
+        far_padding = max(0.0, min(0.5, float(render_options.get("far_padding", 0.03))))
+    except Exception:
+        far_padding = 0.03
+    try:
+        close_padding = max(0.0, min(1.0, float(render_options.get("close_padding", 0.20))))
+    except Exception:
+        close_padding = 0.20
+    try:
+        far_ratio = max(1, min(9, int(round(float(render_options.get("far_ratio", 4))))))
+    except Exception:
+        far_ratio = 4
+    try:
+        close_ratio = max(1, min(9, int(round(float(render_options.get("close_ratio", 2))))))
+    except Exception:
+        close_ratio = 2
+    try:
+        interaction_ratio = max(1, min(9, int(round(float(render_options.get("interaction_ratio", 3))))))
+    except Exception:
+        interaction_ratio = 3
     work_root = Path(work_dir).resolve()
     if work_root.exists():
         shutil.rmtree(work_root, ignore_errors=True)
@@ -250,6 +290,26 @@ def run(
             str(height),
             "--dpi",
             str(render_dpi),
+            "--style-preset",
+            str(style_preset or "balanced"),
+            "--ray-trace",
+            "1" if bool(ray_trace) else "0",
+            "--render-engine",
+            render_engine,
+            "--background",
+            background_mode,
+            "--surface-mode",
+            "1" if surface_enabled else "0",
+            "--surface-opacity",
+            str(surface_opacity),
+            "--protein-color",
+            protein_color,
+            "--ligand-thickness",
+            str(ligand_thickness),
+            "--far-padding",
+            str(far_padding),
+            "--close-padding",
+            str(close_padding),
         ],
         cwd=work_root,
         env=env,
@@ -286,6 +346,14 @@ def run(
             str(layout["interaction_dir"]),
             "--dpi",
             str(render_dpi),
+            "--far-ratio",
+            str(far_ratio),
+            "--close-ratio",
+            str(close_ratio),
+            "--interaction-ratio",
+            str(interaction_ratio),
+            "--background",
+            background_mode,
         ],
         cwd=work_root,
         env=env,
@@ -328,4 +396,20 @@ def run(
         "used_runs": [run_name for run_name, _ in resolved_runs[:5]],
         "work_dir": str(work_root),
         "logs": logs,
+        "render_dpi": render_dpi,
+        "render_width": width,
+        "render_height": height,
+        "style_preset": str(style_preset or "balanced"),
+        "ray_trace": bool(ray_trace),
+        "render_engine": render_engine,
+        "background": background_mode,
+        "surface_enabled": surface_enabled,
+        "surface_opacity": surface_opacity,
+        "protein_color": protein_color,
+        "ligand_thickness": ligand_thickness,
+        "far_ratio": far_ratio,
+        "close_ratio": close_ratio,
+        "interaction_ratio": interaction_ratio,
+        "far_padding": far_padding,
+        "close_padding": close_padding,
     }

@@ -1806,6 +1806,20 @@ input[type="range"]::-webkit-slider-thumb {
   gap: 8px;
 }
 
+.report-otofigure-controls[hidden] {
+  display: none !important;
+}
+
+.report-inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+
 .report-layout-icons {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2041,6 +2055,132 @@ input[type="range"]::-webkit-slider-thumb {
 
 .report-source-modal-card {
   width: min(1180px, 97vw);
+}
+
+.otofigure-options-modal-card {
+  width: min(980px, 96vw);
+}
+
+.report-options-trigger {
+  width: 100%;
+  min-height: 40px;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.otofigure-options-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(260px, 0.9fr);
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.otofigure-options-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.otofigure-options-section {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.otofigure-options-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.otofigure-options-preview-panel {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.otofigure-preview-strip {
+  display: grid;
+  grid-template-columns: 4fr 2fr 3fr;
+  gap: 8px;
+  min-height: 196px;
+}
+
+.otofigure-preview-panel {
+  position: relative;
+  border-radius: 14px;
+  border: 1px solid #dbe3ee;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 20% 18%, rgba(255,255,255,0.92), rgba(255,255,255,0) 34%),
+    linear-gradient(160deg, #eef3fb 0%, #dfe7f2 100%);
+  min-width: 0;
+}
+
+.otofigure-preview-panel span {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #334155;
+}
+
+.otofigure-preview-safe {
+  position: absolute;
+  inset: 12%;
+  border: 2px solid rgba(15, 23, 42, 0.35);
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.4);
+}
+
+.otofigure-preview-panel--close .otofigure-preview-safe {
+  border-style: dashed;
+}
+
+.otofigure-preview-wire {
+  position: absolute;
+  inset: 22% 14%;
+  border-radius: 18px;
+  border: 1px dashed rgba(99, 102, 241, 0.55);
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.68), rgba(255,255,255,0.15)),
+    radial-gradient(circle at 50% 48%, rgba(241, 245, 249, 0.9), rgba(203, 213, 225, 0.4));
+}
+
+.otofigure-options-note {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+@media (max-width: 960px) {
+  .otofigure-options-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .otofigure-options-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .otofigure-preview-strip {
+    min-height: 160px;
+  }
 }
 
 .report-source-modal-toolbar {

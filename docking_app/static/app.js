@@ -43,6 +43,42 @@ const DEFAULT_DOCKING_CONFIG = {
   vina_seed: null,
 };
 
+const OTOFIGURE_STYLE_PRESETS = {
+  balanced: {
+    surfaceEnabled: true,
+    surfaceOpacity: 0.50,
+    proteinColor: "bluewhite",
+    ligandThickness: 0.22,
+  },
+  ligand_focus: {
+    surfaceEnabled: true,
+    surfaceOpacity: 0.66,
+    proteinColor: "gray80",
+    ligandThickness: 0.28,
+  },
+  surface_focus: {
+    surfaceEnabled: true,
+    surfaceOpacity: 0.34,
+    proteinColor: "lightblue",
+    ligandThickness: 0.20,
+  },
+};
+
+const DEFAULT_OTOFIGURE_OPTIONS = {
+  renderEngine: "ray",
+  style: "balanced",
+  background: "transparent",
+  surfaceEnabled: true,
+  surfaceOpacity: 0.50,
+  proteinColor: "bluewhite",
+  ligandThickness: 0.22,
+  farRatio: 4,
+  closeRatio: 2,
+  interactionRatio: 3,
+  farPadding: 0.03,
+  closePadding: 0.20,
+};
+
 // Viewer state
 let stage = null;
 let comp = null;
@@ -305,6 +341,27 @@ function initElements() {
   els.selectAllPlots = document.getElementById("selectAllPlots");
   els.reportDpi = document.getElementById("reportDpi");
   els.reportRenderMode = document.getElementById("reportRenderMode");
+  els.reportOtofigureControls = document.getElementById("reportOtofigureControls");
+  els.openReportOtofigureOptions = document.getElementById("openReportOtofigureOptions");
+  els.reportOtofigureOptionsModal = document.getElementById("reportOtofigureOptionsModal");
+  els.closeReportOtofigureOptions = document.getElementById("closeReportOtofigureOptions");
+  els.reportOtofigureDone = document.getElementById("reportOtofigureDone");
+  els.reportOtofigureReset = document.getElementById("reportOtofigureReset");
+  els.reportOtofigureEngine = document.getElementById("reportOtofigureEngine");
+  els.reportOtofigureStyle = document.getElementById("reportOtofigureStyle");
+  els.reportOtofigureBackground = document.getElementById("reportOtofigureBackground");
+  els.reportOtofigureSurfaceEnabled = document.getElementById("reportOtofigureSurfaceEnabled");
+  els.reportOtofigureSurfaceOpacity = document.getElementById("reportOtofigureSurfaceOpacity");
+  els.reportOtofigureProteinColor = document.getElementById("reportOtofigureProteinColor");
+  els.reportOtofigureLigandThickness = document.getElementById("reportOtofigureLigandThickness");
+  els.reportOtofigureFarRatio = document.getElementById("reportOtofigureFarRatio");
+  els.reportOtofigureCloseRatio = document.getElementById("reportOtofigureCloseRatio");
+  els.reportOtofigureInteractionRatio = document.getElementById("reportOtofigureInteractionRatio");
+  els.reportOtofigureFarPadding = document.getElementById("reportOtofigureFarPadding");
+  els.reportOtofigureClosePadding = document.getElementById("reportOtofigureClosePadding");
+  els.reportOtofigurePreviewStrip = document.getElementById("reportOtofigurePreviewStrip");
+  els.reportOtofigurePreviewFarSafe = document.getElementById("reportOtofigurePreviewFarSafe");
+  els.reportOtofigurePreviewCloseSafe = document.getElementById("reportOtofigurePreviewCloseSafe");
   els.reportRenderSelectionSummary = document.getElementById("reportRenderSelectionSummary");
   els.reportRenderStateChip = document.getElementById("reportRenderStateChip");
   els.reportRenderStateMeta = document.getElementById("reportRenderStateMeta");
@@ -3206,6 +3263,18 @@ function saveUIState() {
         reportDocRootPath: String(els.reportDocRootPath?.value || ""),
         reportDpi: String(els.reportDpi?.value || ""),
         reportRenderMode: String(els.reportRenderMode?.value || ""),
+        reportOtofigureEngine: String(els.reportOtofigureEngine?.value || ""),
+        reportOtofigureStyle: String(els.reportOtofigureStyle?.value || ""),
+        reportOtofigureBackground: String(els.reportOtofigureBackground?.value || ""),
+        reportOtofigureSurfaceEnabled: Boolean(els.reportOtofigureSurfaceEnabled?.checked),
+        reportOtofigureSurfaceOpacity: String(els.reportOtofigureSurfaceOpacity?.value || ""),
+        reportOtofigureProteinColor: String(els.reportOtofigureProteinColor?.value || ""),
+        reportOtofigureLigandThickness: String(els.reportOtofigureLigandThickness?.value || ""),
+        reportOtofigureFarRatio: String(els.reportOtofigureFarRatio?.value || ""),
+        reportOtofigureCloseRatio: String(els.reportOtofigureCloseRatio?.value || ""),
+        reportOtofigureInteractionRatio: String(els.reportOtofigureInteractionRatio?.value || ""),
+        reportOtofigureFarPadding: String(els.reportOtofigureFarPadding?.value || ""),
+        reportOtofigureClosePadding: String(els.reportOtofigureClosePadding?.value || ""),
         reportActiveTab: String(reportActiveTab || "images"),
         reportSelectedReceptors: Array.from(reportSelectedReceptors || []),
         reportSelectedRuns: Object.fromEntries(reportSelectedRuns || []),
@@ -3284,6 +3353,19 @@ async function restoreUIState() {
   if (els.reportDocRootPath && ui.reportDocRootPath !== undefined) els.reportDocRootPath.value = String(ui.reportDocRootPath);
   if (els.reportDpi && ui.reportDpi !== undefined) els.reportDpi.value = String(ui.reportDpi);
   if (els.reportRenderMode && ui.reportRenderMode !== undefined) els.reportRenderMode.value = String(ui.reportRenderMode);
+  if (els.reportOtofigureEngine && ui.reportOtofigureEngine !== undefined) els.reportOtofigureEngine.value = String(ui.reportOtofigureEngine || DEFAULT_OTOFIGURE_OPTIONS.renderEngine);
+  if (els.reportOtofigureStyle && ui.reportOtofigureStyle !== undefined) els.reportOtofigureStyle.value = String(ui.reportOtofigureStyle || "balanced");
+  if (els.reportOtofigureBackground && ui.reportOtofigureBackground !== undefined) els.reportOtofigureBackground.value = String(ui.reportOtofigureBackground || DEFAULT_OTOFIGURE_OPTIONS.background);
+  if (els.reportOtofigureSurfaceEnabled && ui.reportOtofigureSurfaceEnabled !== undefined) els.reportOtofigureSurfaceEnabled.checked = Boolean(ui.reportOtofigureSurfaceEnabled);
+  if (els.reportOtofigureSurfaceOpacity && ui.reportOtofigureSurfaceOpacity !== undefined) els.reportOtofigureSurfaceOpacity.value = String(ui.reportOtofigureSurfaceOpacity || DEFAULT_OTOFIGURE_OPTIONS.surfaceOpacity);
+  if (els.reportOtofigureProteinColor && ui.reportOtofigureProteinColor !== undefined) els.reportOtofigureProteinColor.value = String(ui.reportOtofigureProteinColor || DEFAULT_OTOFIGURE_OPTIONS.proteinColor);
+  if (els.reportOtofigureLigandThickness && ui.reportOtofigureLigandThickness !== undefined) els.reportOtofigureLigandThickness.value = String(ui.reportOtofigureLigandThickness || DEFAULT_OTOFIGURE_OPTIONS.ligandThickness);
+  if (els.reportOtofigureFarRatio && ui.reportOtofigureFarRatio !== undefined) els.reportOtofigureFarRatio.value = String(ui.reportOtofigureFarRatio || DEFAULT_OTOFIGURE_OPTIONS.farRatio);
+  if (els.reportOtofigureCloseRatio && ui.reportOtofigureCloseRatio !== undefined) els.reportOtofigureCloseRatio.value = String(ui.reportOtofigureCloseRatio || DEFAULT_OTOFIGURE_OPTIONS.closeRatio);
+  if (els.reportOtofigureInteractionRatio && ui.reportOtofigureInteractionRatio !== undefined) els.reportOtofigureInteractionRatio.value = String(ui.reportOtofigureInteractionRatio || DEFAULT_OTOFIGURE_OPTIONS.interactionRatio);
+  if (els.reportOtofigureFarPadding && ui.reportOtofigureFarPadding !== undefined) els.reportOtofigureFarPadding.value = String(ui.reportOtofigureFarPadding || DEFAULT_OTOFIGURE_OPTIONS.farPadding);
+  if (els.reportOtofigureClosePadding && ui.reportOtofigureClosePadding !== undefined) els.reportOtofigureClosePadding.value = String(ui.reportOtofigureClosePadding || DEFAULT_OTOFIGURE_OPTIONS.closePadding);
+  renderOtofigureLayoutPreview();
   reportActiveTab = String(ui.reportActiveTab || reportActiveTab || "images") || "images";
   reportSelectedReceptors = new Set(
     Array.isArray(ui.reportSelectedReceptors)
@@ -5084,6 +5166,76 @@ function bindEvents() {
     });
   }
 
+  if (els.openReportOtofigureOptions) {
+    els.openReportOtofigureOptions.addEventListener("click", () => {
+      openReportOtofigureOptionsModal();
+    });
+  }
+
+  if (els.closeReportOtofigureOptions) {
+    els.closeReportOtofigureOptions.addEventListener("click", () => {
+      closeReportOtofigureOptionsModal();
+    });
+  }
+
+  if (els.reportOtofigureDone) {
+    els.reportOtofigureDone.addEventListener("click", () => {
+      closeReportOtofigureOptionsModal();
+      renderReportWorkspaceSidebar();
+      scheduleUIStateSave();
+    });
+  }
+
+  if (els.reportOtofigureReset) {
+    els.reportOtofigureReset.addEventListener("click", () => {
+      resetOtofigureOptionsToDefault();
+      renderReportWorkspaceSidebar();
+      scheduleUIStateSave();
+    });
+  }
+
+  if (els.reportOtofigureOptionsModal) {
+    els.reportOtofigureOptionsModal.addEventListener("click", (event) => {
+      if (event.target === els.reportOtofigureOptionsModal) {
+        closeReportOtofigureOptionsModal();
+      }
+    });
+  }
+
+  if (els.reportOtofigureStyle) {
+    els.reportOtofigureStyle.addEventListener("change", () => {
+      applyOtofigureStylePreset(els.reportOtofigureStyle.value);
+      renderReportWorkspaceSidebar();
+      scheduleUIStateSave();
+    });
+  }
+
+  [
+    els.reportOtofigureEngine,
+    els.reportOtofigureBackground,
+    els.reportOtofigureSurfaceEnabled,
+    els.reportOtofigureSurfaceOpacity,
+    els.reportOtofigureProteinColor,
+    els.reportOtofigureLigandThickness,
+    els.reportOtofigureFarRatio,
+    els.reportOtofigureCloseRatio,
+    els.reportOtofigureInteractionRatio,
+    els.reportOtofigureFarPadding,
+    els.reportOtofigureClosePadding,
+  ].forEach((el) => {
+    if (!el) return;
+    el.addEventListener("input", () => {
+      renderOtofigureLayoutPreview();
+      renderReportWorkspaceSidebar();
+      scheduleUIStateSave();
+    });
+    el.addEventListener("change", () => {
+      renderOtofigureLayoutPreview();
+      renderReportWorkspaceSidebar();
+      scheduleUIStateSave();
+    });
+  });
+
   Array.from(document.querySelectorAll(".report-layout-icon-card[data-mode]")).forEach((card) => {
     card.addEventListener("click", () => {
       const mode = String(card.dataset.mode || "").trim();
@@ -5418,6 +5570,18 @@ function bindEvents() {
     els.reportDocRootPath,
     els.reportDpi,
     els.reportRenderMode,
+    els.reportOtofigureEngine,
+    els.reportOtofigureStyle,
+    els.reportOtofigureBackground,
+    els.reportOtofigureSurfaceEnabled,
+    els.reportOtofigureSurfaceOpacity,
+    els.reportOtofigureProteinColor,
+    els.reportOtofigureLigandThickness,
+    els.reportOtofigureFarRatio,
+    els.reportOtofigureCloseRatio,
+    els.reportOtofigureInteractionRatio,
+    els.reportOtofigureFarPadding,
+    els.reportOtofigureClosePadding,
     els.fixedGridSize,
     document.getElementById("testModeCheck"),
   ];
@@ -6285,8 +6449,103 @@ function getCurrentReportSelection(row) {
   };
 }
 
+function getOtofigureSettingsFromUI() {
+  const preset = OTOFIGURE_STYLE_PRESETS[String(els.reportOtofigureStyle?.value || DEFAULT_OTOFIGURE_OPTIONS.style)] || OTOFIGURE_STYLE_PRESETS.balanced;
+  const clampInt = (value, fallback, min, max) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, Math.min(max, Math.round(parsed)));
+  };
+  const clampFloat = (value, fallback, min, max) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, Math.min(max, parsed));
+  };
+  return {
+    renderEngine: String(els.reportOtofigureEngine?.value || DEFAULT_OTOFIGURE_OPTIONS.renderEngine).trim() || DEFAULT_OTOFIGURE_OPTIONS.renderEngine,
+    style: String(els.reportOtofigureStyle?.value || DEFAULT_OTOFIGURE_OPTIONS.style).trim() || DEFAULT_OTOFIGURE_OPTIONS.style,
+    background: String(els.reportOtofigureBackground?.value || DEFAULT_OTOFIGURE_OPTIONS.background).trim() || DEFAULT_OTOFIGURE_OPTIONS.background,
+    surfaceEnabled: els.reportOtofigureSurfaceEnabled ? Boolean(els.reportOtofigureSurfaceEnabled.checked) : preset.surfaceEnabled,
+    surfaceOpacity: clampFloat(els.reportOtofigureSurfaceOpacity?.value, preset.surfaceOpacity, 0, 1),
+    proteinColor: String(els.reportOtofigureProteinColor?.value || preset.proteinColor).trim() || preset.proteinColor,
+    ligandThickness: clampFloat(els.reportOtofigureLigandThickness?.value, preset.ligandThickness, 0.05, 0.8),
+    farRatio: clampInt(els.reportOtofigureFarRatio?.value, DEFAULT_OTOFIGURE_OPTIONS.farRatio, 1, 9),
+    closeRatio: clampInt(els.reportOtofigureCloseRatio?.value, DEFAULT_OTOFIGURE_OPTIONS.closeRatio, 1, 9),
+    interactionRatio: clampInt(els.reportOtofigureInteractionRatio?.value, DEFAULT_OTOFIGURE_OPTIONS.interactionRatio, 1, 9),
+    farPadding: clampFloat(els.reportOtofigureFarPadding?.value, DEFAULT_OTOFIGURE_OPTIONS.farPadding, 0, 0.5),
+    closePadding: clampFloat(els.reportOtofigureClosePadding?.value, DEFAULT_OTOFIGURE_OPTIONS.closePadding, 0, 1),
+  };
+}
+
+function renderOtofigureLayoutPreview() {
+  if (!els.reportOtofigurePreviewStrip) return;
+  const settings = getOtofigureSettingsFromUI();
+  els.reportOtofigurePreviewStrip.style.gridTemplateColumns = `${settings.farRatio}fr ${settings.closeRatio}fr ${settings.interactionRatio}fr`;
+  const farInset = `${Math.max(6, Math.min(24, 6 + Math.round(settings.farPadding * 120)))}%`;
+  const closeInset = `${Math.max(10, Math.min(26, 8 + Math.round(settings.closePadding * 45)))}%`;
+  if (els.reportOtofigurePreviewFarSafe) els.reportOtofigurePreviewFarSafe.style.inset = farInset;
+  if (els.reportOtofigurePreviewCloseSafe) els.reportOtofigurePreviewCloseSafe.style.inset = closeInset;
+}
+
+function applyOtofigureStylePreset(styleKey) {
+  const preset = OTOFIGURE_STYLE_PRESETS[String(styleKey || "").trim()] || OTOFIGURE_STYLE_PRESETS.balanced;
+  if (els.reportOtofigureSurfaceEnabled) els.reportOtofigureSurfaceEnabled.checked = Boolean(preset.surfaceEnabled);
+  if (els.reportOtofigureSurfaceOpacity) els.reportOtofigureSurfaceOpacity.value = String(preset.surfaceOpacity.toFixed(2));
+  if (els.reportOtofigureProteinColor) els.reportOtofigureProteinColor.value = String(preset.proteinColor);
+  if (els.reportOtofigureLigandThickness) els.reportOtofigureLigandThickness.value = String(preset.ligandThickness.toFixed(2));
+  renderOtofigureLayoutPreview();
+}
+
+function resetOtofigureOptionsToDefault() {
+  if (els.reportOtofigureEngine) els.reportOtofigureEngine.value = DEFAULT_OTOFIGURE_OPTIONS.renderEngine;
+  if (els.reportOtofigureStyle) els.reportOtofigureStyle.value = DEFAULT_OTOFIGURE_OPTIONS.style;
+  if (els.reportOtofigureBackground) els.reportOtofigureBackground.value = DEFAULT_OTOFIGURE_OPTIONS.background;
+  if (els.reportOtofigureFarRatio) els.reportOtofigureFarRatio.value = String(DEFAULT_OTOFIGURE_OPTIONS.farRatio);
+  if (els.reportOtofigureCloseRatio) els.reportOtofigureCloseRatio.value = String(DEFAULT_OTOFIGURE_OPTIONS.closeRatio);
+  if (els.reportOtofigureInteractionRatio) els.reportOtofigureInteractionRatio.value = String(DEFAULT_OTOFIGURE_OPTIONS.interactionRatio);
+  if (els.reportOtofigureFarPadding) els.reportOtofigureFarPadding.value = String(DEFAULT_OTOFIGURE_OPTIONS.farPadding);
+  if (els.reportOtofigureClosePadding) els.reportOtofigureClosePadding.value = String(DEFAULT_OTOFIGURE_OPTIONS.closePadding);
+  applyOtofigureStylePreset(DEFAULT_OTOFIGURE_OPTIONS.style);
+}
+
+function closeReportOtofigureOptionsModal() {
+  if (els.reportOtofigureOptionsModal) els.reportOtofigureOptionsModal.classList.remove("active");
+}
+
+function openReportOtofigureOptionsModal() {
+  if (!els.reportOtofigureOptionsModal) return;
+  renderOtofigureLayoutPreview();
+  els.reportOtofigureOptionsModal.classList.add("active");
+}
+
+function updateOtofigureRenderControls() {
+  const renderMode = String(els.reportRenderMode?.value || "classic").trim() || "classic";
+  const isOtofigure = renderMode === "otofigure";
+  if (els.reportOtofigureControls) els.reportOtofigureControls.hidden = !isOtofigure;
+  if (els.openReportOtofigureOptions) els.openReportOtofigureOptions.disabled = !isOtofigure;
+  if (!isOtofigure) closeReportOtofigureOptionsModal();
+  [
+    els.reportOtofigureEngine,
+    els.reportOtofigureStyle,
+    els.reportOtofigureBackground,
+    els.reportOtofigureSurfaceEnabled,
+    els.reportOtofigureSurfaceOpacity,
+    els.reportOtofigureProteinColor,
+    els.reportOtofigureLigandThickness,
+    els.reportOtofigureFarRatio,
+    els.reportOtofigureCloseRatio,
+    els.reportOtofigureInteractionRatio,
+    els.reportOtofigureFarPadding,
+    els.reportOtofigureClosePadding,
+  ].forEach((el) => {
+    if (el) el.disabled = !isOtofigure;
+  });
+  renderOtofigureLayoutPreview();
+}
+
 function renderReportWorkspaceSidebar() {
   const renderMode = String(els.reportRenderMode?.value || "classic").trim() || "classic";
+  updateOtofigureRenderControls();
   Array.from(document.querySelectorAll(".report-layout-icon-card[data-mode]")).forEach((card) => {
     card.classList.toggle("is-active", String(card.dataset.mode || "") === renderMode);
   });
@@ -6306,6 +6565,12 @@ function renderReportWorkspaceSidebar() {
   const runLabel = renderMode === "otofigure"
     ? "Auto multirun"
     : (selectedRun || focusRow.default_run || "Auto");
+  const otofigureSettings = getOtofigureSettingsFromUI();
+  const engineLabelMap = {
+    ray: "Ray Trace",
+    opengl: "OpenGL",
+    fast_draw: "Fast Draw",
+  };
 
   els.reportRenderSelectionSummary.innerHTML = `
     <div class="report-settings-summary-grid">
@@ -6329,6 +6594,16 @@ function renderReportWorkspaceSidebar() {
         <span class="report-settings-summary-label">Ready</span>
         <span class="report-settings-summary-value">${escapeHtml(String(readyLigands.length || 0))}</span>
       </div>
+      ${renderMode === "otofigure" ? `
+      <div class="report-settings-summary-item">
+        <span class="report-settings-summary-label">Engine</span>
+        <span class="report-settings-summary-value">${escapeHtml(engineLabelMap[otofigureSettings.renderEngine] || otofigureSettings.renderEngine)}</span>
+      </div>
+      <div class="report-settings-summary-item">
+        <span class="report-settings-summary-label">Layout</span>
+        <span class="report-settings-summary-value">${escapeHtml(`${otofigureSettings.farRatio}:${otofigureSettings.closeRatio}:${otofigureSettings.interactionRatio}`)}</span>
+      </div>
+      ` : ""}
     </div>
   `;
 }
@@ -7587,12 +7862,26 @@ async function initiateRender(isPreview) {
   const dpi = Number.isFinite(dpiVal) ? Math.max(30, Math.min(600, Math.round(dpiVal))) : 120;
   if (els.reportDpi) els.reportDpi.value = String(dpi);
   const renderMode = String(els.reportRenderMode?.value || "classic").trim() || "classic";
+  const otofigureSettings = getOtofigureSettingsFromUI();
   try {
     const payload = {
       root_path: rootPath,
       source_path: sourcePath,
       output_path: outputPath,
       render_mode: renderMode,
+      otofigure_style: otofigureSettings.style,
+      otofigure_ray_trace: otofigureSettings.renderEngine === "ray",
+      otofigure_render_engine: otofigureSettings.renderEngine,
+      otofigure_background: otofigureSettings.background,
+      otofigure_surface_enabled: otofigureSettings.surfaceEnabled,
+      otofigure_surface_opacity: otofigureSettings.surfaceOpacity,
+      otofigure_protein_color: otofigureSettings.proteinColor,
+      otofigure_ligand_thickness: otofigureSettings.ligandThickness,
+      otofigure_far_ratio: otofigureSettings.farRatio,
+      otofigure_close_ratio: otofigureSettings.closeRatio,
+      otofigure_interaction_ratio: otofigureSettings.interactionRatio,
+      otofigure_far_padding: otofigureSettings.farPadding,
+      otofigure_close_padding: otofigureSettings.closePadding,
       receptors,
       run_by_receptor: runByReceptor,
       ligand_by_receptor: ligandByReceptor,

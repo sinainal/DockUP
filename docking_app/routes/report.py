@@ -1426,6 +1426,9 @@ def _render_dtype_panel_with_runner(
     output_stem: str = "",
     preview_mode: bool = False,
     ligand_order_index: dict[str, int] | None = None,
+    otofigure_style: str = "balanced",
+    otofigure_ray_trace: bool = True,
+    otofigure_options: dict[str, Any] | None = None,
     process_hooks: dict[str, Any] | None = None,
 ) -> tuple[Path, list[str]]:
     from PIL import Image
@@ -1536,6 +1539,9 @@ def _render_dtype_panel(
     output_stem: str = "",
     preview_mode: bool = False,
     ligand_order_index: dict[str, int] | None = None,
+    otofigure_style: str = "balanced",
+    otofigure_ray_trace: bool = True,
+    otofigure_options: dict[str, Any] | None = None,
     process_hooks: dict[str, Any] | None = None,
 ) -> tuple[Path, list[str]]:
     from figure_scripts.panel_figure.pipeline import run as run_pipeline
@@ -1552,6 +1558,9 @@ def _render_dtype_panel(
         output_stem=output_stem,
         preview_mode=preview_mode,
         ligand_order_index=ligand_order_index,
+        otofigure_style=otofigure_style,
+        otofigure_ray_trace=otofigure_ray_trace,
+        otofigure_options=otofigure_options,
         process_hooks=process_hooks,
     )
 
@@ -1567,6 +1576,9 @@ def _render_dtype_otofigure_panel(
     output_stem: str = "",
     preview_mode: bool = False,
     ligand_order_index: dict[str, int] | None = None,
+    otofigure_style: str = "balanced",
+    otofigure_ray_trace: bool = True,
+    otofigure_options: dict[str, Any] | None = None,
     process_hooks: dict[str, Any] | None = None,
 ) -> tuple[Path, list[str]]:
     from figure_scripts.otofigure.pipeline import run as run_pipeline
@@ -1592,6 +1604,9 @@ def _render_dtype_otofigure_panel(
             output_png=out_path,
             work_dir=work_dir,
             dpi=dpi,
+            style_preset=otofigure_style,
+            ray_trace=otofigure_ray_trace,
+            options=otofigure_options,
             preview_mode=preview_mode,
             on_process_start=(process_hooks or {}).get("on_process_start"),
             on_process_end=(process_hooks or {}).get("on_process_end"),
@@ -2344,6 +2359,34 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
     is_preview_mode = bool(payload.is_preview)
     dpi = int(payload.dpi or 120)
     dpi = max(30, min(600, dpi))
+    otofigure_style = str(payload.otofigure_style or "balanced").strip().lower() or "balanced"
+    if otofigure_style not in {"balanced", "ligand_focus", "surface_focus"}:
+        otofigure_style = "balanced"
+    otofigure_render_engine = str(payload.otofigure_render_engine or "").strip().lower() or "ray"
+    if otofigure_render_engine not in {"ray", "opengl", "fast_draw"}:
+        otofigure_render_engine = "ray"
+    otofigure_ray_trace = bool(payload.otofigure_ray_trace)
+    if otofigure_render_engine == "ray":
+        otofigure_ray_trace = True
+    else:
+        otofigure_ray_trace = False
+    otofigure_background = str(payload.otofigure_background or "transparent").strip().lower() or "transparent"
+    if otofigure_background not in {"transparent", "white"}:
+        otofigure_background = "transparent"
+    otofigure_protein_color = str(payload.otofigure_protein_color or "bluewhite").strip() or "bluewhite"
+    otofigure_options = {
+        "render_engine": otofigure_render_engine,
+        "background": otofigure_background,
+        "surface_enabled": bool(payload.otofigure_surface_enabled),
+        "surface_opacity": max(0.0, min(1.0, float(payload.otofigure_surface_opacity or 0.50))),
+        "protein_color": otofigure_protein_color,
+        "ligand_thickness": max(0.05, min(0.8, float(payload.otofigure_ligand_thickness or 0.22))),
+        "far_ratio": max(1, min(9, int(payload.otofigure_far_ratio or 4))),
+        "close_ratio": max(1, min(9, int(payload.otofigure_close_ratio or 2))),
+        "interaction_ratio": max(1, min(9, int(payload.otofigure_interaction_ratio or 3))),
+        "far_padding": max(0.0, min(0.5, float(payload.otofigure_far_padding or 0.03))),
+        "close_padding": max(0.0, min(1.0, float(payload.otofigure_close_padding or 0.20))),
+    }
     render_panel_builder = _get_render_panel_builder(render_mode)
     render_mode_label = "OtoFigure" if render_mode == REPORT_RENDER_MODE_OTOFIGURE else "Classic"
 
@@ -2385,6 +2428,9 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
         render_builder,
         render_mode_name: str,
         render_mode_key: str,
+        otofigure_style_name: str,
+        otofigure_ray_enabled: bool,
+        otofigure_options_data: dict[str, Any],
     ) -> None:
         errors: list[str] = []
         logs: list[str] = []
@@ -2434,6 +2480,9 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
                         output_stem=panel_stem,
                         preview_mode=preview_mode,
                         ligand_order_index=ligand_order,
+                        otofigure_style=otofigure_style_name,
+                        otofigure_ray_trace=otofigure_ray_enabled,
+                        otofigure_options=otofigure_options_data,
                         process_hooks={
                             "on_process_start": on_process_start,
                             "on_process_end": on_process_end,
@@ -2453,6 +2502,10 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
                             "requested_ligand": preferred_ligand,
                             "used_runs": list(used_runs or []),
                             "elapsed_seconds": round(elapsed_seconds, 3),
+                            "otofigure_style": otofigure_style_name if render_mode_key == REPORT_RENDER_MODE_OTOFIGURE else "",
+                            "otofigure_ray_trace": bool(otofigure_ray_enabled) if render_mode_key == REPORT_RENDER_MODE_OTOFIGURE else None,
+                            "otofigure_render_engine": str(otofigure_options_data.get("render_engine") or "") if render_mode_key == REPORT_RENDER_MODE_OTOFIGURE else "",
+                            "otofigure_background": str(otofigure_options_data.get("background") or "") if render_mode_key == REPORT_RENDER_MODE_OTOFIGURE else "",
                         },
                     )
                     used_label = ", ".join(used_runs) if used_runs else "auto"
@@ -2491,10 +2544,19 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
         render_panel_builder,
         render_mode_label,
         render_mode,
+        otofigure_style,
+        otofigure_ray_trace,
+        otofigure_options,
     )
     dpi_scale = max(0.5, float(dpi) / 120.0)
     if render_mode == REPORT_RENDER_MODE_OTOFIGURE:
         base_seconds = 20 if is_preview_mode else 55
+        engine_multiplier = {
+            "ray": 1.0,
+            "opengl": 0.55,
+            "fast_draw": 0.30,
+        }.get(str(otofigure_options.get("render_engine") or "ray"), 1.0)
+        base_seconds *= engine_multiplier
     else:
         base_seconds = 14 if is_preview_mode else 40
     expected_seconds = int(max(12, len(render_jobs) * base_seconds * dpi_scale))
