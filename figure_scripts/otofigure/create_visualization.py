@@ -29,9 +29,8 @@ PADDING_PERCENT = 7  # Kare etrafındaki ek boşluk (yüzde)
 BORDER_THICKNESS = 1  # Çerçeve kalınlığı
 CONNECTOR_THICKNESS = 0.75  # Bağlantı çizgilerinin kalınlığı
 RED_CIRCLE_RADIUS = 7  # Kırmızı kürelerin yarıçapı
-FAR_BOX_PADDING_PERCENT = 3.0
-FAR_BOX_MIN_FOCUS_RATIO = 0.08
-FAR_BOX_MIN_FOCUS_PX = 24
+FAR_BOX_PADDING_PERCENT = 12.0
+FAR_ALPHA_THRESHOLD = 10
 
 
 def _normalize_width_ratios(far_ratio=None, close_ratio=None, interaction_ratio=None):
@@ -187,8 +186,7 @@ def _draw_dashed_line(draw, start, end, *, dash=14, gap=8, width=1, fill=(0, 0, 
         draw.line((sx, sy, ex, ey), fill=fill, width=width)
         progress += dash + gap
 
-def find_rgb_regions(image, *, padding_percent=PADDING_PERCENT, min_focus_ratio=0.18, min_focus_px=44):
-    """RGB/renkli bölgeleri tespit et ve kare kordinatlarını döndür"""
+def _find_rgb_contours(image):
     bgr_image = _as_bgr(image)
     hsv_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2HSV)
     rgb_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
@@ -216,7 +214,41 @@ def find_rgb_regions(image, *, padding_percent=PADDING_PERCENT, min_focus_ratio=
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours = [contour for contour in contours if cv2.contourArea(contour) >= 6.0]
         if contours:
-            break
+            return contours
+    return []
+
+
+def _square_from_mask(mask, *, padding_percent):
+    points = cv2.findNonZero(mask)
+    if points is None:
+        return None
+
+    x, y, width, height = cv2.boundingRect(points)
+    pad_x = int(round(width * float(padding_percent) / 100.0))
+    pad_y = int(round(height * float(padding_percent) / 100.0))
+    left = x - pad_x
+    top = y - pad_y
+    right = x + width - 1 + pad_x
+    bottom = y + height - 1 + pad_y
+
+    box_width = right - left + 1
+    box_height = bottom - top + 1
+    size = int(max(box_width, box_height))
+    size = max(1, min(size, mask.shape[1], mask.shape[0]))
+
+    center_x = (left + right) / 2.0
+    center_y = (top + bottom) / 2.0
+    square_x = int(np.floor(center_x - (size / 2.0)))
+    square_y = int(np.floor(center_y - (size / 2.0)))
+    square_x = max(0, min(square_x, mask.shape[1] - size))
+    square_y = max(0, min(square_y, mask.shape[0] - size))
+    return square_x, square_y, size
+
+
+def find_rgb_regions(image, *, padding_percent=PADDING_PERCENT, min_focus_ratio=0.18, min_focus_px=44):
+    """RGB/renkli bölgeleri tespit et ve kare kordinatlarını döndür"""
+    bgr_image = _as_bgr(image)
+    contours = _find_rgb_contours(image)
     
     # Eğer kontür bulunamazsa varsayılan bir kare döndür
     if not contours:
@@ -239,17 +271,9 @@ def find_rgb_regions(image, *, padding_percent=PADDING_PERCENT, min_focus_ratio=
     min_focus_size = max(int(min_focus_px), int(round(min(image.shape[0], image.shape[1]) * float(min_focus_ratio))))
     max_side = max(max_side, min_focus_size)
     
-    # Kutuyu bbox orta noktasına değil, gerçek görünür piksellerin ağırlık merkezine hizala.
-    focus_mask = np.zeros_like(saturation, dtype=np.uint8)
-    for contour in contours:
-        cv2.drawContours(focus_mask, [contour], -1, 255, thickness=-1)
-    moments = cv2.moments(focus_mask, binaryImage=True)
-    if moments["m00"]:
-        center_x = int(round(moments["m10"] / moments["m00"]))
-        center_y = int(round(moments["m01"] / moments["m00"]))
-    else:
-        center_x = (x_min + x_max) // 2
-        center_y = (y_min + y_max) // 2
+    # CLOSE panel davranışını korumak için merkez hesabı bbox midpoint ile kalır.
+    center_x = (x_min + x_max) // 2
+    center_y = (y_min + y_max) // 2
     
     # Padding ekle
     padding = int(max_side * float(padding_percent) / 100)
@@ -263,6 +287,33 @@ def find_rgb_regions(image, *, padding_percent=PADDING_PERCENT, min_focus_ratio=
     size = min(image.shape[1] - x, image.shape[0] - y, padded_size)
     
     return x, y, size, contours
+
+
+def find_far_focus_regions(image, *, padding_percent=FAR_BOX_PADDING_PERCENT, prefer_alpha=False):
+    """Far view içindeki ligand helper'ını sıkı kapsayan kare bölgeyi bul."""
+    mask = None
+    contours = []
+
+    if prefer_alpha and len(image.shape) == 3 and image.shape[2] == 4:
+        alpha_mask = (image[:, :, 3] > FAR_ALPHA_THRESHOLD).astype(np.uint8) * 255
+        if cv2.countNonZero(alpha_mask) > 0:
+            mask = alpha_mask
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours = [contour for contour in contours if cv2.contourArea(contour) >= 1.0]
+
+    if mask is None:
+        contours = _find_rgb_contours(image)
+        if contours:
+            bgr_image = _as_bgr(image)
+            mask = np.zeros(bgr_image.shape[:2], dtype=np.uint8)
+            cv2.drawContours(mask, contours, -1, 255, thickness=-1)
+
+    if mask is not None:
+        square = _square_from_mask(mask, padding_percent=padding_percent)
+        if square is not None:
+            return square[0], square[1], square[2], contours
+
+    return find_rgb_regions(image)
 
 def connect_points_directly(fig, ax1, ax2, point1, point2, color='black', linestyle='--', linewidth=0.75):
     """
@@ -393,10 +444,12 @@ def create_visualization(
 
         # FAR_VIEW için mümkünse ligand-only yardımcı çıktıyı kullan
         far_focus_view = far_view
+        using_far_focus_helper = False
         if os.path.exists(far_focus_path):
             helper_image = _load_image_preserve_alpha(far_focus_path)
             if helper_image is not None:
                 far_focus_view = helper_image
+                using_far_focus_helper = True
 
         try:
             far_frame_margin = max(0.0, min(0.15, float(far_frame_margin)))
@@ -439,11 +492,10 @@ def create_visualization(
         cv2.circle(debug_close_view, (0, size_close-1), RED_CIRCLE_RADIUS, (0, 0, 255), -1)
 
         # FAR_VIEW'da RGB bölgelerini bul
-        x_far, y_far, size_far, far_contours = find_rgb_regions(
+        x_far, y_far, size_far, far_contours = find_far_focus_regions(
             far_focus_view,
             padding_percent=FAR_BOX_PADDING_PERCENT,
-            min_focus_ratio=FAR_BOX_MIN_FOCUS_RATIO,
-            min_focus_px=FAR_BOX_MIN_FOCUS_PX,
+            prefer_alpha=using_far_focus_helper,
         )
         
         # DEBUG GÖRSELİ İÇİN FAR_VIEW KOPYASI

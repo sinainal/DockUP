@@ -89,23 +89,24 @@ def test_content_bbox_detects_visible_region_inside_transparent_far_panel() -> N
     assert (bottom - top) < image.shape[0]
 
 
-def test_find_rgb_regions_supports_tighter_far_focus_defaults() -> None:
+def test_find_far_focus_regions_uses_tight_alpha_bounds_with_small_padding() -> None:
     image = np.zeros((250, 333, 4), dtype=np.uint8)
     image[118:130, 160:172] = (255, 120, 120, 255)
 
-    x, y, size, _ = create_visualization.find_rgb_regions(
+    x, y, size, _ = create_visualization.find_far_focus_regions(
         image,
         padding_percent=create_visualization.FAR_BOX_PADDING_PERCENT,
-        min_focus_ratio=create_visualization.FAR_BOX_MIN_FOCUS_RATIO,
-        min_focus_px=create_visualization.FAR_BOX_MIN_FOCUS_PX,
+        prefer_alpha=True,
     )
 
     assert size <= 30
-    assert x >= 150
-    assert y >= 108
+    assert x <= 160
+    assert y <= 118
+    assert x + size >= 171
+    assert y + size >= 129
 
 
-def test_find_rgb_regions_centers_square_on_mask_centroid_not_bbox_midpoint() -> None:
+def test_find_rgb_regions_keeps_close_square_on_bbox_midpoint() -> None:
     image = np.zeros((200, 200, 4), dtype=np.uint8)
     image[90:110, 92:112] = (255, 120, 120, 255)
     image[100:140, 92:100] = (255, 120, 120, 255)
@@ -120,9 +121,9 @@ def test_find_rgb_regions_centers_square_on_mask_centroid_not_bbox_midpoint() ->
     assert size >= 39
     box_center_x = x + (size / 2.0)
     box_center_y = y + (size / 2.0)
-    # The asymmetric tail shifts the true center away from the bbox midpoint.
-    assert box_center_x == pytest.approx(100.0, abs=1.5)
-    assert box_center_y == pytest.approx(109.5, abs=1.5)
+    # Close panel davranışı bbox midpoint merkezlemeyi korumalı.
+    assert box_center_x == pytest.approx(101.5, abs=1.5)
+    assert box_center_y == pytest.approx(114.5, abs=1.5)
 
 
 def test_create_visualization_supports_white_background_and_custom_ratios(tmp_path: Path) -> None:
