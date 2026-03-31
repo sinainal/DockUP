@@ -89,6 +89,22 @@ def test_content_bbox_detects_visible_region_inside_transparent_far_panel() -> N
     assert (bottom - top) < image.shape[0]
 
 
+def test_find_rgb_regions_supports_tighter_far_focus_defaults() -> None:
+    image = np.zeros((250, 333, 4), dtype=np.uint8)
+    image[118:130, 160:172] = (255, 120, 120, 255)
+
+    x, y, size, _ = create_visualization.find_rgb_regions(
+        image,
+        padding_percent=create_visualization.FAR_BOX_PADDING_PERCENT,
+        min_focus_ratio=create_visualization.FAR_BOX_MIN_FOCUS_RATIO,
+        min_focus_px=create_visualization.FAR_BOX_MIN_FOCUS_PX,
+    )
+
+    assert size <= 30
+    assert x >= 150
+    assert y >= 108
+
+
 def test_create_visualization_supports_white_background_and_custom_ratios(tmp_path: Path) -> None:
     input_dir = tmp_path / "results"
     output_dir = tmp_path / "final_results"

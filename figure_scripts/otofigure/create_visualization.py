@@ -29,6 +29,9 @@ PADDING_PERCENT = 7  # Kare etrafındaki ek boşluk (yüzde)
 BORDER_THICKNESS = 1  # Çerçeve kalınlığı
 CONNECTOR_THICKNESS = 0.75  # Bağlantı çizgilerinin kalınlığı
 RED_CIRCLE_RADIUS = 7  # Kırmızı kürelerin yarıçapı
+FAR_BOX_PADDING_PERCENT = 3.0
+FAR_BOX_MIN_FOCUS_RATIO = 0.08
+FAR_BOX_MIN_FOCUS_PX = 24
 
 
 def _normalize_width_ratios(far_ratio=None, close_ratio=None, interaction_ratio=None):
@@ -184,7 +187,7 @@ def _draw_dashed_line(draw, start, end, *, dash=14, gap=8, width=1, fill=(0, 0, 
         draw.line((sx, sy, ex, ey), fill=fill, width=width)
         progress += dash + gap
 
-def find_rgb_regions(image):
+def find_rgb_regions(image, *, padding_percent=PADDING_PERCENT, min_focus_ratio=0.18, min_focus_px=44):
     """RGB/renkli bölgeleri tespit et ve kare kordinatlarını döndür"""
     bgr_image = _as_bgr(image)
     hsv_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2HSV)
@@ -233,7 +236,7 @@ def find_rgb_regions(image):
     width = x_max - x_min
     height = y_max - y_min
     max_side = max(width, height)
-    min_focus_size = max(44, int(round(min(image.shape[0], image.shape[1]) * 0.18)))
+    min_focus_size = max(int(min_focus_px), int(round(min(image.shape[0], image.shape[1]) * float(min_focus_ratio))))
     max_side = max(max_side, min_focus_size)
     
     # Merkez hesapla
@@ -241,7 +244,7 @@ def find_rgb_regions(image):
     center_y = (y_min + y_max) // 2
     
     # Padding ekle
-    padding = int(max_side * PADDING_PERCENT / 100)
+    padding = int(max_side * float(padding_percent) / 100)
     padded_size = max_side + 2 * padding
     
     # Kare koordinatlarını hesapla
@@ -428,7 +431,12 @@ def create_visualization(
         cv2.circle(debug_close_view, (0, size_close-1), RED_CIRCLE_RADIUS, (0, 0, 255), -1)
 
         # FAR_VIEW'da RGB bölgelerini bul
-        x_far, y_far, size_far, far_contours = find_rgb_regions(far_focus_view)
+        x_far, y_far, size_far, far_contours = find_rgb_regions(
+            far_focus_view,
+            padding_percent=FAR_BOX_PADDING_PERCENT,
+            min_focus_ratio=FAR_BOX_MIN_FOCUS_RATIO,
+            min_focus_px=FAR_BOX_MIN_FOCUS_PX,
+        )
         
         # DEBUG GÖRSELİ İÇİN FAR_VIEW KOPYASI
         debug_far_view = _as_bgr(far_view.copy())
