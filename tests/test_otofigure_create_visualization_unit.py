@@ -105,6 +105,26 @@ def test_find_rgb_regions_supports_tighter_far_focus_defaults() -> None:
     assert y >= 108
 
 
+def test_find_rgb_regions_centers_square_on_mask_centroid_not_bbox_midpoint() -> None:
+    image = np.zeros((200, 200, 4), dtype=np.uint8)
+    image[90:110, 92:112] = (255, 120, 120, 255)
+    image[100:140, 92:100] = (255, 120, 120, 255)
+
+    x, y, size, _ = create_visualization.find_rgb_regions(
+        image,
+        padding_percent=0.0,
+        min_focus_ratio=0.0,
+        min_focus_px=20,
+    )
+
+    assert size >= 39
+    box_center_x = x + (size / 2.0)
+    box_center_y = y + (size / 2.0)
+    # The asymmetric tail shifts the true center away from the bbox midpoint.
+    assert box_center_x == pytest.approx(100.0, abs=1.5)
+    assert box_center_y == pytest.approx(109.5, abs=1.5)
+
+
 def test_create_visualization_supports_white_background_and_custom_ratios(tmp_path: Path) -> None:
     input_dir = tmp_path / "results"
     output_dir = tmp_path / "final_results"

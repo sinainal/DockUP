@@ -239,9 +239,17 @@ def find_rgb_regions(image, *, padding_percent=PADDING_PERCENT, min_focus_ratio=
     min_focus_size = max(int(min_focus_px), int(round(min(image.shape[0], image.shape[1]) * float(min_focus_ratio))))
     max_side = max(max_side, min_focus_size)
     
-    # Merkez hesapla
-    center_x = (x_min + x_max) // 2
-    center_y = (y_min + y_max) // 2
+    # Kutuyu bbox orta noktasına değil, gerçek görünür piksellerin ağırlık merkezine hizala.
+    focus_mask = np.zeros_like(saturation, dtype=np.uint8)
+    for contour in contours:
+        cv2.drawContours(focus_mask, [contour], -1, 255, thickness=-1)
+    moments = cv2.moments(focus_mask, binaryImage=True)
+    if moments["m00"]:
+        center_x = int(round(moments["m10"] / moments["m00"]))
+        center_y = int(round(moments["m01"] / moments["m00"]))
+    else:
+        center_x = (x_min + x_max) // 2
+        center_y = (y_min + y_max) // 2
     
     # Padding ekle
     padding = int(max_side * float(padding_percent) / 100)
