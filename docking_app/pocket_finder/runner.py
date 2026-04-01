@@ -8,9 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..config import BASE
 from ..services import _filter_pdb_text_by_chain, _normalize_chain_id
-from .config import receptor_run_dir, resolve_p2rank_bin
+from .config import receptor_run_dir, resolve_p2rank_bin, resolve_p2rank_java_home
 
 _RUNTIME_LOCK = threading.Lock()
 _RUNTIME_STATE: dict[str, Any] = {
@@ -145,19 +144,10 @@ def _run_predict(job_id: int, pdb_id: str, chain: str, receptor_file: Path, work
             str(output_dir),
         ]
         env = os.environ.copy()
-        java_home = str(env.get("DOCKUP_P2RANK_JAVA_HOME") or "").strip()
-        if java_home:
-            java_bin = Path(java_home).expanduser() / "bin"
-            java_exec = java_bin / "java"
-            if java_exec.exists():
-                env["JAVA_HOME"] = str(Path(java_home).expanduser())
-                env["PATH"] = f"{java_bin}:{env.get('PATH', '')}"
-        if not shutil.which("java", path=env.get("PATH", "")):
-            java_bin = BASE.parent / "pocket_test" / "p2rank_java" / "bin"
-            java_exec = java_bin / "java"
-            if java_exec.exists():
-                env["PATH"] = f"{java_bin}:{env.get('PATH', '')}"
-                env.setdefault("JAVA_HOME", str(java_bin.parent))
+        java_home = resolve_p2rank_java_home()
+        java_bin = java_home / "bin"
+        env["JAVA_HOME"] = str(java_home)
+        env["PATH"] = f"{java_bin}:{env.get('PATH', '')}"
 
         result = subprocess.run(
             cmd,
