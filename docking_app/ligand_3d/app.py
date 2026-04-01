@@ -557,9 +557,9 @@ def _list_generated_files() -> list[dict[str, Any]]:
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
+        request,
         "index.html",
         {
-            "request": request,
             "title": "Ligand Download + 3D Prototype",
         },
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import inspect
 import json
 import os
 import re
@@ -2470,6 +2471,34 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
                         panel_stem = f"{dtype}_{render_mode}_multirun_{started_stamp}_{idx:02d}"
                     else:
                         panel_stem = f"{dtype}_{render_mode}_{preferred_run or 'run1'}_{started_stamp}_{idx:02d}"
+                    builder_kwargs: dict[str, Any] = {
+                        "output_stem": panel_stem,
+                        "preview_mode": preview_mode,
+                        "ligand_order_index": ligand_order,
+                        "process_hooks": {
+                            "on_process_start": on_process_start,
+                            "on_process_end": on_process_end,
+                        },
+                    }
+                    if render_mode_key == REPORT_RENDER_MODE_OTOFIGURE:
+                        builder_kwargs.update(
+                            {
+                                "otofigure_style": otofigure_style_name,
+                                "otofigure_ray_trace": otofigure_ray_enabled,
+                                "otofigure_options": otofigure_options_data,
+                            }
+                        )
+                    signature = inspect.signature(render_builder)
+                    accepts_var_kwargs = any(
+                        parameter.kind == inspect.Parameter.VAR_KEYWORD
+                        for parameter in signature.parameters.values()
+                    )
+                    if not accepts_var_kwargs:
+                        builder_kwargs = {
+                            key: value
+                            for key, value in builder_kwargs.items()
+                            if key in signature.parameters
+                        }
                     out_path, used_runs = render_builder(
                         dtype,
                         receptor_data,
@@ -2478,16 +2507,7 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
                         render_dpi,
                         preferred_run,
                         preferred_ligand,
-                        output_stem=panel_stem,
-                        preview_mode=preview_mode,
-                        ligand_order_index=ligand_order,
-                        otofigure_style=otofigure_style_name,
-                        otofigure_ray_trace=otofigure_ray_enabled,
-                        otofigure_options=otofigure_options_data,
-                        process_hooks={
-                            "on_process_start": on_process_start,
-                            "on_process_end": on_process_end,
-                        },
+                        **builder_kwargs,
                     )
                     elapsed_seconds = max(0.001, time.perf_counter() - render_started_at)
                     _write_image_metadata(

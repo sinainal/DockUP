@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pytest
 import requests
+
+pytest.importorskip("playwright.sync_api", reason="Playwright is optional for browser regression tests.")
+
 from playwright.sync_api import Browser, Page, Playwright, sync_playwright
 
 from tests._support.api_client import ApiClient

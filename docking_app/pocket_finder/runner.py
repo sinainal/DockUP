@@ -127,6 +127,10 @@ def _prepare_input_pdb(receptor_file: Path, input_file: Path, chain: str) -> Non
     input_file.write_text(filtered, encoding="utf-8")
 
 
+def preflight_p2rank_runtime() -> tuple[Path, Path]:
+    return resolve_p2rank_bin(), resolve_p2rank_java_home()
+
+
 def _run_predict(job_id: int, pdb_id: str, chain: str, receptor_file: Path, work_dir: Path) -> None:
     output_dir = work_dir / "output"
     input_file = work_dir / f"{pdb_id}.pdb"
@@ -134,7 +138,7 @@ def _run_predict(job_id: int, pdb_id: str, chain: str, receptor_file: Path, work
         work_dir.mkdir(parents=True, exist_ok=True)
         _prepare_input_pdb(receptor_file, input_file, chain)
 
-        prank = resolve_p2rank_bin()
+        prank, java_home = preflight_p2rank_runtime()
         cmd = [
             str(prank),
             "predict",
@@ -144,7 +148,6 @@ def _run_predict(job_id: int, pdb_id: str, chain: str, receptor_file: Path, work
             str(output_dir),
         ]
         env = os.environ.copy()
-        java_home = resolve_p2rank_java_home()
         java_bin = java_home / "bin"
         env["JAVA_HOME"] = str(java_home)
         env["PATH"] = f"{java_bin}:{env.get('PATH', '')}"
@@ -195,6 +198,8 @@ def run_p2rank_async(pdb_id: str, receptor_file: Path, chain: str = "all") -> di
         ):
             return current
         raise RuntimeError("Another binding site prediction is already running.")
+
+    preflight_p2rank_runtime()
 
     base_dir = receptor_run_dir(pdb_id, selected_chain)
     base_dir.mkdir(parents=True, exist_ok=True)

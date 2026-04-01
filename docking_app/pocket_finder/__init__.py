@@ -4,6 +4,7 @@ from .runner import (
     clear_runtime_state,
     get_runtime_state,
     latest_output_dir,
+    preflight_p2rank_runtime,
     run_p2rank_async,
 )
 
@@ -14,5 +15,6 @@ __all__ = [
     "compute_gridbox_for_pocket",
     "get_runtime_state",
     "latest_output_dir",
+    "preflight_p2rank_runtime",
     "run_p2rank_async",
 ]

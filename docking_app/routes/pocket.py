@@ -141,6 +141,8 @@ def run_binding_site_finder(payload: dict[str, Any]) -> JSONResponse:
     receptor_file = _selected_receptor_file(pdb_id)
     try:
         state = run_p2rank_async(pdb_id, receptor_file, chain=chain)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return JSONResponse(state)

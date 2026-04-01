@@ -287,8 +287,9 @@ def index(request: Request) -> HTMLResponse:
     if _templates is None:
         raise HTTPException(status_code=500, detail="Templates not configured.")
     return _templates.TemplateResponse(
+        request,
         "index.html",
-        {"request": request, "title": "Docking App"},
+        {"title": "Docking App"},
     )
 
 
@@ -1024,9 +1025,6 @@ def run_recent_delete(payload: dict[str, Any]) -> JSONResponse:
             target_out_root = str(Path(str(target.get("out_root") or "")).expanduser().resolve())
         except OSError:
             target_out_root = str(target.get("out_root") or "").strip()
-
-    if not target_out_root and legacy_entry:
-        target_out_root = str(Path(str(legacy_entry.get("out_root") or "")).expanduser().resolve())
 
     if not target_out_root:
         raise HTTPException(status_code=404, detail="Recent docking item not found.")
