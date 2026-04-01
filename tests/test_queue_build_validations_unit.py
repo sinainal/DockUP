@@ -29,6 +29,24 @@ def restore_state():
         STATE.update(snapshot)
 
 
+@pytest.fixture(autouse=True)
+def ensure_seed_ligand() -> None:
+    created_path: Path | None = None
+    existing = sorted(path for path in LIGAND_DIR.glob("*.sdf") if path.is_file())
+    if not existing:
+        created_path = LIGAND_DIR / "seed_fixture.sdf"
+        created_path.parent.mkdir(parents=True, exist_ok=True)
+        created_path.write_text(
+            "\n  Ketcher\n\n  0  0  0     0  0            999 V2000\nM  END\n$$$$\n",
+            encoding="utf-8",
+        )
+    try:
+        yield
+    finally:
+        if created_path is not None:
+            created_path.unlink(missing_ok=True)
+
+
 def _first_ligand_name() -> str:
     ligands = sorted(path.name for path in LIGAND_DIR.glob("*.sdf") if path.is_file())
     assert ligands, "Expected at least one ligand fixture in workspace/data/ligand."
