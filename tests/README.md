@@ -17,6 +17,10 @@ Testler 3 katmana ayrildi:
 - receptor add/select/detail
 - ligand upload + active pool + queue/build sozlesmesi
 
+`tests/api/test_pocket_finder_workflow.py`
+- Binding Site Finder / P2Rank API akisi:
+- pocket run -> status -> results -> file serving -> gridbox
+
 `tests/e2e/test_basic_docking_flow.py`
 - Hizli basic docking E2E:
 - receptor -> ligand -> grid -> queue -> run -> artifact dogrulamasi
