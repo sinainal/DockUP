@@ -39,7 +39,6 @@
             <div class="section-title">Mode</div>
             <div class="toggle-group" id="modeToggle">
               <button type="button" data-mode="Docking" class="toggle active">Docking</button>
-              <button type="button" data-mode="Multi-Ligand" class="toggle">Multi-Ligand</button>
               <button type="button" data-mode="Redocking" class="toggle">Redocking</button>
               <button type="button" data-mode="Results" class="toggle">Results</button>
               <button type="button" data-mode="Report" class="toggle">Report</button>
@@ -634,9 +633,21 @@
           </select>
         </div>
         <div class="field" style="margin-bottom: 0;">
+          <label class="field-label">Ligand Workflow</label>
+          <select id="dockCfgLigandBindingMode">
+            <option value="single">Single Ligand</option>
+            <option value="multi_ligand">Multi-Ligand (2 Ligands)</option>
+          </select>
+          <div class="helper" id="dockCfgLigandBindingHint" style="margin-top: 4px;">
+            Choose one ligand per receptor.
+          </div>
+        </div>
+        <div class="field" style="margin-bottom: 0;">
           <label class="field-label">PDB2PQR pH</label>
           <input type="number" id="dockCfgPdb2pqrPh" min="0" max="14" step="0.1" value="7.4" list="dockCfgPhPresets">
         </div>
+      </div>
+      <div class="field-grid" style="margin-bottom: 6px;">
         <div class="field" style="margin-bottom: 0;">
           <label class="field-label">PDB2PQR Forcefield</label>
           <select id="dockCfgPdb2pqrFf">
@@ -781,6 +792,36 @@
         <div class="report-root-editor-actions">
           <button class="primary" id="saveDockingConfigModal" type="button">Save Settings</button>
           <button class="secondary" id="cancelDockingConfigModal" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="multiLigandPickerModal" class="report-modal" role="dialog" aria-modal="true" aria-labelledby="multiLigandPickerTitle">
+    <div class="report-modal-card" style="max-width: 560px;">
+      <div class="report-modal-header">
+        <div>
+          <div class="section-title" id="multiLigandPickerTitle" style="margin-bottom: 2px;">Select Multi-Ligand Set</div>
+          <div class="helper" id="multiLigandPickerSubtitle">Choose exactly 2 ligands for this receptor.</div>
+        </div>
+        <button class="secondary" id="closeMultiLigandPickerModal" type="button">Close</button>
+      </div>
+      <div class="helper" id="multiLigandPickerSummary" style="margin-bottom: 10px;">
+        Select 2 ligands
+      </div>
+      <div id="multiLigandPickerList" class="table simple" style="max-height: 320px; overflow-y: auto; margin-bottom: 12px;">
+        <table>
+          <tbody>
+            <tr>
+              <td class="helper">No ligands available.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="results-toolbar" style="margin-bottom: 0;">
+        <div class="report-root-editor-actions">
+          <button class="primary" id="saveMultiLigandPickerModal" type="button">Apply Selection</button>
+          <button class="secondary" id="cancelMultiLigandPickerModal" type="button">Cancel</button>
         </div>
       </div>
     </div>

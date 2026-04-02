@@ -34,6 +34,7 @@ def save_config(payload: dict[str, Any]) -> StreamingResponse:
     docking_cfg = normalize_docking_config(payload.get("docking_config") or STATE.get("docking_config") or {})
     
     rows = []
+    row_type = "Multi-Ligand" if docking_cfg.get("ligand_binding_mode") == "multi_ligand" else STATE["mode"]
     
     # Iterate over loaded receptors
     sel_map = payload.get("selection_map", {})
@@ -47,11 +48,12 @@ def save_config(payload: dict[str, Any]) -> StreamingResponse:
         grid = grid_data.get(pdb_id, {})
         
         rows.append({
-            "type": STATE["mode"], # Add type (Docking/Redocking)
+            "type": row_type, # Add type (Docking/Redocking/Multi-Ligand)
             "pdb_id": pdb_id,
             "chain": sel.get("chain", "all"),
             "ligand": sel.get("ligand_resname", "") or sel.get("ligand", ""),
             "ligands": ",".join(normalize_ligand_name_list(sel.get("ligand_resnames") or [])),
+            "ligand_binding_mode": docking_cfg.get("ligand_binding_mode"),
             "grid_center_x": grid.get("cx"),
             "grid_center_y": grid.get("cy"),
             "grid_center_z": grid.get("cz"),
@@ -153,11 +155,17 @@ def load_config(file: UploadFile = File(...)) -> JSONResponse:
                 if pd.notna(first_row.get("padding")):
                     STATE["grid_pad"] = float(first_row["padding"])
                 if pd.notna(first_row.get("type")):
-                    STATE["mode"] = str(first_row["type"])
+                    loaded_type = str(first_row["type"])
+                    STATE["mode"] = "Docking" if loaded_type == "Multi-Ligand" else loaded_type
 
                 loaded_docking_config = normalize_docking_config(
                     {
                         "docking_mode": first_row.get("docking_mode"),
+                        "ligand_binding_mode": (
+                            "multi_ligand"
+                            if str(first_row.get("type") or "").strip() == "Multi-Ligand"
+                            else first_row.get("ligand_binding_mode")
+                        ),
                         "pdb2pqr_ph": first_row.get("pdb2pqr_ph"),
                         "pdb2pqr_ff": first_row.get("pdb2pqr_ff"),
                         "pdb2pqr_ffout": first_row.get("pdb2pqr_ffout"),

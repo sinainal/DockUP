@@ -29,6 +29,7 @@ const appState = {
 
 const DEFAULT_DOCKING_CONFIG = {
   docking_mode: "standard",
+  ligand_binding_mode: "single",
   pdb2pqr_ph: 7.4,
   pdb2pqr_ff: "AMBER",
   pdb2pqr_ffout: "AMBER",
@@ -267,6 +268,8 @@ function initElements() {
   els.closeDockingConfigModal = document.getElementById("closeDockingConfigModal");
   els.saveDockingConfigModal = document.getElementById("saveDockingConfigModal");
   els.cancelDockingConfigModal = document.getElementById("cancelDockingConfigModal");
+  els.dockCfgLigandBindingMode = document.getElementById("dockCfgLigandBindingMode");
+  els.dockCfgLigandBindingHint = document.getElementById("dockCfgLigandBindingHint");
   els.dockCfgPdb2pqrPh = document.getElementById("dockCfgPdb2pqrPh");
   els.dockCfgDockingMode = document.getElementById("dockCfgDockingMode");
   els.dockCfgPdb2pqrFf = document.getElementById("dockCfgPdb2pqrFf");
@@ -284,6 +287,14 @@ function initElements() {
   els.dockCfgFlexModeBlock = document.getElementById("dockCfgFlexModeBlock");
   els.dockCfgFlexTargetField = document.getElementById("dockCfgFlexTargetField");
   els.dockCfgFlexReceptor = document.getElementById("dockCfgFlexReceptor");
+  els.multiLigandPickerModal = document.getElementById("multiLigandPickerModal");
+  els.multiLigandPickerTitle = document.getElementById("multiLigandPickerTitle");
+  els.multiLigandPickerSubtitle = document.getElementById("multiLigandPickerSubtitle");
+  els.multiLigandPickerSummary = document.getElementById("multiLigandPickerSummary");
+  els.multiLigandPickerList = document.getElementById("multiLigandPickerList");
+  els.closeMultiLigandPickerModal = document.getElementById("closeMultiLigandPickerModal");
+  els.cancelMultiLigandPickerModal = document.getElementById("cancelMultiLigandPickerModal");
+  els.saveMultiLigandPickerModal = document.getElementById("saveMultiLigandPickerModal");
   els.runQueue = document.getElementById("runQueue");
   els.stopRunQueue = document.getElementById("stopRunQueue");
   els.runLog = document.getElementById("runLog");
@@ -690,8 +701,23 @@ function normalizeSelectionMapState(rawMap) {
   return next;
 }
 
+function normalizeLigandBindingMode(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  return mode === "multi_ligand" || mode === "multi-ligand" ? "multi_ligand" : "single";
+}
+
 function isMultiLigandMode() {
-  return String(appState.mode || "").trim() === "Multi-Ligand";
+  const currentMode = String(appState.mode || "").trim();
+  if (currentMode === "Multi-Ligand") return true;
+  if (currentMode !== "Docking") return false;
+  return normalizeLigandBindingMode(appState.dockingConfig?.ligand_binding_mode) === "multi_ligand";
+}
+
+function getQueueJobMode() {
+  if (String(appState.mode || "").trim() === "Redocking") {
+    return "Redocking";
+  }
+  return isMultiLigandMode() ? "Multi-Ligand" : "Docking";
 }
 
 function getSelectedLigandsForReceptor(pdbId = appState.selectedReceptor) {
@@ -699,9 +725,37 @@ function getSelectedLigandsForReceptor(pdbId = appState.selectedReceptor) {
   return row ? normalizeLigandNameList(row.ligand_resnames || []) : [];
 }
 
-function buildLigandSetLabel(ligandNames) {
+function shortenLigandLabel(ligandName) {
+  const raw = String(ligandName || "").trim();
+  if (!raw) return "";
+  const stem = raw.replace(/\.[^.]+$/, "");
+  if (stem.length <= 16) return stem;
+  return `${stem.slice(0, 8)}...${stem.slice(-4)}`;
+}
+
+function buildLigandSetLabel(ligandNames, { short = false } = {}) {
   const names = normalizeLigandNameList(ligandNames);
-  return names.join(" + ");
+  return names
+    .map((name) => (short ? shortenLigandLabel(name) : name))
+    .filter(Boolean)
+    .join(" + ");
+}
+
+function syncSelectionMapForLigandWorkflow() {
+  Object.keys(appState.selectionMap || {}).forEach((pdbId) => {
+    const row = ensureSelectionMapEntry(pdbId);
+    if (!row) return;
+    const ligandNames = normalizeLigandNameList(row.ligand_resnames || []);
+    if (isMultiLigandMode()) {
+      const keptLigands = ligandNames.slice(0, 2);
+      row.ligand_resnames = keptLigands;
+      row.ligand_resname = buildLigandSetLabel(keptLigands);
+      return;
+    }
+    const firstLigand = ligandNames[0] || "";
+    row.ligand_resnames = firstLigand ? [firstLigand] : [];
+    row.ligand_resname = firstLigand;
+  });
 }
 
 function enforceMultiLigandDockingConfig() {
@@ -934,6 +988,9 @@ function normalizeDockingConfig(rawConfig) {
   };
 
   normalized.docking_mode = normalizeDockingMode(source.docking_mode ?? normalized.docking_mode);
+  normalized.ligand_binding_mode = normalizeLigandBindingMode(
+    source.ligand_binding_mode ?? normalized.ligand_binding_mode
+  );
   const ph = asFloat(source.pdb2pqr_ph, 0, 14, false);
   if (ph !== null) normalized.pdb2pqr_ph = ph;
   normalized.pdb2pqr_ff = String(source.pdb2pqr_ff ?? normalized.pdb2pqr_ff).trim() || normalized.pdb2pqr_ff;
@@ -975,6 +1032,7 @@ function applyQueueCoreValues(values) {
 function readAdvancedDockingConfigFromModal() {
   return normalizeDockingConfig({
     docking_mode: els.dockCfgDockingMode?.value,
+    ligand_binding_mode: els.dockCfgLigandBindingMode?.value,
     pdb2pqr_ph: els.dockCfgPdb2pqrPh?.value,
     pdb2pqr_ff: els.dockCfgPdb2pqrFf?.value,
     pdb2pqr_ffout: els.dockCfgPdb2pqrFfout?.value,
@@ -1011,6 +1069,9 @@ function applyAdvancedDockingConfigToModal(config) {
   };
 
   if (els.dockCfgDockingMode) els.dockCfgDockingMode.value = cfg.docking_mode || "standard";
+  if (els.dockCfgLigandBindingMode) {
+    els.dockCfgLigandBindingMode.value = normalizeLigandBindingMode(cfg.ligand_binding_mode);
+  }
   if (els.dockCfgPdb2pqrPh) els.dockCfgPdb2pqrPh.value = String(cfg.pdb2pqr_ph);
   setSelectValue(els.dockCfgPdb2pqrFf, cfg.pdb2pqr_ff, "AMBER");
   setSelectValue(els.dockCfgPdb2pqrFfout, cfg.pdb2pqr_ffout, "AMBER");
@@ -1031,15 +1092,23 @@ function renderDockingConfigSummary() {
   if (els.openDockingConfigModal) {
     const flexCount = getTotalFlexResidueCount();
     const flexSuffix = cfg.docking_mode === "flexible" ? ` | ${flexCount} flex residues` : "";
-    els.openDockingConfigModal.title = `${cfg.docking_mode} | pH ${cfg.pdb2pqr_ph} | Exhaustiveness ${cfg.vina_exhaustiveness}${flexSuffix}`;
+    const ligandWorkflowLabel = normalizeLigandBindingMode(cfg.ligand_binding_mode) === "multi_ligand"
+      ? "multi-ligand"
+      : "single";
+    els.openDockingConfigModal.title = `${ligandWorkflowLabel} | ${cfg.docking_mode} | pH ${cfg.pdb2pqr_ph} | Exhaustiveness ${cfg.vina_exhaustiveness}${flexSuffix}`;
   }
 }
 
 function syncDockingModeUI() {
-  if (isMultiLigandMode() && els.dockCfgDockingMode) {
+  const modalLigandBindingMode = normalizeLigandBindingMode(
+    els.dockCfgLigandBindingMode?.value || appState.dockingConfig?.ligand_binding_mode
+  );
+  const multiLigandSelected = String(appState.mode || "").trim() !== "Redocking"
+    && (String(appState.mode || "").trim() === "Multi-Ligand" || modalLigandBindingMode === "multi_ligand");
+  if (multiLigandSelected && els.dockCfgDockingMode) {
     els.dockCfgDockingMode.value = "standard";
   }
-  const mode = isMultiLigandMode()
+  const mode = multiLigandSelected
     ? "standard"
     : normalizeDockingMode(els.dockCfgDockingMode?.value || appState.dockingConfig?.docking_mode || "standard");
   syncDockingFlexTargetReceptorOptions();
@@ -1047,10 +1116,26 @@ function syncDockingModeUI() {
     els.dockCfgFlexModeBlock.style.display = mode === "flexible" ? "" : "none";
   }
   if (els.dockCfgDockingMode) {
-    els.dockCfgDockingMode.disabled = isMultiLigandMode();
-    els.dockCfgDockingMode.title = isMultiLigandMode()
+    els.dockCfgDockingMode.disabled = multiLigandSelected;
+    els.dockCfgDockingMode.title = multiLigandSelected
       ? "Multi-Ligand mode currently supports standard docking only."
       : "";
+  }
+  if (els.dockCfgLigandBindingMode) {
+    const inRedocking = String(appState.mode || "").trim() === "Redocking";
+    els.dockCfgLigandBindingMode.disabled = inRedocking;
+    els.dockCfgLigandBindingMode.title = inRedocking
+      ? "Redocking currently supports single-ligand selection only."
+      : "";
+  }
+  if (els.dockCfgLigandBindingHint) {
+    if (String(appState.mode || "").trim() === "Redocking") {
+      els.dockCfgLigandBindingHint.textContent = "Redocking uses the native ligand selection for each receptor.";
+    } else if (multiLigandSelected) {
+      els.dockCfgLigandBindingHint.textContent = "Choose ligand pairs from the receptor table popup. Multi-ligand currently supports standard docking only.";
+    } else {
+      els.dockCfgLigandBindingHint.textContent = "Choose one ligand per receptor.";
+    }
   }
   if (els.dockCfgFlexInfo) {
     const selected = getFlexSelectionData(getFlexTargetReceptorId());
@@ -1083,12 +1168,141 @@ function closeDockingConfigModal({ restore = false } = {}) {
   els.dockingConfigModal.classList.remove("active");
 }
 
-function saveDockingConfigModal() {
+async function saveDockingConfigModal() {
   appState.dockingConfig = readAdvancedDockingConfigFromModal();
+  syncSelectionMapForLigandWorkflow();
   applyAdvancedDockingConfigToModal(appState.dockingConfig);
 
   closeDockingConfigModal({ restore: false });
   renderDockingConfigSummary();
+  scheduleUIStateSave();
+  await refreshReceptorSummary();
+}
+
+function renderMultiLigandPicker() {
+  if (!els.multiLigandPickerList || !els.multiLigandPickerSummary) return;
+  const ligandRows = Array.isArray(activeLigands) ? [...activeLigands] : [];
+  const selected = normalizeLigandNameList(multiLigandPickerState?.selectedLigands || [])
+    .filter((name) => ligandRows.includes(name))
+    .slice(0, 2);
+  if (multiLigandPickerState) {
+    multiLigandPickerState.selectedLigands = selected;
+  }
+  const selectedSet = new Set(selected);
+
+  els.multiLigandPickerSummary.textContent = selected.length
+    ? buildLigandSetLabel(selected, { short: true })
+    : "Select 2 ligands";
+
+  if (!ligandRows.length) {
+    els.multiLigandPickerList.innerHTML = `
+      <table>
+        <tbody>
+          <tr><td class="helper">No ligands available.</td></tr>
+        </tbody>
+      </table>
+    `;
+    if (els.saveMultiLigandPickerModal) {
+      els.saveMultiLigandPickerModal.disabled = true;
+    }
+    return;
+  }
+
+  const rows = ligandRows.map((ligandName) => {
+    const checked = selectedSet.has(ligandName);
+    const disabled = !checked && selected.length >= 2;
+    return `
+      <tr>
+        <td style="width:40px; text-align:center;">
+          <input type="checkbox" data-ligand-name="${escapeHtml(ligandName)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>
+        </td>
+        <td title="${escapeHtml(ligandName)}">${escapeHtml(shortenLigandLabel(ligandName))}</td>
+      </tr>
+    `;
+  }).join("");
+  els.multiLigandPickerList.innerHTML = `<table><tbody>${rows}</tbody></table>`;
+
+  Array.from(els.multiLigandPickerList.querySelectorAll("input[type='checkbox'][data-ligand-name]")).forEach((box) => {
+    box.addEventListener("change", (event) => {
+      const ligandName = String(event.target.getAttribute("data-ligand-name") || "").trim();
+      const current = new Set(normalizeLigandNameList(multiLigandPickerState?.selectedLigands || []));
+      if (event.target.checked) {
+        if (current.size >= 2) {
+          event.target.checked = false;
+          alert("Multi-Ligand workflow supports exactly 2 ligands.");
+          return;
+        }
+        current.add(ligandName);
+      } else {
+        current.delete(ligandName);
+      }
+      if (multiLigandPickerState) {
+        multiLigandPickerState.selectedLigands = normalizeLigandNameList([...current]).slice(0, 2);
+      }
+      renderMultiLigandPicker();
+    });
+  });
+
+  if (els.saveMultiLigandPickerModal) {
+    els.saveMultiLigandPickerModal.disabled = selected.length !== 2;
+  }
+}
+
+function openMultiLigandPicker({ pdbId, chain = "all" }) {
+  if (!els.multiLigandPickerModal) return;
+  const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
+  if (!normalizedPdbId) return;
+  multiLigandPickerState = {
+    pdbId: normalizedPdbId,
+    chain: normalizeChainValue(chain || "all"),
+    selectedLigands: getSelectedLigandsForReceptor(normalizedPdbId),
+  };
+  if (els.multiLigandPickerTitle) {
+    els.multiLigandPickerTitle.textContent = `Select Multi-Ligand Set (${normalizedPdbId})`;
+  }
+  if (els.multiLigandPickerSubtitle) {
+    els.multiLigandPickerSubtitle.textContent = "Choose exactly 2 ligands for this receptor.";
+  }
+  renderMultiLigandPicker();
+  els.multiLigandPickerModal.classList.add("active");
+}
+
+function closeMultiLigandPicker() {
+  if (!els.multiLigandPickerModal) return;
+  multiLigandPickerState = null;
+  els.multiLigandPickerModal.classList.remove("active");
+}
+
+async function saveMultiLigandPicker() {
+  const state = multiLigandPickerState;
+  if (!state) return;
+  const selectedLigands = normalizeLigandNameList(state.selectedLigands || []).slice(0, 2);
+  if (selectedLigands.length !== 2) {
+    alert("Select exactly 2 ligands for Multi-Ligand docking.");
+    return;
+  }
+  if (!appState.selectionMap) appState.selectionMap = {};
+  if (!appState.selectionMap[state.pdbId]) appState.selectionMap[state.pdbId] = {};
+  appState.selectionMap[state.pdbId].chain = state.chain;
+  appState.selectionMap[state.pdbId].ligand_resnames = selectedLigands;
+  appState.selectionMap[state.pdbId].ligand_resname = buildLigandSetLabel(selectedLigands);
+
+  await fetchJSON("/api/ligands/select", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      pdb_id: state.pdbId,
+      chain: state.chain,
+      ligand: buildLigandSetLabel(selectedLigands),
+      ligands: selectedLigands,
+    }),
+  });
+  closeMultiLigandPicker();
+  await refreshReceptorSummary();
+  if (state.pdbId === appState.selectedReceptor) {
+    renderDockingConfigSummary();
+    await refreshViewer();
+  }
   scheduleUIStateSave();
 }
 
@@ -1099,7 +1313,8 @@ function saveDockingConfigModal() {
 async function loadState() {
   try {
     const data = await fetchJSON("/api/state");
-    appState.mode = data.mode;
+    const serverMode = String(data.mode || "").trim();
+    appState.mode = serverMode === "Multi-Ligand" ? "Docking" : serverMode;
     appState.selectedReceptor = data.selected_receptor || "";
     appState.selectedLigand = data.selected_ligand || "";
     appState.selectedChain = data.selected_chain || "all";
@@ -1125,7 +1340,13 @@ async function loadState() {
     appState.queueData = Array.isArray(data.queue) ? data.queue : [];
     appState.runStatus = data.run_status || "idle";
     appState.activeRunOutRoot = String(data.run_out_root || appState.activeRunOutRoot || "").trim();
-    appState.dockingConfig = normalizeDockingConfig(data.docking_config || appState.dockingConfig || DEFAULT_DOCKING_CONFIG);
+    appState.dockingConfig = normalizeDockingConfig({
+      ...(data.docking_config || appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
+      ligand_binding_mode: serverMode === "Multi-Ligand"
+        ? "multi_ligand"
+        : (data.docking_config || {}).ligand_binding_mode,
+    });
+    syncSelectionMapForLigandWorkflow();
     appState.resultsRootPath = String(data.results_root_path || appState.resultsRootPath || RESULTS_DOCK_ROOT).trim() || RESULTS_DOCK_ROOT;
     hydrateGridDataFromQueue(appState.queueData);
 
@@ -3444,6 +3665,7 @@ let storedReceptorFiles = [];
 let resultsDockFolders = [];
 let ligandInventoryInitialized = false;
 let dockingConfigSnapshot = null;
+let multiLigandPickerState = null;
 
 const UI_STATE_KEY = "docking_app_ui_state_v1";
 let uiStateSaveTimer = null;
@@ -3540,14 +3762,15 @@ async function restoreUIState() {
 
   const ui = toObjectOrEmpty(saved.ui);
   const savedMode = String(saved.mode || "").trim();
-  if (savedMode && savedMode !== appState.mode) {
+  const restoredMode = savedMode === "Multi-Ligand" ? "Docking" : savedMode;
+  if (restoredMode && restoredMode !== appState.mode) {
     try {
       await fetchJSON("/api/mode", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: savedMode }),
+        body: JSON.stringify({ mode: restoredMode }),
       });
-      appState.mode = savedMode;
+      appState.mode = restoredMode;
     } catch (_err) {
       // keep current mode if sync fails
     }
@@ -3558,7 +3781,13 @@ async function restoreUIState() {
     appState.resultsView = savedResultsView;
   }
 
-  appState.dockingConfig = normalizeDockingConfig(saved.dockingConfig || appState.dockingConfig || DEFAULT_DOCKING_CONFIG);
+  appState.dockingConfig = normalizeDockingConfig({
+    ...(saved.dockingConfig || appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
+    ligand_binding_mode: savedMode === "Multi-Ligand"
+      ? "multi_ligand"
+      : (saved.dockingConfig || {}).ligand_binding_mode,
+  });
+  syncSelectionMapForLigandWorkflow();
   appState.selectedQueueBatchId = normalizeQueueBatchId(ui.selectedQueueBatchId || appState.selectedQueueBatchId);
 
   if (els.runCount && ui.runCount !== undefined) els.runCount.value = String(ui.runCount);
@@ -3854,87 +4083,32 @@ async function renderReceptorSummary(rows) {
 
     if (isMultiLigandMode() && appState.mode !== "Redocking") {
       const shell = document.createElement("div");
-      shell.style.display = "grid";
-      shell.style.gap = "6px";
-      shell.style.maxHeight = "132px";
-      shell.style.overflowY = "auto";
+      shell.style.display = "block";
       shell.style.padding = "2px 0";
 
-      const selectedSet = new Set(selectedLigandsForRow);
-      const summary = document.createElement("div");
-      summary.className = "helper";
-      summary.style.fontSize = "11px";
-      summary.textContent = selectedSet.size
-        ? `${selectedSet.size}/2 selected: ${buildLigandSetLabel([...selectedSet])}`
-        : "Select exactly 2 dock-ready ligands.";
-      shell.appendChild(summary);
-
-      if (!activeLigands.length) {
-        const empty = document.createElement("div");
-        empty.className = "helper";
-        empty.textContent = "No dock-ready ligands available.";
-        shell.appendChild(empty);
-      } else {
-        activeLigands.forEach((ligName) => {
-          const label = document.createElement("label");
-          label.style.display = "flex";
-          label.style.alignItems = "center";
-          label.style.gap = "6px";
-          label.style.fontSize = "12px";
-          label.style.cursor = "pointer";
-          label.addEventListener("click", (event) => event.stopPropagation());
-
-          const box = document.createElement("input");
-          box.type = "checkbox";
-          box.value = ligName;
-          box.checked = selectedSet.has(ligName);
-          box.disabled = !box.checked && selectedSet.size >= 2;
-          box.addEventListener("click", (event) => event.stopPropagation());
-          box.addEventListener("change", async (event) => {
-            const current = new Set(getSelectedLigandsForReceptor(row.pdb_id));
-            const isChecked = Boolean(event.target.checked);
-            if (isChecked) {
-              if (current.size >= 2) {
-                event.target.checked = false;
-                alert("Multi-Ligand mode supports at most 2 ligands.");
-                return;
-              }
-              current.add(ligName);
-            } else {
-              current.delete(ligName);
-            }
-            const nextLigands = normalizeLigandNameList([...current]).slice(0, 2);
-            const joinedLabel = buildLigandSetLabel(nextLigands);
-            if (!appState.selectionMap) appState.selectionMap = {};
-            if (!appState.selectionMap[row.pdb_id]) appState.selectionMap[row.pdb_id] = {};
-            appState.selectionMap[row.pdb_id].ligand_resname = joinedLabel;
-            appState.selectionMap[row.pdb_id].ligand_resnames = nextLigands;
-            appState.selectionMap[row.pdb_id].chain = chainSelect.value || selectedChainForRow || "all";
-
-            await fetchJSON("/api/ligands/select", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                pdb_id: row.pdb_id,
-                chain: chainSelect.value || selectedChainForRow || "all",
-                ligand: joinedLabel,
-                ligands: nextLigands,
-              }),
-            });
-            await refreshReceptorSummary();
-            if (row.pdb_id === appState.selectedReceptor) {
-              renderDockingConfigSummary();
-            }
-            scheduleUIStateSave();
-          });
-
-          const text = document.createElement("span");
-          text.textContent = ligName;
-          label.appendChild(box);
-          label.appendChild(text);
-          shell.appendChild(label);
+      const selectedLigands = normalizeLigandNameList(selectedLigandsForRow).slice(0, 2);
+      const trigger = document.createElement("button");
+      trigger.type = "button";
+      trigger.className = "secondary";
+      trigger.style.width = "100%";
+      trigger.style.textAlign = "left";
+      trigger.style.whiteSpace = "nowrap";
+      trigger.style.overflow = "hidden";
+      trigger.style.textOverflow = "ellipsis";
+      trigger.textContent = selectedLigands.length
+        ? buildLigandSetLabel(selectedLigands, { short: true })
+        : "Choose ligands...";
+      trigger.title = selectedLigands.length
+        ? buildLigandSetLabel(selectedLigands)
+        : "Choose exactly 2 ligands";
+      trigger.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openMultiLigandPicker({
+          pdbId: row.pdb_id,
+          chain: chainSelect.value || selectedChainForRow || "all",
         });
-      }
+      });
+      shell.appendChild(trigger);
       ligandControl = shell;
     } else {
       const ligSelect = document.createElement("select");
@@ -3964,7 +4138,7 @@ async function renderReceptorSummary(rows) {
       availableLigands.forEach((ligName) => {
         const opt = document.createElement("option");
         opt.value = ligName;
-        opt.textContent = ligName;
+        opt.textContent = shortenLigandLabel(ligName);
         if (appState.selectionMap && appState.selectionMap[row.pdb_id] && appState.selectionMap[row.pdb_id].ligand_resname === ligName) {
           opt.selected = true;
         }
@@ -4619,9 +4793,7 @@ async function saveQueueBatchModal() {
 
 async function setAppModeQuietly(mode) {
   const normalized = String(mode || "").trim();
-  const nextMode = normalized === "Redocking"
-    ? "Redocking"
-    : (normalized === "Multi-Ligand" ? "Multi-Ligand" : "Docking");
+  const nextMode = normalized === "Redocking" ? "Redocking" : "Docking";
   if (appState.mode !== nextMode) {
     await fetchJSON("/api/mode", {
       method: "POST",
@@ -4629,8 +4801,12 @@ async function setAppModeQuietly(mode) {
       body: JSON.stringify({ mode: nextMode }),
     });
     appState.mode = nextMode;
-    updateModeUI();
   }
+  appState.dockingConfig = normalizeDockingConfig({
+    ...(appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
+    ligand_binding_mode: normalized === "Multi-Ligand" ? "multi_ligand" : "single",
+  });
+  updateModeUI();
 }
 
 function renderRecentDockings(rows) {
@@ -4842,7 +5018,7 @@ async function buildQueue() {
     }),
     selection_map: selectionMap,
     grid_data: gridData,
-    mode: appState.mode || "Docking",
+    mode: getQueueJobMode(),
     out_root_path: document.getElementById("outRootPath")?.value || "data/dock",
     out_root_name: document.getElementById("outRootName")?.value || "",
     replace_queue: false,
@@ -5228,6 +5404,10 @@ function bindEvents() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && els.ligand3dModal?.classList.contains("active")) {
       closeLigand3dModal();
+      return;
+    }
+    if (event.key === "Escape" && els.multiLigandPickerModal?.classList.contains("active")) {
+      closeMultiLigandPicker();
     }
   });
   window.addEventListener("message", async (event) => {
@@ -5423,8 +5603,8 @@ function bindEvents() {
   }
 
   if (els.saveDockingConfigModal) {
-    els.saveDockingConfigModal.addEventListener("click", () => {
-      saveDockingConfigModal();
+    els.saveDockingConfigModal.addEventListener("click", async () => {
+      await saveDockingConfigModal();
     });
   }
 
@@ -5451,10 +5631,43 @@ function bindEvents() {
     });
   }
 
+  if (els.dockCfgLigandBindingMode) {
+    els.dockCfgLigandBindingMode.addEventListener("change", () => {
+      syncDockingModeUI();
+      renderDockingConfigSummary();
+    });
+  }
+
   if (els.dockingConfigModal) {
     els.dockingConfigModal.addEventListener("click", (event) => {
       if (event.target === els.dockingConfigModal) {
         closeDockingConfigModal({ restore: true });
+      }
+    });
+  }
+
+  if (els.closeMultiLigandPickerModal) {
+    els.closeMultiLigandPickerModal.addEventListener("click", () => {
+      closeMultiLigandPicker();
+    });
+  }
+
+  if (els.cancelMultiLigandPickerModal) {
+    els.cancelMultiLigandPickerModal.addEventListener("click", () => {
+      closeMultiLigandPicker();
+    });
+  }
+
+  if (els.saveMultiLigandPickerModal) {
+    els.saveMultiLigandPickerModal.addEventListener("click", async () => {
+      await saveMultiLigandPicker();
+    });
+  }
+
+  if (els.multiLigandPickerModal) {
+    els.multiLigandPickerModal.addEventListener("click", (event) => {
+      if (event.target === els.multiLigandPickerModal) {
+        closeMultiLigandPicker();
       }
     });
   }

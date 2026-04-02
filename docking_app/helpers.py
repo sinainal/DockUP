@@ -263,8 +263,11 @@ def normalize_docking_config(raw: Any) -> dict[str, Any]:
     """Normalise a raw docking configuration dict into a well-typed dict."""
     source = raw if isinstance(raw, dict) else {}
     defaults = dict(DOCKING_CONFIG_DEFAULTS)
+    ligand_binding_mode = str(source.get("ligand_binding_mode", defaults.get("ligand_binding_mode", "single")) or "single").strip().lower()
+    ligand_binding_mode = "multi_ligand" if ligand_binding_mode in {"multi_ligand", "multi-ligand"} else "single"
     cfg: dict[str, Any] = {
         "docking_mode": normalize_docking_mode(source.get("docking_mode", defaults.get("docking_mode", "standard"))),
+        "ligand_binding_mode": ligand_binding_mode,
         "pdb2pqr_ph": defaults["pdb2pqr_ph"],
         "pdb2pqr_ff": str(source.get("pdb2pqr_ff", defaults["pdb2pqr_ff"]) or defaults["pdb2pqr_ff"]).strip() or defaults["pdb2pqr_ff"],
         "pdb2pqr_ffout": str(source.get("pdb2pqr_ffout", defaults["pdb2pqr_ffout"]) or defaults["pdb2pqr_ffout"]).strip() or defaults["pdb2pqr_ffout"],

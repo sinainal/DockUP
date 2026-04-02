@@ -38,6 +38,7 @@ KIND_ORDER: tuple[str, ...] = (
 
 DOCKING_CONFIG_DEFAULTS: dict[str, Any] = {
     "docking_mode": "standard",
+    "ligand_binding_mode": "single",
     "pdb2pqr_ph": 7.4,
     "pdb2pqr_ff": "AMBER",
     "pdb2pqr_ffout": "AMBER",
