@@ -557,7 +557,11 @@ fi
 if [ -n "$VINA_SEED" ]; then
   vina_cmd+=(--seed "$VINA_SEED")
 fi
-"${vina_cmd[@]}"
+if command -v stdbuf >/dev/null 2>&1; then
+  stdbuf -o0 -e0 "${vina_cmd[@]}"
+else
+  "${vina_cmd[@]}"
+fi
 
 #──────────────── 8. Çıktıları klasöre taşı ─────────────────────────
 mkdir -p "$OUTDIR"

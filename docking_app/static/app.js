@@ -111,6 +111,7 @@ let queueBatchModalDraft = null;
 let queueBatchModalActiveJobIndex = 0;
 let latestReceptorSummaryRows = [];
 let dockingFlexTargetReceptorId = "";
+let lastAutoDockingRootKey = "";
 
 const EXCLUDED_RESN = new Set([
   "HOH", "DOD", "WAT", "NA", "CL", "K", "MG", "CA", "ZN", "FE", "CU", "MN", "CO", "NI",
@@ -517,6 +518,55 @@ function normalizePathForCompare(path) {
   const raw = String(path || "").trim();
   if (!raw) return "";
   return raw.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+async function syncLatestDockingRootSelection({ forceSelection = false, refreshVisible = false } = {}) {
+  const outRoot = String(appState.activeRunOutRoot || "").trim();
+  const nextKey = normalizePathForCompare(outRoot);
+  if (!nextKey) return false;
+  const changed = nextKey !== lastAutoDockingRootKey;
+  if (!changed && !forceSelection && !refreshVisible) {
+    return false;
+  }
+
+  if (changed || forceSelection) {
+    lastAutoDockingRootKey = nextKey;
+
+    appState.resultsRootPath = outRoot;
+    if (els.resultsRootPath) {
+      els.resultsRootPath.value = outRoot;
+    }
+    if (els.resultsDockFolderSelect) {
+      renderResultsDockFolderOptions(outRoot);
+    }
+
+    const reportOutput = defaultReportOutputPath(outRoot);
+    reportCurrentSource = outRoot;
+    reportCurrentOutput = reportOutput;
+    if (els.reportRootPath) {
+      els.reportRootPath.value = outRoot;
+    }
+    if (els.reportOutputPath) {
+      els.reportOutputPath.value = reportOutput;
+    }
+    if (els.reportDocRootPath) {
+      els.reportDocRootPath.value = reportOutput;
+    }
+    reportDocRootPath = reportOutput;
+  }
+
+  if (!refreshVisible) {
+    return changed;
+  }
+
+  if (appState.mode === "Results") {
+    await refreshResultsDockFolders(outRoot);
+    await scanResults();
+  } else if (appState.mode === "Report") {
+    applyReportSourceSelection(outRoot);
+    await fetchReports();
+  }
+  return changed;
 }
 
 function extractOutRootFromCommand(command) {
@@ -4138,7 +4188,7 @@ async function renderReceptorSummary(rows) {
       availableLigands.forEach((ligName) => {
         const opt = document.createElement("option");
         opt.value = ligName;
-        opt.textContent = shortenLigandLabel(ligName);
+        opt.textContent = ligName;
         if (appState.selectionMap && appState.selectionMap[row.pdb_id] && appState.selectionMap[row.pdb_id].ligand_resname === ligName) {
           opt.selected = true;
         }
@@ -4946,6 +4996,7 @@ async function continueRecentQueue(itemId, outRootHint = "") {
   appState.runStatus = data.status || "running";
   const cmdOutRoot = extractOutRootFromCommand(data.command || "");
   appState.activeRunOutRoot = String(data.out_root || cmdOutRoot || outRootHint || appState.activeRunOutRoot || "").trim();
+  await syncLatestDockingRootSelection({ forceSelection: true, refreshVisible: false });
   appState.runElapsedSeconds = 0;
   setRunStatus(appState.runStatus);
   appState.queueCount = data.queue_count || 0;
@@ -5251,6 +5302,7 @@ async function startRun() {
   });
   appState.runStatus = "running";
   appState.activeRunOutRoot = String(data.out_root || extractOutRootFromCommand(data.command || "") || "").trim();
+  await syncLatestDockingRootSelection({ forceSelection: true, refreshVisible: false });
   appState.runElapsedSeconds = 0;
   setRunStatus("running");
   updateRunMetrics({
@@ -5295,29 +5347,32 @@ function pollRunStatus() {
   runPoll = setInterval(async () => {
     try {
       const data = await fetchJSON("/api/run/status");
+      const nextStatus = data.status || "idle";
       appState.runStatus = data.status || "idle";
       appState.activeRunOutRoot = String(data.out_root || extractOutRootFromCommand(data.command || "") || appState.activeRunOutRoot || "").trim();
+      await syncLatestDockingRootSelection({ refreshVisible: false });
       appState.runElapsedSeconds = Number(data.elapsed_seconds || 0);
       if (els.runLog) els.runLog.textContent = data.log || "";
-      setRunStatus(data.status || "idle");
+      setRunStatus(nextStatus);
       updateRunMetrics({
         command: data.command || "",
         totalRuns: data.total_runs || 0,
         completedRuns: data.completed_runs || 0,
         elapsedSeconds: data.elapsed_seconds || 0,
-        status: data.status || "idle",
+        status: nextStatus,
       });
-      if (isRunActiveStatus(data.status || "idle")) {
+      if (isRunActiveStatus(nextStatus)) {
         const now = Date.now();
         if (now - recentAutoRefreshTs >= 5000) {
           recentAutoRefreshTs = now;
           refreshRecentDockings().catch((err) => console.error("Recent docking refresh failed:", err));
         }
       }
-      if (!isRunActiveStatus(data.status || "idle")) {
+      if (!isRunActiveStatus(nextStatus)) {
         clearInterval(runPoll);
         runPoll = null;
         recentAutoRefreshTs = 0;
+        await syncLatestDockingRootSelection({ refreshVisible: true });
         refreshRecentDockings().catch((err) => console.error("Recent docking refresh failed:", err));
       }
     } catch (e) {
@@ -6284,6 +6339,7 @@ async function init() {
   updateGridSelectionInfo();
   await loadState();
   await restoreUIState();
+  await syncLatestDockingRootSelection({ forceSelection: true, refreshVisible: false });
   bindEvents();
   await refreshLigands();
   await refreshReceptorSummary();

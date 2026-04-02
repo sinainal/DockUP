@@ -111,20 +111,53 @@ def _discover_plip_command(python_bin: Path) -> list[str]:
     return []
 
 
+def _maybe_wrap_stdbuf(cmd: list[str]) -> list[str]:
+    stdbuf_bin = shutil.which("stdbuf")
+    if not stdbuf_bin:
+        return cmd
+    return [stdbuf_bin, "-o0", "-e0", *cmd]
+
+
 def _run_command(cmd: list[str], *, cwd: Path, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
     print("+", " ".join(cmd))
+    run_cmd = _maybe_wrap_stdbuf(cmd) if capture_output else cmd
+    if capture_output:
+        proc = subprocess.Popen(
+            run_cmd,
+            cwd=str(cwd),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+        )
+        stdout_chunks: list[str] = []
+        assert proc.stdout is not None
+        while True:
+            chunk = proc.stdout.read(1)
+            if chunk == "":
+                break
+            stdout_chunks.append(chunk)
+            sys.stdout.write(chunk)
+            sys.stdout.flush()
+        returncode = proc.wait()
+        completed = subprocess.CompletedProcess(
+            cmd,
+            returncode,
+            stdout="".join(stdout_chunks),
+            stderr="",
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"Command failed with exit code {completed.returncode}: {' '.join(cmd)}"
+            )
+        return completed
     completed = subprocess.run(
-        cmd,
+        run_cmd,
         cwd=str(cwd),
         text=True,
         capture_output=capture_output,
         check=False,
     )
-    if capture_output:
-        if completed.stdout:
-            print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
-        if completed.stderr:
-            print(completed.stderr, file=sys.stderr, end="" if completed.stderr.endswith("\n") else "\n")
     if completed.returncode != 0:
         raise RuntimeError(
             f"Command failed with exit code {completed.returncode}: {' '.join(cmd)}"

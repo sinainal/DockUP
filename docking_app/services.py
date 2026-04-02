@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
 import shlex
 import subprocess
@@ -39,6 +40,8 @@ from .state import (
     STATE,
 )
 
+RUN_DONE_LINE_RE = re.compile(r"\bDONE\s+(\d+)/(\d+)\b")
+
 
 # ---------------------------------------------------------------------------
 # File upload / list
@@ -70,6 +73,27 @@ def _existing_files(out_dir: Path, suffixes: tuple[str, ...]) -> list[Path]:
     for suf in suffixes:
         files.extend(sorted(out_dir.glob(f"*{suf}")))
     return files
+
+
+def _update_run_state_from_output_line(line_clean: str) -> None:
+    if line_clean.startswith("RUN1:"):
+        RUN_STATE["command"] = line_clean.replace("RUN1:", "", 1).strip()
+    done_match = RUN_DONE_LINE_RE.search(line_clean)
+    if done_match:
+        done_idx = int(done_match.group(1))
+        done_total = int(done_match.group(2))
+        if done_total > 0 and int(RUN_STATE.get("total_runs", 0) or 0) <= 0:
+            RUN_STATE["total_runs"] = done_total
+        total_bound = max(1, int(RUN_STATE.get("total_runs", done_total) or done_total))
+        RUN_STATE["completed_runs"] = max(
+            int(RUN_STATE.get("completed_runs", 0) or 0),
+            min(done_idx, total_bound),
+        )
+    elif "Run complete." in line_clean:
+        RUN_STATE["completed_runs"] = min(
+            int(RUN_STATE.get("completed_runs", 0) or 0) + 1,
+            max(1, int(RUN_STATE.get("total_runs", 0) or 1)),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1157,12 +1181,16 @@ def _start_run(
     batch_script.write_text("\n".join(script_lines) + "\n")
     batch_script.chmod(0o755)
     cmd = ["bash", str(batch_script)]
+    run_env = os.environ.copy()
+    run_env.setdefault("PYTHONUNBUFFERED", "1")
     state.RUN_PROC = subprocess.Popen(
         cmd,
         cwd=str(BASE),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        bufsize=1,
+        env=run_env,
         start_new_session=True,
     )
 
@@ -1170,33 +1198,58 @@ def _start_run(
         proc = state.RUN_PROC
         if not proc or not proc.stdout:
             return
-        done_line_re = re.compile(r"\bDONE\s+(\d+)/(\d+)\b")
         with batch_log_path.open("a", encoding="utf-8", errors="ignore") as log_handle:
-            for line in proc.stdout:
-                line_clean = line.rstrip()
-                if line_clean.startswith("RUN1:"):
-                    RUN_STATE["command"] = line_clean.replace("RUN1:", "", 1).strip()
-                RUN_STATE["log_lines"].append(line_clean)
-                done_match = done_line_re.search(line_clean)
-                if done_match:
-                    done_idx = int(done_match.group(1))
-                    done_total = int(done_match.group(2))
-                    if done_total > 0 and int(RUN_STATE.get("total_runs", 0) or 0) <= 0:
-                        RUN_STATE["total_runs"] = done_total
-                    total_bound = max(1, int(RUN_STATE.get("total_runs", done_total) or done_total))
-                    RUN_STATE["completed_runs"] = max(
-                        int(RUN_STATE.get("completed_runs", 0) or 0),
-                        min(done_idx, total_bound),
-                    )
-                elif "Run complete." in line_clean:
-                    RUN_STATE["completed_runs"] = min(
-                        int(RUN_STATE.get("completed_runs", 0) or 0) + 1,
-                        max(1, int(RUN_STATE.get("total_runs", 0) or 1)),
-                    )
+            partial_active = False
+            last_runtime_write = 0.0
+            saw_cr = False
+
+            def _trim_logs() -> None:
                 RUN_STATE["log_lines"] = RUN_STATE["log_lines"][-400:]
-                log_handle.write(line_clean + "\n")
+
+            def _flush_runtime_state(*, force: bool = False) -> None:
+                nonlocal last_runtime_write
+                now = time.time()
+                if not force and now - last_runtime_write < 0.2:
+                    return
+                _trim_logs()
                 log_handle.flush()
                 _write_runtime_status()
+                last_runtime_write = now
+
+            def _finalize_partial_line() -> None:
+                nonlocal partial_active
+                if not partial_active or not RUN_STATE["log_lines"]:
+                    return
+                partial_active = False
+                _update_run_state_from_output_line(RUN_STATE["log_lines"][-1])
+
+            while True:
+                chunk = proc.stdout.read(1)
+                if chunk == "":
+                    break
+                log_handle.write(chunk)
+                if chunk == "\r":
+                    _finalize_partial_line()
+                    _flush_runtime_state(force=True)
+                    saw_cr = True
+                    continue
+                if chunk == "\n":
+                    if saw_cr:
+                        saw_cr = False
+                        continue
+                    _finalize_partial_line()
+                    _flush_runtime_state(force=True)
+                    continue
+                saw_cr = False
+                if partial_active and RUN_STATE["log_lines"]:
+                    RUN_STATE["log_lines"][-1] += chunk
+                else:
+                    RUN_STATE["log_lines"].append(chunk)
+                    partial_active = True
+                _trim_logs()
+                _flush_runtime_state(force=False)
+            _finalize_partial_line()
+            _flush_runtime_state(force=True)
         proc.wait()
         RUN_STATE["returncode"] = proc.returncode
         if RUN_STATE.get("status") in {"stopping", "stopped"}:

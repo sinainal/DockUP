@@ -15,6 +15,7 @@ __pycache__/
 
 # Runtime/generated docking data (do not version)
 docking_app/workspace/data/
+docking_app/workspace/tools/
 docking_app/workspace/plip-2.4.0/build/
 docking_app/workspace/plip-2.4.0/plip.egg-info/
 docking_app/workspace/plip-2.4.0/*.egg-info/
