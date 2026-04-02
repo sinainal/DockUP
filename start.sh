@@ -10,12 +10,19 @@ APP_MODULE="docking_app.app:app"
 export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 # ── Setup Check ─────────────────────────────────────────────────────────────
-if [ ! -f "$ROOT_DIR/.setup_done" ] || [ ! -f "$ROOT_DIR/.venv/bin/activate" ]; then
+if [ ! -f "$ROOT_DIR/.venv/bin/activate" ] || [ ! -x "$ROOT_DIR/.venv/bin/python" ]; then
   echo "=== Running First-time Setup ==="
   bash "$ROOT_DIR/setup.sh"
-elif ! "$ROOT_DIR/.venv/bin/python" -c "import fastapi, uvicorn, matplotlib, docx, cv2" 2>/dev/null; then
-  echo "=== Core dependencies missing in venv (matplotlib/docx/cv2) — running setup ==="
+elif ! "$ROOT_DIR/.venv/bin/python" -c "import fastapi, uvicorn, matplotlib, docx" 2>/dev/null; then
+  echo "=== Core dependencies missing in venv (fastapi/uvicorn/matplotlib/docx) — running setup ==="
   bash "$ROOT_DIR/setup.sh"
+elif [ ! -f "$ROOT_DIR/.setup_done" ]; then
+  echo "[WARN] .setup_done is missing, but the existing venv looks usable. Skipping setup."
+fi
+
+if ! "$ROOT_DIR/.venv/bin/python" -c "import cv2" 2>/dev/null; then
+  echo "[WARN] Optional dependency cv2 is missing in the current venv."
+  echo "[WARN] OtoFigure image assembly may fail until ./setup.sh succeeds."
 fi
 
 # Ensure .env exists

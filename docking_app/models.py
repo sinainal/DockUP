@@ -18,6 +18,7 @@ class SelectReceptorPayload(BaseModel):
 class SelectLigandPayload(BaseModel):
     pdb_id: str
     ligand: str = ""
+    ligands: list[str] = []
     chain: str = "all"
 
 

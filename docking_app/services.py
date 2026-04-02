@@ -25,6 +25,8 @@ from .helpers import (
     build_flex_residue_spec,
     normalize_docking_config,
     normalize_flex_residue_list,
+    normalize_ligand_name_list,
+    read_json,
     relative_to_base,
 )
 from .manifest import RUN_META_DIR_NAME
@@ -336,7 +338,7 @@ def _init_selection_map(meta: list[dict[str, Any]]) -> dict[str, dict[str, Any]]
         pdb_id = _normalize_receptor_id(item.get("pdb_id"))
         if not pdb_id:
             continue
-        selection[pdb_id] = {"chain": "all", "ligand_resname": "", "flex_residues": []}
+        selection[pdb_id] = {"chain": "all", "ligand_resname": "", "ligand_resnames": [], "flex_residues": []}
     return selection
 
 
@@ -481,6 +483,52 @@ def _summarize_plip(report_xml: Path) -> dict[str, Any]:
     }
 
 
+def _load_multi_ligand_sites(run_dir: Path) -> list[dict[str, Any]]:
+    multi_root = run_dir / "multi_ligand"
+    if not multi_root.exists() or not multi_root.is_dir():
+        return []
+
+    index_payload = read_json(multi_root / "sites.json", {})
+    if not isinstance(index_payload, dict):
+        index_payload = {}
+    raw_sites = index_payload.get("sites", [])
+    if not isinstance(raw_sites, list):
+        raw_sites = []
+
+    sites: list[dict[str, Any]] = []
+    for raw_site in raw_sites:
+        if not isinstance(raw_site, dict):
+            continue
+        site_dir = Path(str(raw_site.get("site_dir") or (multi_root / str(raw_site.get("site_id") or "")))).expanduser()
+        if not site_dir.is_absolute():
+            site_dir = (run_dir / site_dir).resolve()
+        else:
+            site_dir = site_dir.resolve()
+        if not site_dir.exists() or not site_dir.is_dir():
+            continue
+        report_xml = site_dir / "plip" / "report.xml"
+        interactions, residues, ligand_info = _parse_plip_report(report_xml)
+        entry = {
+            "site_id": str(raw_site.get("site_id") or site_dir.name),
+            "ligand_display_name": str(raw_site.get("ligand_display_name") or raw_site.get("ligand_source_name") or ""),
+            "ligand_source_name": str(raw_site.get("ligand_source_name") or ""),
+            "ligand_resname": str(raw_site.get("ligand_resname") or ligand_info.get("ligand_resname") or ""),
+            "ligand_chain": str(raw_site.get("ligand_chain") or ligand_info.get("ligand_chain") or ""),
+            "ligand_resid": str(raw_site.get("ligand_resid") or ligand_info.get("ligand_resid") or ""),
+            "site_dir": str(site_dir),
+            "interaction_map_path": str(site_dir / "interaction_map.json"),
+            "pose_path": str(raw_site.get("pose_path") or (site_dir / "pose.pdb")),
+            "ligand_sdf_path": str(raw_site.get("ligand_sdf_path") or ""),
+            "report_path": str(report_xml) if report_xml.exists() else "",
+            "interaction_count": len(interactions),
+            "residue_count": len(residues),
+            "interactions": interactions,
+            "residues": residues,
+        }
+        sites.append(entry)
+    return sites
+
+
 # ---------------------------------------------------------------------------
 # Results scanning
 # ---------------------------------------------------------------------------
@@ -501,6 +549,8 @@ def _parse_results_folder(folder: Path) -> dict[str, Any] | None:
     rmsd = _safe_float(payload.get("rmsd"))
     docking_mode = normalize_docking_config({"docking_mode": payload.get("docking_mode")}).get("docking_mode", "standard")
     flex_residues = normalize_flex_residue_list(payload.get("flex_residues") or payload.get("flex_residue_spec") or [])
+    is_multi_ligand = bool(payload.get("multi_ligand"))
+    payload_site_rows = payload.get("multi_ligand_sites") if isinstance(payload.get("multi_ligand_sites"), list) else []
 
     pdb_id = folder.name
     run_id = None
@@ -552,6 +602,9 @@ def _parse_results_folder(folder: Path) -> dict[str, Any] | None:
         ligand_chain = str(imap.get("ligand_chain") or "")
         ligand_resid = str(imap.get("ligand_resid") or "")
         residue_count = len(imap.get("residue_summary", []) or [])
+        is_multi_ligand = bool(imap.get("multi_ligand") or is_multi_ligand)
+        if is_multi_ligand and isinstance(imap.get("sites"), list):
+            payload_site_rows = [row for row in imap.get("sites", []) if isinstance(row, dict)]
 
     pdb_id_upper = pdb_id.upper()
     pdb_id_lower = pdb_id.lower()
@@ -587,16 +640,25 @@ def _parse_results_folder(folder: Path) -> dict[str, Any] | None:
         summary = _summarize_plip(report_xml)
         interaction_count = summary.get("interaction_count", 0)
         residue_count = summary.get("residue_count", residue_count)
-        if not ligand_resname:
+        if not ligand_resname and not is_multi_ligand:
             ligand_resname = summary.get("ligand_resname", "") or ligand_resname
-        if not ligand_chain:
+        if not ligand_chain and not is_multi_ligand:
             ligand_chain = summary.get("ligand_chain", "") or ligand_chain
-        if not ligand_resid:
+        if not ligand_resid and not is_multi_ligand:
             ligand_resid = summary.get("ligand_resid", "") or ligand_resid
         if not report_path:
             report_path = str(report_xml)
 
     ligand_display = ligand_from_folder
+    if is_multi_ligand:
+        ligand_display = str(payload.get("ligand_display_name") or ligand_display or "Multi-Ligand").strip() or "Multi-Ligand"
+        ligand_resname = ligand_display
+        ligand_chain = ""
+        ligand_resid = ""
+        if payload.get("interaction_count") is not None:
+            interaction_count = int(payload.get("interaction_count") or 0)
+        if payload.get("residue_count") is not None:
+            residue_count = int(payload.get("residue_count") or 0)
     if not ligand_display or ligand_display == "results":
         if ligand_resname and ligand_resname != "UNL":
             ligand_display = ligand_resname
@@ -610,6 +672,10 @@ def _parse_results_folder(folder: Path) -> dict[str, Any] | None:
         "best_affinity": best_affinity,
         "rmsd": rmsd,
         "docking_mode": docking_mode,
+        "job_type": str(payload.get("job_type") or "Docking"),
+        "multi_ligand": is_multi_ligand,
+        "ligand_count": int(payload.get("ligand_count") or (len(payload_site_rows) or 0)),
+        "multi_ligand_sites": payload_site_rows,
         "flex_residues": flex_residues,
         "ligand_resname": ligand_resname,
         "ligand_display_name": ligand_display,
@@ -701,6 +767,7 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
     else:
         docking_config = normalize_docking_config(STATE.get("docking_config") or {})
     requested_flexible_mode = docking_config.get("docking_mode") == "flexible"
+    is_multi_ligand_mode = str(mode or "").strip() == "Multi-Ligand"
 
     ligand_files = _existing_files(LIGAND_DIR, (".sdf",))
     ligand_file_map = {lig.name: lig for lig in ligand_files}
@@ -738,6 +805,7 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     out_root = _safe_out_root()
     grid_store_dir = out_root / "_grid"
+    ligand_set_store_dir = out_root / "_ligand_sets"
     out_root_path_display = str(relative_to_base(out_root.parent))
     out_root_name = out_root.name
     grid_store_ready = False
@@ -748,6 +816,7 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
             return
         out_root.mkdir(parents=True, exist_ok=True)
         grid_store_dir.mkdir(parents=True, exist_ok=True)
+        ligand_set_store_dir.mkdir(parents=True, exist_ok=True)
         grid_store_ready = True
 
     for meta in STATE["receptor_meta"]:
@@ -759,9 +828,18 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
         sel = selection_map[pdb_id]
         chain = sel.get("chain", "all")
         selected_ligand = str(sel.get("ligand_resname", "") or sel.get("ligand", "")).strip()
+        selected_ligands = normalize_ligand_name_list(
+            sel.get("ligand_resnames")
+            or ([selected_ligand] if selected_ligand and selected_ligand != "all_set" else [])
+        )
         flex_residues = normalize_flex_residue_list(sel.get("flex_residues") or sel.get("flex_residue_spec") or [])
         flex_residue_spec = build_flex_residue_spec(flex_residues)
         effective_flex_mode = requested_flexible_mode and bool(flex_residue_spec)
+        if is_multi_ligand_mode and requested_flexible_mode:
+            raise HTTPException(
+                status_code=400,
+                detail="Multi-Ligand mode currently supports standard docking only.",
+            )
         row_docking_config = normalize_docking_config(
             {**docking_config, "docking_mode": "flexible" if effective_flex_mode else "standard"}
         )
@@ -776,10 +854,14 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 detail=f"Grid parameters not set for {pdb_id}. Please create/set a gridbox before building the queue.",
             )
 
-        if not selected_ligand:
+        if not selected_ligand and not selected_ligands:
             if mode == "Redocking":
                 detail = (
                     f"No ligand selected for {pdb_id}. Please choose a native ligand before building the queue."
+                )
+            elif is_multi_ligand_mode:
+                detail = (
+                    f"No ligands selected for {pdb_id}. Please choose exactly two dock-ready ligands before building the queue."
                 )
             else:
                 detail = (
@@ -790,7 +872,49 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
         target_ligands = []
 
-        if mode == "Redocking":
+        if is_multi_ligand_mode:
+            if selected_ligand == "all_set":
+                raise HTTPException(
+                    status_code=400,
+                    detail="All Ligands is not supported in Multi-Ligand mode. Select exactly two ligands.",
+                )
+            if len(selected_ligands) != 2:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Select exactly two ligands for {pdb_id} in Multi-Ligand mode.",
+                )
+            missing = [name for name in selected_ligands if name not in active_set]
+            if missing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Ligand(s) not found in dock-ready ligands: {', '.join(missing)}",
+                )
+            ligand_rows: list[dict[str, str]] = []
+            for ligand_name in selected_ligands:
+                lig = ligand_file_map.get(ligand_name)
+                if lig is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Ligand file not found for '{ligand_name}'.",
+                    )
+                ligand_rows.append({"name": lig.name, "path": str(lig.resolve())})
+            _ensure_grid_store_dir()
+            set_payload = {
+                "mode": "multi_ligand",
+                "pdb_id": pdb_id,
+                "ligands": ligand_rows,
+            }
+            set_raw = json.dumps(set_payload, sort_keys=True, separators=(",", ":"))
+            set_hash = hashlib.sha1(set_raw.encode("utf-8")).hexdigest()[:12]
+            set_manifest_path = ligand_set_store_dir / f"{pdb_id}_{set_hash}.json"
+            if not set_manifest_path.exists():
+                set_manifest_path.write_text(json.dumps(set_payload, indent=2), encoding="utf-8")
+            target_ligands = [{
+                "name": " + ".join(Path(item["name"]).stem for item in ligand_rows),
+                "path": str(set_manifest_path),
+                "members": ligand_rows,
+            }]
+        elif mode == "Redocking":
             target_ligands = [{"name": selected_ligand, "path": ""}]
         else:
             if selected_ligand == "all_set":
@@ -845,14 +969,16 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
             ligand_resname = ligand_label
             if mode == "Redocking" and ligand_label:
                 ligand_resname = ligand_label.split()[0]
+            ligand_member_names = [str(item.get("name") or "").strip() for item in lig_obj.get("members", []) if str(item.get("name") or "").strip()]
 
             entries.append({
                 "batch_id": batch_id,
-                "job_type": mode,
+                "job_type": "Multi-Ligand" if is_multi_ligand_mode else mode,
                 "pdb_id": pdb_id,
                 "chain": chain,
                 "ligand_name": ligand_label,
                 "ligand_resname": ligand_resname,
+                "ligand_resnames": ligand_member_names,
                 "lig_spec": lig_obj["path"],
                 "pdb_file": meta.get("pdb_file", ""),
                 "grid_params": final_grid,
@@ -968,13 +1094,27 @@ def _start_run(
             "    ! is_empty \"$vina_cpu\" && args+=(--vina_cpu \"$vina_cpu\")\n"
             "    ! is_empty \"$vina_seed\" && args+=(--vina_seed \"$vina_seed\")\n"
             "    ! is_empty \"$OUT_ROOT\" && args+=(--out_root \"$OUT_ROOT\")\n"
+            "    runner=\"$SCRIPT_DIR/run1.sh\"\n"
+            "    if [[ \"$job_type\" == \"Multi-Ligand\" ]]; then\n"
+            "      runner=\"$SCRIPT_DIR/run_multi_ligand.py\"\n"
+            "    fi\n"
             "    echo \"[$(ts)] RUN $run_idx/$run_total | $pdb $chain $ligand (run_id=$run_id)\"\n"
-            "    echo \"RUN1: $SCRIPT_DIR/run1.sh ${args[*]}\"\n"
-            "    if bash \"$SCRIPT_DIR/run1.sh\" \"${args[@]}\"; then\n"
+            "    echo \"RUN1: $runner ${args[*]}\"\n"
+            "    if [[ \"$runner\" == *.py ]]; then\n"
+            "      if [[ -x \"$SCRIPT_DIR/../.venv/bin/python\" ]]; then\n"
+            "        \"$SCRIPT_DIR/../.venv/bin/python\" \"$runner\" \"${args[@]}\"\n"
+            "      else\n"
+            "        python3 \"$runner\" \"${args[@]}\"\n"
+            "      fi\n"
+            "      code=$?\n"
+            "    else\n"
+            "      bash \"$runner\" \"${args[@]}\"\n"
+            "      code=$?\n"
+            "    fi\n"
+            "    if [[ $code -eq 0 ]]; then\n"
             "      total_elapsed=$(( $(date +%s) - batch_start_epoch ))\n"
             "      echo \"[$(ts)] DONE $run_idx/$run_total | $pdb $chain $ligand (run_id=$run_id) | run=${SECONDS}s | batch=${total_elapsed}s\"\n"
             "    else\n"
-            "      code=$?\n"
             "      total_elapsed=$(( $(date +%s) - batch_start_epoch ))\n"
             "      echo \"[$(ts)] FAIL $run_idx/$run_total | $pdb $chain $ligand (run_id=$run_id) | exit=$code | run=${SECONDS}s | batch=${total_elapsed}s\"\n"
             "      exit $code\n"
@@ -996,8 +1136,9 @@ def _start_run(
         "run_idx=0",
         "batch_start_epoch=$(date +%s)",
         "echo \"[$(ts)] Batch start | jobs=$job_total runs=$RUNS total_runs=$run_total\"",
-        "while IFS=$'\\t' read -r pdb chain ligand lig_spec pdb_file grid_pad grid_file force_run_id flex_residue_spec pdb2pqr_ph pdb2pqr_ff pdb2pqr_ffout pdb2pqr_nodebump pdb2pqr_keep_chain mkrec_allow_bad_res mkrec_default_altloc docking_mode vina_exhaustiveness vina_num_modes vina_energy_range vina_cpu vina_seed; do",
+        "while IFS=$'\\t' read -r pdb chain ligand lig_spec pdb_file grid_pad grid_file force_run_id flex_residue_spec pdb2pqr_ph pdb2pqr_ff pdb2pqr_ffout pdb2pqr_nodebump pdb2pqr_keep_chain mkrec_allow_bad_res mkrec_default_altloc docking_mode vina_exhaustiveness vina_num_modes vina_energy_range vina_cpu vina_seed job_type; do",
         "  [[ -z \"$pdb\" || \"$pdb\" =~ ^# ]] && continue",
+        "  if is_empty \"$job_type\"; then job_type=\"Docking\"; fi",
         "  run_start=1",
         "  run_end=$RUNS",
         "  if ! is_empty \"$force_run_id\"; then",

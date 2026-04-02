@@ -173,9 +173,14 @@ def _normalize_selection_map(raw_map: Any) -> dict[str, dict[str, Any]]:
         if not pdb_id:
             continue
         source = raw_val if isinstance(raw_val, dict) else {}
+        ligand_names = source.get("ligand_resnames")
+        if not ligand_names:
+            ligand_raw = str(source.get("ligand_resname", "") or "").strip()
+            ligand_names = [ligand_raw] if ligand_raw and ligand_raw != "all_set" else []
         normalized[pdb_id] = {
             "chain": str(source.get("chain", "all") or "all"),
             "ligand_resname": str(source.get("ligand_resname", "") or ""),
+            "ligand_resnames": [str(item or "").strip() for item in ligand_names if str(item or "").strip()],
             "flex_residues": _normalize_flex_residue_rows(source.get("flex_residues") or source.get("flex_residue_spec") or []),
         }
     return normalized
@@ -291,14 +296,20 @@ def load_state_cache() -> None:
     known_ids = {item.get("pdb_id", "") for item in cached_meta}
     if known_ids:
         STATE["selection_map"] = {
-            pid: STATE["selection_map"].get(pid, {"chain": "all", "ligand_resname": "", "flex_residues": []})
+            pid: STATE["selection_map"].get(
+                pid,
+                {"chain": "all", "ligand_resname": "", "ligand_resnames": [], "flex_residues": []},
+            )
             for pid in known_ids
             if pid
         }
     else:
         STATE["selection_map"] = {}
     for pdb_id in known_ids:
-        STATE["selection_map"].setdefault(pdb_id, {"chain": "all", "ligand_resname": "", "flex_residues": []})
+        STATE["selection_map"].setdefault(
+            pdb_id,
+            {"chain": "all", "ligand_resname": "", "ligand_resnames": [], "flex_residues": []},
+        )
     if STATE["receptor_meta"]:
         selected = _normalize_receptor_id(STATE.get("selected_receptor", ""))
         if selected not in known_ids:

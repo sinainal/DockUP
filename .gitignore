@@ -10,6 +10,8 @@ __pycache__/
 .env
 .setup_done
 .setup.log
+.codex_testdeps/
+.codex_testdeps_py310/
 
 # Runtime/generated docking data (do not version)
 docking_app/workspace/data/

@@ -363,6 +363,7 @@ def scan_recent_incomplete_rows(
                 if key in manifest_jobs:
                     continue
                 manifest_jobs[key] = {
+                    "job_type": str(mrow.get("job_type") or "Docking"),
                     "pdb_id": pdb_id,
                     "chain": chain,
                     "ligand_name": ligand_name,

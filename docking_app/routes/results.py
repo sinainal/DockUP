@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from ..config import BASE, DATA_DIR, DOCK_DIR, RECEPTOR_DIR
 from ..config import WORKSPACE_DIR
 from ..helpers import resolve_dock_directory, to_display_path
-from ..services import _parse_plip_report, _parse_results_folder, _scan_results
+from ..services import _load_multi_ligand_sites, _parse_plip_report, _parse_results_folder, _scan_results
 from ..state import STATE
 
 router = APIRouter()
@@ -54,14 +54,38 @@ def results_detail(payload: dict[str, Any]) -> JSONResponse:
     if root not in target.parents and target != root:
         raise HTTPException(status_code=400, detail="Invalid result_dir.")
     entry = _parse_results_folder(target) or {}
-    report_xml = target / "plip" / "report.xml"
-    interactions, residues, ligand_info = _parse_plip_report(report_xml)
-    if not entry.get("ligand_resname") and ligand_info.get("ligand_resname"):
-        entry["ligand_resname"] = ligand_info.get("ligand_resname")
-    if not entry.get("ligand_chain") and ligand_info.get("ligand_chain"):
-        entry["ligand_chain"] = ligand_info.get("ligand_chain")
-    if not entry.get("ligand_resid") and ligand_info.get("ligand_resid"):
-        entry["ligand_resid"] = ligand_info.get("ligand_resid")
+    sites = _load_multi_ligand_sites(target) if entry.get("multi_ligand") else []
+    if sites:
+        default_site = sites[0]
+        interactions = list(default_site.get("interactions") or [])
+        residues = list(default_site.get("residues") or [])
+        entry["multi_ligand_sites"] = [
+            {
+                "site_id": site.get("site_id"),
+                "ligand_display_name": site.get("ligand_display_name"),
+                "ligand_source_name": site.get("ligand_source_name"),
+                "ligand_resname": site.get("ligand_resname"),
+                "ligand_chain": site.get("ligand_chain"),
+                "ligand_resid": site.get("ligand_resid"),
+                "interaction_count": site.get("interaction_count"),
+                "residue_count": site.get("residue_count"),
+                "site_dir": site.get("site_dir"),
+                "pose_path": site.get("pose_path"),
+                "ligand_sdf_path": site.get("ligand_sdf_path"),
+                "report_path": site.get("report_path"),
+            }
+            for site in sites
+        ]
+        entry["selected_site_id"] = default_site.get("site_id")
+    else:
+        report_xml = target / "plip" / "report.xml"
+        interactions, residues, ligand_info = _parse_plip_report(report_xml)
+        if not entry.get("ligand_resname") and ligand_info.get("ligand_resname"):
+            entry["ligand_resname"] = ligand_info.get("ligand_resname")
+        if not entry.get("ligand_chain") and ligand_info.get("ligand_chain"):
+            entry["ligand_chain"] = ligand_info.get("ligand_chain")
+        if not entry.get("ligand_resid") and ligand_info.get("ligand_resid"):
+            entry["ligand_resid"] = ligand_info.get("ligand_resid")
 
     native_ligand_path = ""
     ligand_filename = ""
@@ -119,7 +143,7 @@ def results_detail(payload: dict[str, Any]) -> JSONResponse:
     else:
         entry["ligand_display_name"] = current_display
     
-    return JSONResponse({"result": entry, "residues": residues, "interactions": interactions})
+    return JSONResponse({"result": entry, "residues": residues, "interactions": interactions, "sites": sites})
 
 
 @router.get("/api/results/file")

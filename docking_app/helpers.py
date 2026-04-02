@@ -151,6 +151,25 @@ def build_flex_residue_spec(rows: Any) -> str:
     return ",".join(f"{row['chain']}:{row['resno']}" for row in normalized if row.get("chain") and row.get("resno"))
 
 
+def normalize_ligand_name_list(raw: Any) -> list[str]:
+    """Normalize a ligand name payload into a stable deduplicated list."""
+    if isinstance(raw, str):
+        values = [part.strip() for part in raw.split(",") if part.strip()]
+    elif isinstance(raw, list):
+        values = [str(part or "").strip() for part in raw]
+    else:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        name = str(value or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
 def normalize_ligand_db_filename(filename: str) -> str:
     """Normalize ligand storage names while stripping generator timestamps."""
     src = Path(str(filename or "").strip())

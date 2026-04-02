@@ -10,7 +10,14 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..config import BASE, DOCK_DIR, RECEPTOR_DIR
-from ..helpers import build_flex_residue_spec, normalize_docking_config, normalize_flex_residue_list, read_json, write_json
+from ..helpers import (
+    build_flex_residue_spec,
+    normalize_docking_config,
+    normalize_flex_residue_list,
+    normalize_ligand_name_list,
+    read_json,
+    write_json,
+)
 from ..services import _existing_files, _init_selection_map, _load_receptor_meta, _normalize_receptor_id
 from ..state import DOCKING_CONFIG_DEFAULTS, STATE
 
@@ -44,6 +51,7 @@ def save_config(payload: dict[str, Any]) -> StreamingResponse:
             "pdb_id": pdb_id,
             "chain": sel.get("chain", "all"),
             "ligand": sel.get("ligand_resname", "") or sel.get("ligand", ""),
+            "ligands": ",".join(normalize_ligand_name_list(sel.get("ligand_resnames") or [])),
             "grid_center_x": grid.get("cx"),
             "grid_center_y": grid.get("cy"),
             "grid_center_z": grid.get("cz"),
@@ -119,6 +127,7 @@ def load_config(file: UploadFile = File(...)) -> JSONResponse:
                 selection_map[pdb_id] = {
                     "chain": str(row["chain"]) if pd.notna(row["chain"]) else "all",
                     "ligand_resname": str(row["ligand"]) if pd.notna(row["ligand"]) else "",
+                    "ligand_resnames": normalize_ligand_name_list(row.get("ligands") if pd.notna(row.get("ligands")) else []),
                     "flex_residues": normalize_flex_residue_list(row.get("flex_residues") if pd.notna(row.get("flex_residues")) else []),
                 }
                 

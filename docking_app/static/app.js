@@ -99,6 +99,8 @@ let currentResultPdbKey = "";
 let currentResultFlexSelectionData = null;
 let currentResultDockingMode = "standard";
 let currentResultData = null;
+let currentResultSites = [];
+let currentResultSelectedSiteId = "";
 let viewerPoseSyncBound = false;
 let applyingProgrammaticResultPose = false;
 let refreshViewerRequestId = 0;
@@ -554,6 +556,26 @@ function normalizeDockingMode(value) {
   return mode === "flexible" ? "flexible" : "standard";
 }
 
+function normalizeLigandNameList(rawList) {
+  if (typeof rawList === "string") {
+    return rawList
+      .split(",")
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .filter((item, index, items) => items.indexOf(item) === index);
+  }
+  if (!Array.isArray(rawList)) return [];
+  const next = [];
+  const seen = new Set();
+  rawList.forEach((item) => {
+    const name = String(item || "").trim();
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    next.push(name);
+  });
+  return next;
+}
+
 function normalizeFlexResidueRow(raw) {
   if (!raw || typeof raw !== "object") return null;
   const chain = String(raw.chain || "").trim();
@@ -644,6 +666,7 @@ function ensureSelectionMapEntry(pdbId) {
   const next = {
     chain: normalizeChainValue(current.chain || "all"),
     ligand_resname: String(current.ligand_resname || ""),
+    ligand_resnames: normalizeLigandNameList(current.ligand_resnames || (current.ligand_resname && current.ligand_resname !== "all_set" ? [current.ligand_resname] : [])),
     flex_residues: normalizeFlexResidueList(current.flex_residues || current.flex_residue_spec || []),
   };
   appState.selectionMap[normalizedPdbId] = next;
@@ -660,10 +683,39 @@ function normalizeSelectionMapState(rawMap) {
     next[pdbId] = {
       chain: normalizeChainValue(source.chain || "all"),
       ligand_resname: String(source.ligand_resname || source.ligand || ""),
+      ligand_resnames: normalizeLigandNameList(source.ligand_resnames || (source.ligand_resname && source.ligand_resname !== "all_set" ? [source.ligand_resname] : [])),
       flex_residues: normalizeFlexResidueList(source.flex_residues || source.flex_residue_spec || []),
     };
   });
   return next;
+}
+
+function isMultiLigandMode() {
+  return String(appState.mode || "").trim() === "Multi-Ligand";
+}
+
+function getSelectedLigandsForReceptor(pdbId = appState.selectedReceptor) {
+  const row = ensureSelectionMapEntry(pdbId);
+  return row ? normalizeLigandNameList(row.ligand_resnames || []) : [];
+}
+
+function buildLigandSetLabel(ligandNames) {
+  const names = normalizeLigandNameList(ligandNames);
+  return names.join(" + ");
+}
+
+function enforceMultiLigandDockingConfig() {
+  if (!isMultiLigandMode()) return;
+  const current = normalizeDockingConfig(appState.dockingConfig || DEFAULT_DOCKING_CONFIG);
+  if (current.docking_mode !== "standard") {
+    appState.dockingConfig = {
+      ...current,
+      docking_mode: "standard",
+    };
+  }
+  if (els.dockCfgDockingMode) {
+    els.dockCfgDockingMode.value = "standard";
+  }
 }
 
 function hydrateGridDataFromQueue(queueRows = appState.queueData || []) {
@@ -984,10 +1036,21 @@ function renderDockingConfigSummary() {
 }
 
 function syncDockingModeUI() {
-  const mode = normalizeDockingMode(els.dockCfgDockingMode?.value || appState.dockingConfig?.docking_mode || "standard");
+  if (isMultiLigandMode() && els.dockCfgDockingMode) {
+    els.dockCfgDockingMode.value = "standard";
+  }
+  const mode = isMultiLigandMode()
+    ? "standard"
+    : normalizeDockingMode(els.dockCfgDockingMode?.value || appState.dockingConfig?.docking_mode || "standard");
   syncDockingFlexTargetReceptorOptions();
   if (els.dockCfgFlexModeBlock) {
     els.dockCfgFlexModeBlock.style.display = mode === "flexible" ? "" : "none";
+  }
+  if (els.dockCfgDockingMode) {
+    els.dockCfgDockingMode.disabled = isMultiLigandMode();
+    els.dockCfgDockingMode.title = isMultiLigandMode()
+      ? "Multi-Ligand mode currently supports standard docking only."
+      : "";
   }
   if (els.dockCfgFlexInfo) {
     const selected = getFlexSelectionData(getFlexTargetReceptorId());
@@ -1051,6 +1114,7 @@ async function loadState() {
         nextSelection[pdbId] = {
           chain: normalizeChainValue(row.chain || "all"),
           ligand_resname: String(row.ligand_resname || ""),
+          ligand_resnames: normalizeLigandNameList(row.ligand_resnames || (row.ligand_resname && row.ligand_resname !== "all_set" ? [row.ligand_resname] : [])),
           flex_residues: normalizeFlexResidueList(row.flex_residues || row.flex_residue_spec || []),
         };
       });
@@ -1098,6 +1162,7 @@ async function loadState() {
 
 function updateModeUI() {
   if (!els.modeToggle) return;
+  enforceMultiLigandDockingConfig();
   Array.from(els.modeToggle.querySelectorAll(".toggle")).forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.mode === appState.mode);
   });
@@ -1796,12 +1861,31 @@ function isLigandResidue(resname) {
   return true;
 }
 
-function findDockedLigandResidue(component, result) {
-  if (!component || !component.structure) return null;
+function getResultLigandDescriptors(result) {
+  if (result?.multi_ligand) {
+    const siteRows = Array.isArray(currentResultSites) && currentResultSites.length
+      ? currentResultSites
+      : (Array.isArray(result?.multi_ligand_sites) ? result.multi_ligand_sites : []);
+    return siteRows
+      .map((site) => ({
+        resname: normalizeResname(site?.ligand_resname),
+        chain: String(site?.ligand_chain || "").trim(),
+        resid: String(site?.ligand_resid || "").trim(),
+      }))
+      .filter((site) => site.resname || site.chain || site.resid);
+  }
+  return [
+    {
+      resname: normalizeResname(result?.ligand_resname),
+      chain: String(result?.ligand_chain || "").trim(),
+      resid: String(result?.ligand_resid || "").trim(),
+    },
+  ].filter((site) => site.resname || site.chain || site.resid);
+}
 
-  const wantResname = normalizeResname(result?.ligand_resname);
-  const wantChain = String(result?.ligand_chain || "").trim();
-  const wantResid = String(result?.ligand_resid || "").trim();
+function findDockedLigandResidues(component, result) {
+  if (!component || !component.structure) return null;
+  const desiredLigands = getResultLigandDescriptors(result);
 
   const candidates = [];
   component.structure.eachResidue((res) => {
@@ -1815,27 +1899,41 @@ function findDockedLigandResidue(component, result) {
     res.eachAtom(() => { atomCount += 1; });
     candidates.push({ resname, chain, resid, sele, atomCount });
   });
-  if (!candidates.length) return null;
+  if (!candidates.length) return [];
 
-  const exact = candidates.find((c) =>
-    (!wantResname || c.resname === wantResname) &&
-    (!wantResid || c.resid === wantResid) &&
-    (!wantChain || c.chain === wantChain)
-  );
-  if (exact) return exact;
+  if (desiredLigands.length) {
+    const exactMatches = [];
+    const seen = new Set();
+    desiredLigands.forEach((desired) => {
+      const match = candidates.find((candidate) =>
+        (!desired.resname || candidate.resname === desired.resname) &&
+        (!desired.resid || candidate.resid === desired.resid) &&
+        (!desired.chain || candidate.chain === desired.chain)
+      );
+      if (!match || seen.has(match.sele)) return;
+      seen.add(match.sele);
+      exactMatches.push(match);
+    });
+    if (exactMatches.length) return exactMatches;
+  }
 
   const unl = candidates
     .filter((c) => c.resname === "UNL")
     .sort((a, b) => b.atomCount - a.atomCount);
-  if (unl.length) return unl[0];
+  if (unl.length) return desiredLigands.length > 1 ? unl.slice(0, 2) : [unl[0]];
 
   candidates.sort((a, b) => b.atomCount - a.atomCount);
-  return candidates[0];
+  return desiredLigands.length > 1 ? candidates.slice(0, 2) : [candidates[0]];
+}
+
+function findDockedLigandResidue(component, result) {
+  return findDockedLigandResidues(component, result)[0] || null;
 }
 
 function findDockedLigandSelection(component, result) {
-  const residue = findDockedLigandResidue(component, result);
-  return residue?.sele || "";
+  const residues = findDockedLigandResidues(component, result);
+  if (!residues.length) return "";
+  return residues.map((residue) => `(${residue.sele})`).join(" or ");
 }
 
 function isProteinAtom(atom) {
@@ -1861,15 +1959,19 @@ function computeAtomCenter(component, atomFilter) {
 }
 
 function computeLigandCenter(component, ligandResidue) {
-  if (!ligandResidue) return null;
-  const wantResname = normalizeResname(ligandResidue.resname);
-  const wantResid = String(ligandResidue.resid || "").trim();
-  const wantChain = String(ligandResidue.chain || "").trim();
+  const residues = Array.isArray(ligandResidue)
+    ? ligandResidue.filter(Boolean)
+    : (ligandResidue ? [ligandResidue] : []);
+  if (!residues.length) return null;
   return computeAtomCenter(component, (atom) => {
     const atomRes = normalizeResname(atom.resname);
     const atomResid = String(atom.resno ?? "").trim();
     const atomChain = String(atom.chainname || "").trim();
-    return atomRes === wantResname && atomResid === wantResid && atomChain === wantChain;
+    return residues.some((entry) =>
+      atomRes === normalizeResname(entry.resname) &&
+      atomResid === String(entry.resid || "").trim() &&
+      atomChain === String(entry.chain || "").trim()
+    );
   });
 }
 
@@ -2507,6 +2609,36 @@ function renderResidueTable(residues) {
   }
 }
 
+function getCurrentResultSite(siteId = currentResultSelectedSiteId) {
+  const normalized = String(siteId || "").trim();
+  if (!Array.isArray(currentResultSites) || !currentResultSites.length) return null;
+  return currentResultSites.find((site) => String(site?.site_id || "").trim() === normalized) || currentResultSites[0];
+}
+
+function syncCurrentResultInteractionView() {
+  const activeSite = getCurrentResultSite();
+  const interactions = Array.isArray(activeSite?.interactions) ? activeSite.interactions : [];
+  const residues = Array.isArray(activeSite?.residues) ? activeSite.residues : [];
+  currentResultSelectedSiteId = String(activeSite?.site_id || currentResultSelectedSiteId || "").trim();
+  appState.currentInteractions = interactions;
+  renderInteractionTable(interactions);
+  buildInteractionMaps(residues);
+  renderInteractionLegend();
+  if (appState.mode === "Results" && comp && els.showInteractions?.checked) {
+    updateRepresentations();
+  }
+  return activeSite;
+}
+
+function activateResultSite(siteId) {
+  currentResultSelectedSiteId = String(siteId || "").trim();
+  if (currentResultData) {
+    currentResultData.selected_site_id = currentResultSelectedSiteId;
+    renderResultDetail(currentResultData);
+  }
+  syncCurrentResultInteractionView();
+}
+
 // Bond highlighting variables
 let bondShapes = [];
 let selectedBondIndex = -1;
@@ -2563,12 +2695,18 @@ function renderResultDetail(result) {
   if (!els.resultDetail) return;
   if (!result) {
     currentResultData = null;
+    currentResultSites = [];
+    currentResultSelectedSiteId = "";
+    appState.currentInteractions = [];
     setCurrentResultFlexSelection(null);
     els.resultDetail.innerHTML = '<div class="helper">Select a run from the table to preview details.</div>';
     return;
   }
   if (result.view === "average") {
     currentResultData = null;
+    currentResultSites = [];
+    currentResultSelectedSiteId = "";
+    appState.currentInteractions = [];
     setCurrentResultFlexSelection(null);
     els.resultDetail.innerHTML = `
       <div class="result-detail-grid">
@@ -2598,6 +2736,80 @@ function renderResultDetail(result) {
         </div>
       </div>
     `;
+    return;
+  }
+  if (result.multi_ligand) {
+    const activeSite = getCurrentResultSite(result.selected_site_id || currentResultSelectedSiteId);
+    const siteButtons = currentResultSites.map((site) => {
+      const siteId = String(site?.site_id || "").trim();
+      const label = String(site?.ligand_display_name || site?.ligand_source_name || siteId || "Site").trim() || "Site";
+      const active = siteId === String(activeSite?.site_id || "").trim();
+      return `<button type="button" class="secondary result-site-toggle${active ? " active" : ""}" data-site-id="${escapeHtml(siteId)}" style="padding:4px 10px;${active ? "border-color:#86efac;background:#f0fdf4;color:#166534;" : ""}">${escapeHtml(label)}</button>`;
+    }).join("");
+    els.resultDetail.innerHTML = `
+      <div class="result-detail-grid">
+        <div class="result-detail-item">
+          <div class="result-detail-label">Mode</div>
+          <div class="result-detail-value">Multi-Ligand</div>
+        </div>
+        <div class="result-detail-item">
+          <div class="result-detail-label">PDB</div>
+          <div class="result-detail-value">${result.pdb_id || "-"}</div>
+        </div>
+        <div class="result-detail-item">
+          <div class="result-detail-label">Run</div>
+          <div class="result-detail-value">${result.run_id || "-"}</div>
+        </div>
+        <div class="result-detail-item">
+          <div class="result-detail-label">Ligand Set</div>
+          <div class="result-detail-value">${result.ligand_display_name || result.ligand_resname || "-"}</div>
+        </div>
+        <div class="result-detail-item">
+          <div class="result-detail-label">Ligands</div>
+          <div class="result-detail-value">${result.ligand_count || currentResultSites.length || "-"}</div>
+        </div>
+        <div class="result-detail-item">
+          <div class="result-detail-label">Affinity</div>
+          <div class="result-detail-value">${formatNumber(result.best_affinity)}</div>
+        </div>
+        <div class="result-detail-item">
+          <div class="result-detail-label">Interactions</div>
+          <div class="result-detail-value">${result.interaction_count ?? "-"}</div>
+        </div>
+        <div class="result-detail-item">
+          <div class="result-detail-label">Residues</div>
+          <div class="result-detail-value">${result.residue_count ?? "-"}</div>
+        </div>
+        <div class="result-detail-item">
+          <div class="result-detail-label">Active Site</div>
+          <div class="result-detail-value">${activeSite?.site_id || "-"}</div>
+        </div>
+        <div class="result-detail-item">
+          <div class="result-detail-label">Site Ligand</div>
+          <div class="result-detail-value">${activeSite?.ligand_display_name || activeSite?.ligand_source_name || "-"}</div>
+        </div>
+        <div class="result-detail-item">
+          <div class="result-detail-label">Site Chain/Resid</div>
+          <div class="result-detail-value">${[activeSite?.ligand_chain || "-", activeSite?.ligand_resid || "-"].join(" / ")}</div>
+        </div>
+        <div class="result-detail-item">
+          <div class="result-detail-label">Folder</div>
+          <div class="result-detail-value">${result.result_dir || "-"}</div>
+        </div>
+      </div>
+      ${siteButtons ? `
+      <div style="margin-top:12px;">
+        <div class="result-detail-label" style="margin-bottom:6px;">Interaction Site</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;">${siteButtons}</div>
+      </div>
+      ` : ""}
+    `;
+    Array.from(els.resultDetail.querySelectorAll(".result-site-toggle[data-site-id]")).forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        activateResultSite(button.dataset.siteId || "");
+      });
+    });
     return;
   }
   els.resultDetail.innerHTML = `
@@ -2661,21 +2873,29 @@ async function loadResultDetail(resultDir) {
   });
   if (requestId !== resultDetailRequestId) return;
   const result = data.result || {};
-  currentResultData = result;
+  currentResultSites = Array.isArray(data.sites) ? data.sites.map((site) => ({ ...site })) : [];
+  currentResultSelectedSiteId = String(
+    result.selected_site_id || currentResultSites[0]?.site_id || ""
+  ).trim();
+  currentResultData = {
+    ...result,
+    selected_site_id: currentResultSelectedSiteId,
+  };
   setCurrentResultFlexSelection(result);
   if (currentResultFlexSelectionData && els.showFlexResidues) {
     els.showFlexResidues.checked = true;
   }
-  const interactions = data.interactions || [];
-  renderResultDetail(result);
-  const residues = data.residues || [];
-
-  // Store interactions globally for bond highlighting
-  appState.currentInteractions = interactions;
-
-  renderInteractionTable(interactions);
-  buildInteractionMaps(residues);
-  renderInteractionLegend();
+  renderResultDetail(currentResultData);
+  if (currentResultData.multi_ligand) {
+    syncCurrentResultInteractionView();
+  } else {
+    const interactions = data.interactions || [];
+    const residues = data.residues || [];
+    appState.currentInteractions = interactions;
+    renderInteractionTable(interactions);
+    buildInteractionMaps(residues);
+    renderInteractionLegend();
+  }
 
   const complexPath = result.complex_path || result.pose_path || result.receptor_path || "";
   const originalReceptorPath = result.original_receptor_path || "";
@@ -2768,9 +2988,9 @@ async function loadResultStructure(result, originalReceptorPath) {
     // Ligand-focused camera: center on docked ligand and look along
     // ligand->receptor-center vector. Reuse same protein pose for angle/zoom
     // while re-centering on current ligand across different runs/ligands.
-    const ligandResidue = findDockedLigandResidue(comp, result);
-    const ligandSele = ligandResidue?.sele || "";
-    const ligandCenter = computeLigandCenter(comp, ligandResidue);
+    const ligandResidues = findDockedLigandResidues(comp, result);
+    const ligandSele = findDockedLigandSelection(comp, result);
+    const ligandCenter = computeLigandCenter(comp, ligandResidues);
 
     let focused = false;
     if (cachedPose && ligandCenter) {
@@ -3574,17 +3794,32 @@ async function renderReceptorSummary(rows) {
       const previousChain = getSelectedChainForReceptor(row.pdb_id);
       const selectedChain = setSelectedChainForReceptor(row.pdb_id, e.target.value);
       const previousLigand = String(appState.selectionMap?.[row.pdb_id]?.ligand_resname || "");
+      const previousLigands = getSelectedLigandsForReceptor(row.pdb_id);
       const allowedLigands = appState.mode === "Redocking"
         ? getNativeLigandsForChain(row.ligands_by_chain, selectedChain)
         : [...activeLigands];
-      const nextLigand = previousLigand && previousLigand !== "all_set" && !allowedLigands.includes(previousLigand)
-        ? ""
-        : previousLigand;
+      let nextLigand = previousLigand;
+      let nextLigands = [];
+      if (appState.mode === "Redocking") {
+        nextLigand = previousLigand && previousLigand !== "all_set" && !allowedLigands.includes(previousLigand)
+          ? ""
+          : previousLigand;
+        nextLigands = nextLigand && nextLigand !== "all_set" ? [nextLigand] : [];
+      } else if (isMultiLigandMode()) {
+        nextLigands = previousLigands.filter((name) => allowedLigands.includes(name)).slice(0, 2);
+        nextLigand = buildLigandSetLabel(nextLigands);
+      } else {
+        nextLigand = previousLigand && previousLigand !== "all_set" && !allowedLigands.includes(previousLigand)
+          ? ""
+          : previousLigand;
+        nextLigands = nextLigand && nextLigand !== "all_set" ? [nextLigand] : [];
+      }
       // Update selection map
       if (!appState.selectionMap) appState.selectionMap = {};
       if (!appState.selectionMap[row.pdb_id]) appState.selectionMap[row.pdb_id] = {};
       appState.selectionMap[row.pdb_id].chain = selectedChain;
       appState.selectionMap[row.pdb_id].ligand_resname = nextLigand;
+      appState.selectionMap[row.pdb_id].ligand_resnames = nextLigands;
       if (selectedChain !== previousChain) {
         clearFlexResiduesForReceptor(row.pdb_id);
       }
@@ -3596,7 +3831,8 @@ async function renderReceptorSummary(rows) {
         body: JSON.stringify({
           pdb_id: row.pdb_id,
           chain: selectedChain,
-          ligand: nextLigand
+          ligand: nextLigand,
+          ligands: nextLigands,
         }),
       });
       await refreshReceptorSummary();
@@ -3612,105 +3848,181 @@ async function renderReceptorSummary(rows) {
       scheduleUIStateSave();
     });
 
-    // Ligand Dropdown
-    const ligSelect = document.createElement("select");
-    ligSelect.style.width = "100%";
-    ligSelect.style.padding = "4px";
-
-    const defOpt = document.createElement("option");
-    defOpt.value = "";
-    defOpt.textContent = "Select Ligand...";
-    ligSelect.appendChild(defOpt);
-
     const selectedChainForRow = getSelectedChainForReceptor(row.pdb_id);
-    let availableLigands = [];
-    if (appState.mode === "Redocking") {
-      availableLigands = getNativeLigandsForChain(row.ligands_by_chain, selectedChainForRow);
+    const selectedLigandsForRow = getSelectedLigandsForReceptor(row.pdb_id);
+    let ligandControl = null;
+
+    if (isMultiLigandMode() && appState.mode !== "Redocking") {
+      const shell = document.createElement("div");
+      shell.style.display = "grid";
+      shell.style.gap = "6px";
+      shell.style.maxHeight = "132px";
+      shell.style.overflowY = "auto";
+      shell.style.padding = "2px 0";
+
+      const selectedSet = new Set(selectedLigandsForRow);
+      const summary = document.createElement("div");
+      summary.className = "helper";
+      summary.style.fontSize = "11px";
+      summary.textContent = selectedSet.size
+        ? `${selectedSet.size}/2 selected: ${buildLigandSetLabel([...selectedSet])}`
+        : "Select exactly 2 dock-ready ligands.";
+      shell.appendChild(summary);
+
+      if (!activeLigands.length) {
+        const empty = document.createElement("div");
+        empty.className = "helper";
+        empty.textContent = "No dock-ready ligands available.";
+        shell.appendChild(empty);
+      } else {
+        activeLigands.forEach((ligName) => {
+          const label = document.createElement("label");
+          label.style.display = "flex";
+          label.style.alignItems = "center";
+          label.style.gap = "6px";
+          label.style.fontSize = "12px";
+          label.style.cursor = "pointer";
+          label.addEventListener("click", (event) => event.stopPropagation());
+
+          const box = document.createElement("input");
+          box.type = "checkbox";
+          box.value = ligName;
+          box.checked = selectedSet.has(ligName);
+          box.disabled = !box.checked && selectedSet.size >= 2;
+          box.addEventListener("click", (event) => event.stopPropagation());
+          box.addEventListener("change", async (event) => {
+            const current = new Set(getSelectedLigandsForReceptor(row.pdb_id));
+            const isChecked = Boolean(event.target.checked);
+            if (isChecked) {
+              if (current.size >= 2) {
+                event.target.checked = false;
+                alert("Multi-Ligand mode supports at most 2 ligands.");
+                return;
+              }
+              current.add(ligName);
+            } else {
+              current.delete(ligName);
+            }
+            const nextLigands = normalizeLigandNameList([...current]).slice(0, 2);
+            const joinedLabel = buildLigandSetLabel(nextLigands);
+            if (!appState.selectionMap) appState.selectionMap = {};
+            if (!appState.selectionMap[row.pdb_id]) appState.selectionMap[row.pdb_id] = {};
+            appState.selectionMap[row.pdb_id].ligand_resname = joinedLabel;
+            appState.selectionMap[row.pdb_id].ligand_resnames = nextLigands;
+            appState.selectionMap[row.pdb_id].chain = chainSelect.value || selectedChainForRow || "all";
+
+            await fetchJSON("/api/ligands/select", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                pdb_id: row.pdb_id,
+                chain: chainSelect.value || selectedChainForRow || "all",
+                ligand: joinedLabel,
+                ligands: nextLigands,
+              }),
+            });
+            await refreshReceptorSummary();
+            if (row.pdb_id === appState.selectedReceptor) {
+              renderDockingConfigSummary();
+            }
+            scheduleUIStateSave();
+          });
+
+          const text = document.createElement("span");
+          text.textContent = ligName;
+          label.appendChild(box);
+          label.appendChild(text);
+          shell.appendChild(label);
+        });
+      }
+      ligandControl = shell;
     } else {
-      // Docking mode: Use dock-ready ligands
-      availableLigands = activeLigands;
+      const ligSelect = document.createElement("select");
+      ligSelect.style.width = "100%";
+      ligSelect.style.padding = "4px";
 
-      // Add "All Set" option only for Docking
-      const allOpt = document.createElement("option");
-      allOpt.value = "all_set";
-      allOpt.textContent = "All Ligands (Dock All)";
-      allOpt.style.fontWeight = "bold";
-      if (appState.selectionMap && appState.selectionMap[row.pdb_id] && appState.selectionMap[row.pdb_id].ligand_resname === "all_set") {
-        allOpt.selected = true;
+      const defOpt = document.createElement("option");
+      defOpt.value = "";
+      defOpt.textContent = "Select Ligand...";
+      ligSelect.appendChild(defOpt);
+
+      let availableLigands = [];
+      if (appState.mode === "Redocking") {
+        availableLigands = getNativeLigandsForChain(row.ligands_by_chain, selectedChainForRow);
+      } else {
+        availableLigands = activeLigands;
+        const allOpt = document.createElement("option");
+        allOpt.value = "all_set";
+        allOpt.textContent = "All Ligands (Dock All)";
+        allOpt.style.fontWeight = "bold";
+        if (appState.selectionMap && appState.selectionMap[row.pdb_id] && appState.selectionMap[row.pdb_id].ligand_resname === "all_set") {
+          allOpt.selected = true;
+        }
+        ligSelect.appendChild(allOpt);
       }
-      ligSelect.appendChild(allOpt);
-    }
 
-    availableLigands.forEach(ligName => {
-      const opt = document.createElement("option");
-      opt.value = ligName;
-      opt.textContent = ligName;
-      if (appState.selectionMap && appState.selectionMap[row.pdb_id] && appState.selectionMap[row.pdb_id].ligand_resname === ligName) {
-        opt.selected = true;
-      }
-      ligSelect.appendChild(opt);
-    });
+      availableLigands.forEach((ligName) => {
+        const opt = document.createElement("option");
+        opt.value = ligName;
+        opt.textContent = ligName;
+        if (appState.selectionMap && appState.selectionMap[row.pdb_id] && appState.selectionMap[row.pdb_id].ligand_resname === ligName) {
+          opt.selected = true;
+        }
+        ligSelect.appendChild(opt);
+      });
 
-    ligSelect.addEventListener("click", (e) => e.stopPropagation());
-    ligSelect.addEventListener("change", async (e) => {
-      const selectedLig = e.target.value;
+      ligSelect.addEventListener("click", (e) => e.stopPropagation());
+      ligSelect.addEventListener("change", async (e) => {
+        const selectedLig = e.target.value;
 
-      // Auto-select chain logic
-      const previousChain = chainSelect.value;
-      let targetChain = chainSelect.value;
+        const previousChain = chainSelect.value;
+        let targetChain = chainSelect.value;
 
-      if (selectedLig && selectedLig !== "all_set" && row.ligands_by_chain) {
-        for (const [chn, ligs] of Object.entries(row.ligands_by_chain)) {
-          if (chn === "all") continue;
-          if (ligs.includes(selectedLig)) {
-            targetChain = chn;
-            break;
+        if (selectedLig && selectedLig !== "all_set" && row.ligands_by_chain) {
+          for (const [chn, ligs] of Object.entries(row.ligands_by_chain)) {
+            if (chn === "all") continue;
+            if (ligs.includes(selectedLig)) {
+              targetChain = chn;
+              break;
+            }
           }
         }
-      }
 
-      // Update UI
-      chainSelect.value = targetChain;
+        chainSelect.value = targetChain;
 
-      // Update selection map
-      if (!appState.selectionMap) appState.selectionMap = {};
-      if (!appState.selectionMap[row.pdb_id]) appState.selectionMap[row.pdb_id] = {};
-      appState.selectionMap[row.pdb_id].ligand_resname = selectedLig;
-      appState.selectionMap[row.pdb_id].chain = targetChain;
-      if (targetChain !== previousChain) {
-        clearFlexResiduesForReceptor(row.pdb_id);
-      }
+        if (!appState.selectionMap) appState.selectionMap = {};
+        if (!appState.selectionMap[row.pdb_id]) appState.selectionMap[row.pdb_id] = {};
+        appState.selectionMap[row.pdb_id].ligand_resname = selectedLig;
+        appState.selectionMap[row.pdb_id].ligand_resnames = selectedLig && selectedLig !== "all_set" ? [selectedLig] : [];
+        appState.selectionMap[row.pdb_id].chain = targetChain;
+        if (targetChain !== previousChain) {
+          clearFlexResiduesForReceptor(row.pdb_id);
+        }
 
-      // Send to backend
-      await fetchJSON("/api/ligands/select", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pdb_id: row.pdb_id,
-          chain: targetChain,
-          ligand: selectedLig
-        }),
+        await fetchJSON("/api/ligands/select", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            pdb_id: row.pdb_id,
+            chain: targetChain,
+            ligand: selectedLig,
+            ligands: selectedLig && selectedLig !== "all_set" ? [selectedLig] : [],
+          }),
+        });
+        await refreshReceptorSummary();
+        if (row.pdb_id === appState.selectedReceptor) {
+          clearResidueSearchSelection({ refreshUI: false, reason: "ligand-chain-change" });
+          renderFlexResidueHighlight();
+          syncDockingModeUI();
+          renderDockingConfigSummary();
+          dispatchFlexSelectionContext("chain-change");
+          await Promise.resolve(window.DockUPPocketFinder?.syncSelectedChain?.(row.pdb_id, targetChain));
+          await refreshViewer();
+        }
+        scheduleUIStateSave();
       });
-      await refreshReceptorSummary();
-      if (row.pdb_id === appState.selectedReceptor) {
-        clearResidueSearchSelection({ refreshUI: false, reason: "ligand-chain-change" });
-        renderFlexResidueHighlight();
-        syncDockingModeUI();
-        renderDockingConfigSummary();
-        dispatchFlexSelectionContext("chain-change");
-        await Promise.resolve(window.DockUPPocketFinder?.syncSelectedChain?.(row.pdb_id, targetChain));
-        await refreshViewer();
-      }
-      scheduleUIStateSave();
-
-      // If Redocking, trigger preview
-      // User requested to remove focus logic for now
-      /*
-      if (appState.mode === "Redocking" && selectedLig && selectedLig !== "all_set") {
-          // ... (removed focus logic)
-      }
-      */
-    });
+      ligandControl = ligSelect;
+    }
 
     // Delete Button
     const delBtn = document.createElement("button");
@@ -3751,7 +4063,7 @@ async function renderReceptorSummary(rows) {
 
     const colPdb = document.createElement("div"); colPdb.textContent = row.pdb_id;
     const colChain = document.createElement("div"); colChain.appendChild(chainSelect);
-    const colLig = document.createElement("div"); colLig.appendChild(ligSelect);
+    const colLig = document.createElement("div"); colLig.appendChild(ligandControl);
 
     // Grid Details
     let gridCenter = "-";
@@ -3852,8 +4164,14 @@ async function refreshLigands() {
     Object.keys(appState.selectionMap || {}).forEach((pdbId) => {
       const row = appState.selectionMap[pdbId] || {};
       const ligand = String(row.ligand_resname || "");
-      if (!ligand || ligand === "all_set") return;
-      if (!activeSet.has(ligand)) {
+      const ligandNames = normalizeLigandNameList(row.ligand_resnames || []);
+      const keptLigands = ligandNames.filter((name) => activeSet.has(name)).slice(0, 2);
+      appState.selectionMap[pdbId].ligand_resnames = keptLigands;
+      if (ligandNames.length) {
+        appState.selectionMap[pdbId].ligand_resname = buildLigandSetLabel(keptLigands);
+        return;
+      }
+      if (ligand && ligand !== "all_set" && !activeSet.has(ligand)) {
         appState.selectionMap[pdbId].ligand_resname = "";
       }
     });
@@ -4039,6 +4357,7 @@ function buildQueueBatchDraft(batchId) {
       chain: normalizeChainValue(row?.chain || "all"),
       ligandName: String(row?.ligand_name || row?.ligand_resname || "").trim(),
       ligandResname: String(row?.ligand_resname || row?.ligand_name || "").trim(),
+      ligandNames: normalizeLigandNameList(row?.ligand_resnames || []),
       grid: normalizeQueueGrid(row?.grid_params || {}),
       flexResidues: normalizeFlexResidueList(row?.flex_residues || row?.flex_residue_spec || []),
     })),
@@ -4123,9 +4442,21 @@ function syncQueueBatchModalDraftFromInputs() {
 }
 
 function syncQueueBatchModalDockingModeUI() {
-  const mode = normalizeDockingMode(els.queueBatchDockingMode?.value || queueBatchModalDraft?.dockingConfig?.docking_mode || "standard");
+  const lockToStandard = String(queueBatchModalDraft?.jobType || "").trim() === "Multi-Ligand";
+  if (lockToStandard && els.queueBatchDockingMode) {
+    els.queueBatchDockingMode.value = "standard";
+  }
+  const mode = lockToStandard
+    ? "standard"
+    : normalizeDockingMode(els.queueBatchDockingMode?.value || queueBatchModalDraft?.dockingConfig?.docking_mode || "standard");
   if (els.queueBatchFlexSection) {
     els.queueBatchFlexSection.style.display = mode === "flexible" ? "" : "none";
+  }
+  if (els.queueBatchDockingMode) {
+    els.queueBatchDockingMode.disabled = lockToStandard;
+    els.queueBatchDockingMode.title = lockToStandard
+      ? "Multi-Ligand queue batches currently support standard docking only."
+      : "";
   }
 }
 
@@ -4247,9 +4578,13 @@ async function saveQueueBatchModal() {
   const gridData = {};
   (queueBatchModalDraft.jobs || []).forEach((job) => {
     if (!job?.pdbId) return;
+    const ligandNames = normalizeLigandNameList(
+      job.ligandNames || (job.ligandResname && job.ligandResname !== "all_set" ? [job.ligandResname] : [])
+    );
     selectionMap[job.pdbId] = {
       chain: normalizeChainValue(job.chain || "all"),
       ligand_resname: String(job.ligandResname || job.ligandName || ""),
+      ligand_resnames: ligandNames,
       flex_residues: normalizeFlexResidueList(job.flexResidues || []),
     };
     gridData[job.pdbId] = buildQueueGridPayload(job.grid, queueBatchModalDraft.padding);
@@ -4283,7 +4618,10 @@ async function saveQueueBatchModal() {
 }
 
 async function setAppModeQuietly(mode) {
-  const nextMode = mode === "Redocking" ? "Redocking" : "Docking";
+  const normalized = String(mode || "").trim();
+  const nextMode = normalized === "Redocking"
+    ? "Redocking"
+    : (normalized === "Multi-Ligand" ? "Multi-Ligand" : "Docking");
   if (appState.mode !== nextMode) {
     await fetchJSON("/api/mode", {
       method: "POST",
@@ -4459,6 +4797,7 @@ async function buildQueue() {
   const runCount = document.getElementById("runCount")?.value || 10;
   const padding = document.getElementById("gridPadding")?.value || 0;
   const activeSet = new Set(activeLigands || []);
+  enforceMultiLigandDockingConfig();
   hydrateGridDataFromQueue(appState.queueData);
   const normalizedSelectionMap = normalizeSelectionMapState(JSON.parse(JSON.stringify(appState.selectionMap || {})));
   const selectionMap = {};
@@ -4470,11 +4809,20 @@ async function buildQueue() {
   Object.keys(selectionMap).forEach((pdbId) => {
     const row = selectionMap[pdbId] || {};
     const lig = String(row.ligand_resname || row.ligand || "").trim();
-    if (!lig || lig === "all_set") return;
-    if (!activeSet.has(lig)) {
-      row.ligand_resname = "";
-      row.ligand = "";
+    row.ligand_resnames = normalizeLigandNameList(row.ligand_resnames || []);
+    if (isMultiLigandMode()) {
+      const keptLigands = row.ligand_resnames.filter((name) => activeSet.has(name)).slice(0, 2);
+      row.ligand_resnames = keptLigands;
+      row.ligand_resname = buildLigandSetLabel(keptLigands);
       selectionMap[pdbId] = row;
+    } else {
+      if (!lig || lig === "all_set") return;
+      if (!activeSet.has(lig)) {
+        row.ligand_resname = "";
+        row.ligand = "";
+        row.ligand_resnames = [];
+        selectionMap[pdbId] = row;
+      }
     }
     row.flex_residues = normalizeFlexResidueList(row.flex_residues || row.flex_residue_spec || []);
   });
@@ -4488,7 +4836,10 @@ async function buildQueue() {
   const payload = {
     run_count: parseInt(runCount),
     padding: parseFloat(padding),
-    docking_config: normalizeDockingConfig(appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
+    docking_config: normalizeDockingConfig({
+      ...(appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
+      docking_mode: isMultiLigandMode() ? "standard" : normalizeDockingMode(appState.dockingConfig?.docking_mode || "standard"),
+    }),
     selection_map: selectionMap,
     grid_data: gridData,
     mode: appState.mode || "Docking",
@@ -5508,6 +5859,7 @@ function bindEvents() {
           const previousChain = getSelectedChainForReceptor(appState.selectedReceptor);
           const nextChain = setSelectedChainForReceptor(appState.selectedReceptor, els.viewerChain.value || "all");
           const currentLigand = String(appState.selectionMap?.[appState.selectedReceptor]?.ligand_resname || "");
+          const currentLigands = getSelectedLigandsForReceptor(appState.selectedReceptor);
           if (nextChain !== previousChain) {
             clearFlexResiduesForReceptor(appState.selectedReceptor);
           }
@@ -5523,6 +5875,7 @@ function bindEvents() {
               pdb_id: appState.selectedReceptor,
               chain: nextChain,
               ligand: currentLigand,
+              ligands: currentLigands,
             }),
           });
           await Promise.resolve(window.DockUPPocketFinder?.syncSelectedChain?.(appState.selectedReceptor, nextChain));
@@ -6528,7 +6881,7 @@ function openReportOtofigureOptionsModal() {
 
 function updateOtofigureRenderControls() {
   const renderMode = String(els.reportRenderMode?.value || "classic").trim() || "classic";
-  const isOtofigure = renderMode === "otofigure";
+  const isOtofigure = renderMode === "otofigure" || renderMode === "multi_ligand_panel";
   if (els.reportOtofigureControls) els.reportOtofigureControls.hidden = !isOtofigure;
   if (els.openReportOtofigureOptions) els.openReportOtofigureOptions.disabled = !isOtofigure;
   if (!isOtofigure) closeReportOtofigureOptionsModal();
@@ -6553,6 +6906,7 @@ function updateOtofigureRenderControls() {
 
 function renderReportWorkspaceSidebar() {
   const renderMode = String(els.reportRenderMode?.value || "classic").trim() || "classic";
+  const isOtofigureMode = renderMode === "otofigure" || renderMode === "multi_ligand_panel";
   updateOtofigureRenderControls();
   Array.from(document.querySelectorAll(".report-layout-icon-card[data-mode]")).forEach((card) => {
     card.classList.toggle("is-active", String(card.dataset.mode || "") === renderMode);
@@ -6573,6 +6927,9 @@ function renderReportWorkspaceSidebar() {
   const runLabel = renderMode === "otofigure"
     ? "Auto multirun"
     : (selectedRun || focusRow.default_run || "Auto");
+  const renderModeLabel = renderMode === "multi_ligand_panel"
+    ? "Multi-Ligand Panel"
+    : (renderMode === "otofigure" ? "OtoFigure" : "Classic Panel");
   const otofigureSettings = getOtofigureSettingsFromUI();
   const engineLabelMap = {
     ray: "Ray Trace",
@@ -6599,10 +6956,14 @@ function renderReportWorkspaceSidebar() {
         <span class="report-settings-summary-value">${escapeHtml(runLabel)}</span>
       </div>
       <div class="report-settings-summary-item">
+        <span class="report-settings-summary-label">Layout</span>
+        <span class="report-settings-summary-value">${escapeHtml(renderModeLabel)}</span>
+      </div>
+      <div class="report-settings-summary-item">
         <span class="report-settings-summary-label">Ready</span>
         <span class="report-settings-summary-value">${escapeHtml(String(readyLigands.length || 0))}</span>
       </div>
-      ${renderMode === "otofigure" ? `
+      ${isOtofigureMode ? `
       <div class="report-settings-summary-item">
         <span class="report-settings-summary-label">Engine</span>
         <span class="report-settings-summary-value">${escapeHtml(engineLabelMap[otofigureSettings.renderEngine] || otofigureSettings.renderEngine)}</span>

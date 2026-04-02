@@ -122,7 +122,7 @@ def parse_manifest_rows(manifest_path: Path) -> list[dict[str, str]]:
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         cols = line.split("\t")
-        cols += [""] * max(0, 22 - len(cols))
+        cols += [""] * max(0, 23 - len(cols))
         cfg = manifest_values_to_config(cols)
         rows.append(
             {
@@ -137,6 +137,7 @@ def parse_manifest_rows(manifest_path: Path) -> list[dict[str, str]]:
                 "flex_residue_spec": restore_manifest_value(cols[8]),
                 "flex_residues": normalize_flex_residue_list(restore_manifest_value(cols[8])),
                 "docking_config": cfg,
+                "job_type": restore_manifest_value(cols[22]),
             }
         )
     return rows
@@ -176,6 +177,7 @@ def write_manifest(queue: list[dict[str, Any]], manifest_path: Path | None = Non
                 row.get("force_run_id", ""),
                 row.get("flex_residue_spec", "") or build_flex_residue_spec(row.get("flex_residues") or []),
                 *config_to_manifest_values(row_cfg),
+                row.get("job_type", "Docking"),
             ]
             values = [
                 "__EMPTY__" if v is None or str(v) == "" else str(v) for v in values
@@ -243,8 +245,9 @@ def build_preview_command(
     append_docking_config_args(
         args, first.get("docking_config") or STATE.get("docking_config") or {}
     )
-
-    return f"{BASE / 'scripts' / 'run1.sh'} " + " ".join(args)
+    job_type = str(first.get("job_type") or "Docking").strip()
+    runner = BASE / "scripts" / ("run_multi_ligand.py" if job_type == "Multi-Ligand" else "run1.sh")
+    return f"{runner} " + " ".join(args)
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +258,7 @@ def normalize_ligand_folder_name(ligand_value: str, lig_spec: str) -> str:
     """Derive a filesystem-safe folder name from a ligand value / spec pair."""
     lig_spec = str(lig_spec or "").strip()
     ligand_value = str(ligand_value or "").strip()
-    if lig_spec:
+    if lig_spec and Path(lig_spec).suffix.lower() != ".json":
         name = Path(lig_spec).stem
     else:
         src = Path(ligand_value)

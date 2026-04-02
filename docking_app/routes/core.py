@@ -22,6 +22,7 @@ from ..helpers import (
     next_available_ligand_path,
     normalize_flex_residue_list,
     normalize_docking_config,
+    normalize_ligand_name_list,
     normalize_ligand_db_filename,
     relative_to_base,
     resolve_dock_directory,
@@ -139,13 +140,20 @@ def _normalize_receptor_state() -> None:
         normalized_selection[pdb_id] = {
             "chain": str(source_sel.get("chain", "all") or "all"),
             "ligand_resname": str(source_sel.get("ligand_resname", "") or ""),
+            "ligand_resnames": normalize_ligand_name_list(
+                source_sel.get("ligand_resnames")
+                or ([source_sel.get("ligand_resname")] if str(source_sel.get("ligand_resname") or "").strip() not in {"", "all_set"} else [])
+            ),
             "flex_residues": normalize_flex_residue_list(
                 source_sel.get("flex_residues") or source_sel.get("flex_residue_spec") or []
             ),
         }
 
     for item in normalized_meta:
-        normalized_selection.setdefault(item["pdb_id"], {"chain": "all", "ligand_resname": "", "flex_residues": []})
+        normalized_selection.setdefault(
+            item["pdb_id"],
+            {"chain": "all", "ligand_resname": "", "ligand_resnames": [], "flex_residues": []},
+        )
 
     STATE["receptor_meta"] = normalized_meta
     STATE["selection_map"] = normalized_selection
@@ -327,7 +335,7 @@ def api_state() -> JSONResponse:
 
 @router.post("/api/mode")
 def api_mode(payload: ModePayload) -> JSONResponse:
-    mode = payload.mode if payload.mode in {"Docking", "Redocking", "Results", "Report"} else "Docking"
+    mode = payload.mode if payload.mode in {"Docking", "Multi-Ligand", "Redocking", "Results", "Report"} else "Docking"
     STATE["mode"] = mode
     save_state_cache()
     return JSONResponse({"mode": STATE["mode"]})
@@ -624,14 +632,23 @@ def ligand_select(payload: SelectLigandPayload) -> JSONResponse:
     if pdb_id not in STATE.get("selection_map", {}):
         STATE["selection_map"][pdb_id] = {}
     existing = STATE["selection_map"].get(pdb_id, {})
+    ligand_names = normalize_ligand_name_list(payload.ligands)
+    if not ligand_names:
+        single_ligand = str(payload.ligand or "").strip()
+        if single_ligand and single_ligand != "all_set":
+            ligand_names = [single_ligand]
+    ligand_label = str(payload.ligand or "").strip()
+    if not ligand_label and ligand_names:
+        ligand_label = " + ".join(ligand_names)
     STATE["selection_map"][pdb_id] = {
         "chain": payload.chain,
-        "ligand_resname": payload.ligand,
+        "ligand_resname": ligand_label,
+        "ligand_resnames": ligand_names,
         "flex_residues": normalize_flex_residue_list(existing.get("flex_residues") or existing.get("flex_residue_spec") or []),
     }
     if pdb_id == STATE.get("selected_receptor"):
         STATE["selected_chain"] = payload.chain
-        STATE["selected_ligand"] = payload.ligand
+        STATE["selected_ligand"] = ligand_label
     save_state_cache()
     return JSONResponse({"ok": True})
 
@@ -696,6 +713,10 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
             normalized_incoming[pdb_id] = {
                 "chain": str(sel.get("chain", "all") or "all"),
                 "ligand_resname": str(sel.get("ligand_resname") or sel.get("ligand") or ""),
+                "ligand_resnames": normalize_ligand_name_list(
+                    sel.get("ligand_resnames")
+                    or ([sel.get("ligand_resname") or sel.get("ligand")] if str(sel.get("ligand_resname") or sel.get("ligand") or "").strip() not in {"", "all_set"} else [])
+                ),
                 "flex_residues": normalize_flex_residue_list(
                     sel.get("flex_residues") or sel.get("flex_residue_spec") or []
                 ),
@@ -750,7 +771,7 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
             skipped.append({"pdb_id": pid, "reason": "not_in_receptor_meta"})
         elif not gd.get(pid):
             skipped.append({"pdb_id": pid, "reason": "no_grid_data"})
-        elif not sel.get("ligand_resname") and not sel.get("ligand"):
+        elif not sel.get("ligand_resname") and not sel.get("ligand") and not sel.get("ligand_resnames"):
             skipped.append({"pdb_id": pid, "reason": "no_ligand_selected"})
     debug = {
         "receptors_in_state": meta_ids,
@@ -853,7 +874,7 @@ def _prepare_resume_queue(item_id: str, replace_queue: bool = True) -> tuple[lis
         queue_rows.append(
             {
                 "batch_id": batch_id,
-                "job_type": "Docking",
+                "job_type": str(item.get("job_type") or "Docking"),
                 "pdb_id": str(item.get("pdb_id") or ""),
                 "chain": str(item.get("chain") or ""),
                 "ligand_name": str(item.get("ligand_name") or ""),

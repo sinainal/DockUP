@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+import requests
 
 from tests._support.api_client import ApiClient
 
@@ -15,7 +17,9 @@ NON_MAIN_LIGAND_HINTS = {"PEG", "OLA", "EDO", "GOL", "SO4"}
 @dataclass
 class BasicFlowArtifacts:
     receptor_id: str = ""
+    receptor_file_name: str = ""
     ligand_name: str = ""
+    ligand_names: list[str] = field(default_factory=list)
     generated_file_name: str = ""
     out_root: Path | None = None
 
@@ -202,6 +206,16 @@ def cleanup_basic_flow(api: ApiClient, artifacts: BasicFlowArtifacts) -> None:
             api.post("/api/receptors/remove", {"pdb_id": artifacts.receptor_id})
         except Exception:
             pass
+    if artifacts.receptor_file_name:
+        try:
+            api.post("/api/receptors/delete", {"name": artifacts.receptor_file_name})
+        except Exception:
+            pass
+    for ligand_name in list(artifacts.ligand_names or []):
+        try:
+            api.post("/api/ligands/delete", {"name": ligand_name})
+        except Exception:
+            pass
     if artifacts.ligand_name:
         try:
             api.post("/api/ligands/delete", {"name": artifacts.ligand_name})
@@ -334,6 +348,141 @@ def provision_single_docking_run(
     )
     added = int((queue.get("debug") or {}).get("new_jobs_added") or 0)
     assert added == 1, f"Expected exactly 1 queue job, got {added}. debug={queue.get('debug')}"
+
+    started = api.assert_ok(
+        api.post("/api/run/start", {"is_test_mode": False}, timeout=60),
+        where="POST /api/run/start",
+    )
+    assert str(started.get("status") or "") in {"running", "done"}, f"Unexpected run/start response: {started}"
+
+    final_status = wait_run_finished(api, timeout_sec=timeout_sec, interval_sec=interval_sec)
+    assert str(final_status.get("status") or "") == "done", f"Run did not finish successfully: {final_status}"
+    assert int(final_status.get("returncode") or 0) == 0, f"Non-zero return code: {final_status}"
+    assert int(final_status.get("completed_runs") or 0) >= 1, f"No completed runs: {final_status}"
+
+    out_root = str(final_status.get("out_root") or "").strip()
+    assert out_root, f"Missing out_root in run status: {final_status}"
+    out_root_path = Path(out_root)
+    artifacts.out_root = out_root_path
+    assert out_root_path.exists(), f"out_root does not exist: {out_root_path}"
+    assert list(out_root_path.rglob("results.json")), f"No results.json under out_root: {out_root_path}"
+    return artifacts
+
+
+def provision_multi_ligand_run(
+    api: ApiClient,
+    *,
+    stamp: int,
+    timeout_sec: int,
+    interval_sec: float,
+) -> BasicFlowArtifacts:
+    artifacts = BasicFlowArtifacts()
+    shared_root = Path(__file__).resolve().parents[3]
+    data_root = shared_root / "Multi_Ligand" / "data"
+    receptor_source = data_root / "5x72_receptorH.pdb"
+    ligand_sources = [
+        data_root / "5x72_ligand_p59.sdf",
+        data_root / "5x72_ligand_p69.sdf",
+    ]
+    assert receptor_source.exists(), f"Missing receptor fixture: {receptor_source}"
+    for ligand_source in ligand_sources:
+        assert ligand_source.exists(), f"Missing ligand fixture: {ligand_source}"
+
+    api.assert_ok(api.post("/api/mode", {"mode": "Multi-Ligand"}), where="POST /api/mode")
+    status = api.assert_ok(api.get("/api/run/status"), where="GET /api/run/status")
+    if str(status.get("status") or "idle") in {"running", "stopping"}:
+        api.post("/api/run/stop", {})
+        wait_run_finished(api, timeout_sec=120, interval_sec=max(1.0, interval_sec))
+
+    clear_queue(api)
+    clear_loaded_receptors(api)
+    api.post("/api/ligands/active/clear", {})
+
+    receptor_id = f"M{stamp % 1000:03d}"
+    receptor_filename = f"{receptor_id}.pdb"
+    receptor_resp = requests.post(
+        api._url("/api/receptors/upload"),
+        files=[("files", (receptor_filename, receptor_source.read_bytes(), "chemical/x-pdb"))],
+        timeout=60,
+    )
+    api.assert_ok(receptor_resp, where="POST /api/receptors/upload")
+    artifacts.receptor_id = receptor_id
+    artifacts.receptor_file_name = receptor_filename
+
+    load_resp = api.assert_ok(
+        api.post("/api/receptors/load", {"pdb_ids": receptor_id}),
+        where="POST /api/receptors/load",
+    )
+    summary = list(load_resp.get("summary") or [])
+    receptor_row = next((row for row in summary if str(row.get("pdb_id") or "").upper() == receptor_id), None)
+    assert receptor_row is not None, f"{receptor_id} not found in receptor summary: {summary}"
+
+    ligand_names: list[str] = []
+    ligand_files = []
+    for index, ligand_source in enumerate(ligand_sources, start=1):
+        ligand_filename = f"mlig_{stamp}_{index}.sdf"
+        ligand_files.append(("files", (ligand_filename, ligand_source.read_bytes(), "chemical/x-mdl-sdfile")))
+        ligand_names.append(ligand_filename)
+    ligand_resp = requests.post(
+        api._url("/api/ligands/upload"),
+        files=ligand_files,
+        timeout=60,
+    )
+    ligand_upload = api.assert_ok(ligand_resp, where="POST /api/ligands/upload")
+    uploaded_ligands = [str(name or "").strip() for name in list(ligand_upload.get("saved") or []) if str(name or "").strip()]
+    assert len(uploaded_ligands) == 2, f"Expected two uploaded ligands, got: {ligand_upload}"
+    ligand_names = uploaded_ligands
+    artifacts.ligand_names = ligand_names
+    artifacts.ligand_name = " + ".join(ligand_names)
+
+    active = api.assert_ok(
+        api.post("/api/ligands/active/add", {"names": ligand_names}),
+        where="POST /api/ligands/active/add",
+    )
+    assert set(ligand_names).issubset(set(active.get("active_ligands") or [])), f"Ligands not active: {active}"
+
+    api.assert_ok(
+        api.post(
+            "/api/ligands/select",
+            {"pdb_id": receptor_id, "chain": "all", "ligands": ligand_names},
+        ),
+        where="POST /api/ligands/select",
+    )
+
+    out_root_name = f"e2e_multi_{stamp}"
+    queue = api.assert_ok(
+        api.post(
+            "/api/queue/build",
+            {
+                "run_count": 1,
+                "padding": 0.0,
+                "out_root_name": out_root_name,
+                "out_root_path": "data/dock",
+                "selection_map": {
+                    receptor_id: {
+                        "chain": "all",
+                        "ligand_resname": artifacts.ligand_name,
+                        "ligand_resnames": ligand_names,
+                    }
+                },
+                "grid_data": {
+                    receptor_id: {
+                        "cx": -15.0,
+                        "cy": 15.0,
+                        "cz": 129.0,
+                        "sx": 30.0,
+                        "sy": 24.0,
+                        "sz": 24.0,
+                    }
+                },
+                "mode": "Multi-Ligand",
+                "docking_config": {"docking_mode": "standard", "vina_exhaustiveness": 8, "vina_num_modes": 5},
+            },
+        ),
+        where="POST /api/queue/build",
+    )
+    added = int((queue.get("debug") or {}).get("new_jobs_added") or 0)
+    assert added == 1, f"Expected exactly 1 multi-ligand queue job, got {added}. debug={queue.get('debug')}"
 
     started = api.assert_ok(
         api.post("/api/run/start", {"is_test_mode": False}, timeout=60),

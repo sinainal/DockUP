@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -130,3 +131,63 @@ def test_build_queue_empty_selection_does_not_create_output_dirs():
 
     assert entries == []
     assert not out_root.exists()
+
+
+def test_build_queue_multi_ligand_requires_exactly_two_ligands():
+    ligand_name = _first_ligand_name()
+    _configure_minimal_state(active_ligands=[ligand_name])
+
+    payload = {
+        "selection_map": {"6CM4": {"chain": "all", "ligand_resname": ligand_name, "ligand_resnames": [ligand_name]}},
+        "grid_data": {"6CM4": {"cx": 0.0, "cy": 0.0, "cz": 0.0, "sx": 20.0, "sy": 20.0, "sz": 20.0}},
+        "run_count": 1,
+        "padding": 0.0,
+        "mode": "Multi-Ligand",
+        "docking_config": {"docking_mode": "standard"},
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        _build_queue(payload)
+
+    assert exc_info.value.status_code == 400
+    assert "Select exactly two ligands" in str(exc_info.value.detail)
+
+
+def test_build_queue_multi_ligand_writes_ligand_set_manifest(tmp_path: Path):
+    ligand_one = _first_ligand_name()
+    ligand_two = "second_multi_fixture.sdf"
+    ligand_two_path = LIGAND_DIR / ligand_two
+    ligand_two_path.write_text(
+        "\n  Ketcher\n\n  0  0  0     0  0            999 V2000\nM  END\n$$$$\n",
+        encoding="utf-8",
+    )
+    try:
+        _configure_minimal_state(active_ligands=[ligand_one, ligand_two])
+
+        payload = {
+            "selection_map": {
+                "6CM4": {
+                    "chain": "all",
+                    "ligand_resname": f"{ligand_one} + {ligand_two}",
+                    "ligand_resnames": [ligand_one, ligand_two],
+                }
+            },
+            "grid_data": {"6CM4": {"cx": 0.0, "cy": 0.0, "cz": 0.0, "sx": 20.0, "sy": 20.0, "sz": 20.0}},
+            "run_count": 1,
+            "padding": 0.0,
+            "mode": "Multi-Ligand",
+            "docking_config": {"docking_mode": "standard"},
+        }
+
+        entries = _build_queue(payload)
+
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry["job_type"] == "Multi-Ligand"
+        assert entry["ligand_resnames"] == [ligand_one, ligand_two]
+        lig_spec = Path(str(entry["lig_spec"]))
+        assert lig_spec.exists(), f"Missing multi-ligand manifest: {lig_spec}"
+        payload = json.loads(lig_spec.read_text(encoding="utf-8"))
+        assert [item["name"] for item in payload["ligands"]] == [ligand_one, ligand_two]
+    finally:
+        ligand_two_path.unlink(missing_ok=True)

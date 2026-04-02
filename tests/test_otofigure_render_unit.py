@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -13,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from figure_scripts.otofigure import pipeline
+from figure_scripts.otofigure import multi_ligand_pipeline
 from figure_scripts.otofigure import render_interaction_maps
 
 
@@ -21,6 +23,30 @@ def _make_run_dir(root: Path, receptor_id: str, run_name: str) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / f"{receptor_id}_rec_raw.pdb").write_text("ATOM\n", encoding="utf-8")
     (run_dir / f"{receptor_id}_pose.pdb").write_text("HETATM\n", encoding="utf-8")
+    return run_dir
+
+
+def _make_multi_run_dir(root: Path, receptor_id: str, run_name: str) -> Path:
+    run_dir = root / run_name
+    multi_root = run_dir / "multi_ligand"
+    site_rows = []
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / f"{receptor_id}_rec_raw.pdb").write_text("ATOM\n", encoding="utf-8")
+    for idx, label in enumerate(("LigA", "LigB"), start=1):
+        site_dir = multi_root / f"site_{idx}"
+        site_dir.mkdir(parents=True, exist_ok=True)
+        (site_dir / f"{receptor_id}_pose.pdb").write_text("HETATM\n", encoding="utf-8")
+        site_rows.append(
+            {
+                "site_id": f"site_{idx}",
+                "ligand_display_name": label,
+                "site_dir": str(site_dir),
+                "site_dir_rel": str(site_dir.relative_to(run_dir)),
+                "pose_path": str(site_dir / f"{receptor_id}_pose.pdb"),
+                "pose_rel": str((site_dir / f"{receptor_id}_pose.pdb").relative_to(run_dir)),
+            }
+        )
+    (multi_root / "sites.json").write_text(json.dumps({"sites": site_rows}, indent=2), encoding="utf-8")
     return run_dir
 
 
@@ -189,6 +215,52 @@ def test_otofigure_render_settings_scale_pixels_with_requested_dpi() -> None:
     assert pipeline._render_settings(120, preview_mode=False) == (400, 300, 120)
     assert pipeline._render_settings(300, preview_mode=False) == (1000, 750, 300)
     assert pipeline._render_settings(72, preview_mode=True) == (320, 240, 72)
+
+
+@pytest.mark.unit
+def test_multi_ligand_pipeline_composes_two_site_panel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = _make_multi_run_dir(tmp_path / "source", "5x72", "run1")
+
+    monkeypatch.setattr(
+        multi_ligand_pipeline,
+        "_find_python_with_modules",
+        lambda modules, *, env_var, extra_candidates=(): "/usr/bin/python3",
+    )
+
+    def fake_run_step(cmd: list[str], *, cwd: Path, env: dict[str, str], on_process_start=None, on_process_end=None) -> str:
+        script_name = Path(cmd[1]).name
+        if script_name == "final_dinamik.py":
+            assert sorted(path.name for path in Path(cwd, "ligands").glob("*.pdb")) == ["site_1.pdb", "site_2.pdb"]
+            Image.new("RGBA", (280, 220), "white").save(Path(cwd, "results", "5x72_run1_far.png"))
+            Image.new("RGBA", (280, 220), "white").save(Path(cwd, "results", "5x72_run1_close.png"))
+        elif script_name == "render_interaction_maps.py":
+            manifest_path = Path(cmd[cmd.index("--manifest") + 1])
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            assert [entry["run_name"] for entry in manifest] == ["site_1", "site_2"]
+            Image.new("RGBA", (320, 240), (255, 255, 255, 0)).save(Path(cwd, "interaction", "5x72_site_1_interaction.png"))
+            Image.new("RGBA", (320, 240), (255, 255, 255, 0)).save(Path(cwd, "interaction", "5x72_site_2_interaction.png"))
+        else:
+            raise AssertionError(f"Unexpected script: {cmd}")
+        return f"ok:{script_name}"
+
+    monkeypatch.setattr(multi_ligand_pipeline, "_run_step", fake_run_step)
+
+    output_png = tmp_path / "out" / "multi_panel.png"
+    result = multi_ligand_pipeline.run(
+        receptor_id="5x72",
+        ligand_name="LigA_plus_LigB",
+        run_dir=run_dir,
+        output_png=output_png,
+        work_dir=tmp_path / "work",
+        dpi=110,
+        options={"background": "white"},
+        preview_mode=False,
+    )
+
+    assert output_png.exists()
+    assert result["site_count"] == 2
+    with Image.open(output_png) as image:
+        assert image.width > image.height
 
 
 @pytest.mark.unit

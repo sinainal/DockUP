@@ -23,6 +23,7 @@ def test_normalize_render_mode_supports_otofigure_aliases() -> None:
     assert report._normalize_render_mode("classic") == report.REPORT_RENDER_MODE_CLASSIC
     assert report._normalize_render_mode("multi_run") == report.REPORT_RENDER_MODE_OTOFIGURE
     assert report._normalize_render_mode("otofigure") == report.REPORT_RENDER_MODE_OTOFIGURE
+    assert report._normalize_render_mode("multi_ligand_panel") == report.REPORT_RENDER_MODE_MULTI_LIGAND
 
 
 @pytest.mark.unit
@@ -114,6 +115,81 @@ def test_trigger_render_dispatches_otofigure_builder(monkeypatch: pytest.MonkeyP
         assert metadata.get("kind") == "render"
         assert metadata.get("render_dpi") == 100
         assert float(metadata.get("elapsed_seconds") or 0.0) > 0.0
+    finally:
+        REPORT_STATE.clear()
+        REPORT_STATE.update(snapshot)
+
+
+@pytest.mark.unit
+def test_trigger_render_dispatches_multi_ligand_builder(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    snapshot = copy.deepcopy(REPORT_STATE)
+    source_dir = tmp_path / "multi_source"
+    output_root = tmp_path / "report_outputs"
+    output_root.mkdir(parents=True, exist_ok=True)
+    run_dir = source_dir / "5X72" / "LigA_plus_LigB" / "run1"
+    (run_dir / "multi_ligand").mkdir(parents=True, exist_ok=True)
+    (run_dir / "multi_ligand" / "sites.json").write_text('{"sites":[{"site_id":"site_1"},{"site_id":"site_2"}]}', encoding="utf-8")
+
+    inventory = {"5X72": {"LigA_plus_LigB": [("run1", run_dir)]}}
+    rows = [{"id": "5X72", "ready": True, "run_options": ["run1"], "default_run": "run1"}]
+    called: list[str] = []
+
+    def fake_multi_builder(
+        dtype,
+        _inventory,
+        out_dir,
+        _temp_root,
+        _dpi,
+        preferred_run="run1",
+        preferred_ligand="",
+        output_stem="",
+        preview_mode=False,
+        ligand_order_index=None,
+        process_hooks=None,
+        otofigure_style="balanced",
+        otofigure_ray_trace=True,
+        otofigure_options=None,
+    ):
+        called.append("multi")
+        out_path = Path(out_dir) / f"{output_stem or dtype}_multi.png"
+        Image.new("RGB", (32, 32), "white").save(out_path)
+        return out_path, [preferred_run]
+
+    monkeypatch.setattr(report, "_resolve_report_root", lambda _root_path: tmp_path)
+    monkeypatch.setattr(report, "_resolve_report_source", lambda _report_root, _source_path: source_dir)
+    monkeypatch.setattr(report, "_resolve_report_output_root", lambda _report_root, _source_dir, _output_path: output_root)
+    monkeypatch.setattr(report, "_collect_receptor_rows", lambda _source_dir: rows)
+    monkeypatch.setattr(report, "_collect_entities_from_rows", lambda _rows: (["5X72"], ["LigA_plus_LigB"]))
+    monkeypatch.setattr(report, "_load_source_metadata", lambda *_args, **_kwargs: {"ligand_order": ["LigA_plus_LigB"]})
+    monkeypatch.setattr(report, "_collect_receptor_inventory", lambda _source_dir: inventory)
+    monkeypatch.setattr(report, "_render_dtype_multi_ligand_panel", fake_multi_builder)
+
+    background_tasks = BackgroundTasks()
+    try:
+        response = report.trigger_render(
+            RenderPayload(
+                root_path="data/dock",
+                source_path="data/dock/multi_source",
+                output_path=str(output_root),
+                dpi=90,
+                render_mode="multi_ligand_panel",
+                receptors=["5X72"],
+                run_by_receptor={"5X72": "run1"},
+                is_preview=True,
+            ),
+            background_tasks,
+        )
+        payload = json.loads(response.body.decode("utf-8"))
+        assert payload["status"] == "started"
+        assert len(background_tasks.tasks) == 1
+
+        task = background_tasks.tasks[0]
+        task.func(*task.args, **task.kwargs)
+
+        assert called == ["multi"]
+        render_dir = output_root / "render_images"
+        render_paths = list(render_dir.glob("*_multi_ligand_panel_*.png"))
+        assert render_paths
     finally:
         REPORT_STATE.clear()
         REPORT_STATE.update(snapshot)

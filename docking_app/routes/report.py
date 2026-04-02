@@ -79,6 +79,7 @@ REPORT_PLOT_ORDER_BY_NAME: tuple[str, ...] = (
 )
 REPORT_RENDER_MODE_CLASSIC = "classic"
 REPORT_RENDER_MODE_OTOFIGURE = "otofigure"
+REPORT_RENDER_MODE_MULTI_LIGAND = "multi_ligand_panel"
 
 
 def _prettify_label(name: str, *, trim_run_suffix: bool = False) -> str:
@@ -95,6 +96,8 @@ def _normalize_render_mode(raw_value: Any) -> str:
         return REPORT_RENDER_MODE_CLASSIC
     if value in {"otofigure", "multiview", "multi_view", "multi-run", "multi_run"}:
         return REPORT_RENDER_MODE_OTOFIGURE
+    if value in {"multi_ligand", "multi-ligand", "multi_ligand_panel", "multi-ligand-panel"}:
+        return REPORT_RENDER_MODE_MULTI_LIGAND
     raise ValueError(f"Unsupported render mode: {raw_value}")
 
 
@@ -1618,8 +1621,92 @@ def _render_dtype_otofigure_panel(
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+def _render_dtype_multi_ligand_panel(
+    dtype: str,
+    inventory: dict[str, dict[str, list[tuple[str, Path]]]],
+    output_dir: Path,
+    temp_root: Path,
+    dpi: int,
+    preferred_run: str = "run1",
+    preferred_ligand: str = "",
+    output_stem: str = "",
+    preview_mode: bool = False,
+    ligand_order_index: dict[str, int] | None = None,
+    otofigure_style: str = "balanced",
+    otofigure_ray_trace: bool = True,
+    otofigure_options: dict[str, Any] | None = None,
+    process_hooks: dict[str, Any] | None = None,
+) -> tuple[Path, list[str]]:
+    from figure_scripts.otofigure.multi_ligand_pipeline import run as run_pipeline
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    temp_root.mkdir(parents=True, exist_ok=True)
+
+    ligand_map = inventory.get(dtype) or {}
+    if not ligand_map:
+        raise FileNotFoundError(f"No ligand/run data found for receptor: {dtype}")
+
+    order_index = dict(ligand_order_index or {})
+    ligand_names = sorted(
+        ligand_map.keys(),
+        key=lambda ligand_name: (order_index.get(ligand_name, 10**6), _ligand_sort_key(ligand_name)),
+    )
+    if preferred_ligand:
+        if preferred_ligand not in ligand_map:
+            raise FileNotFoundError(f"No ligand data found for receptor {dtype}: {preferred_ligand}")
+        ligand_names = [preferred_ligand]
+    if not ligand_names:
+        raise FileNotFoundError(f"No ligand data found for receptor: {dtype}")
+
+    selected_ligand = ligand_names[0]
+    run_entries = sorted(ligand_map.get(selected_ligand) or [], key=lambda item: _run_sort_key(item[0]))
+    if not run_entries:
+        raise FileNotFoundError(f"No runs found for receptor {dtype}: {selected_ligand}")
+    selected_run_name, selected_run_dir = run_entries[0]
+    if preferred_run:
+        for run_name, run_dir in run_entries:
+            if run_name == preferred_run:
+                selected_run_name, selected_run_dir = run_name, run_dir
+                break
+    elif any(run_name == "run1" for run_name, _ in run_entries):
+        for run_name, run_dir in run_entries:
+            if run_name == "run1":
+                selected_run_name, selected_run_dir = run_name, run_dir
+                break
+
+    if not (selected_run_dir / "multi_ligand" / "sites.json").exists():
+        raise FileNotFoundError(
+            f"Selected run is not a multi-ligand result: {selected_run_dir}. Use the Multi-Ligand mode output."
+        )
+
+    safe_ligand = re.sub(r"[^A-Za-z0-9_.-]+", "_", selected_ligand)
+    work_dir = temp_root / f"multi_ligand_{dtype}_{safe_ligand}_{selected_run_name}"
+    out_path = _next_unique_png_path(output_dir, output_stem or f"{dtype}_{safe_ligand}_{selected_run_name}_{timestamp_token()}")
+
+    try:
+        run_pipeline(
+            receptor_id=dtype,
+            ligand_name=selected_ligand,
+            run_dir=selected_run_dir,
+            output_png=out_path,
+            work_dir=work_dir,
+            dpi=dpi,
+            style_preset=otofigure_style,
+            ray_trace=otofigure_ray_trace,
+            options=otofigure_options,
+            preview_mode=preview_mode,
+            on_process_start=(process_hooks or {}).get("on_process_start"),
+            on_process_end=(process_hooks or {}).get("on_process_end"),
+        )
+        return out_path, [selected_run_name]
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
 def _get_render_panel_builder(render_mode: str):
     normalized = _normalize_render_mode(render_mode)
+    if normalized == REPORT_RENDER_MODE_MULTI_LIGAND:
+        return _render_dtype_multi_ligand_panel
     if normalized == REPORT_RENDER_MODE_OTOFIGURE:
         return _render_dtype_otofigure_panel
     return _render_dtype_panel
@@ -2390,7 +2477,12 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
         "close_padding": max(0.0, min(1.0, float(payload.otofigure_close_padding))),
     }
     render_panel_builder = _get_render_panel_builder(render_mode)
-    render_mode_label = "OtoFigure" if render_mode == REPORT_RENDER_MODE_OTOFIGURE else "Classic"
+    if render_mode == REPORT_RENDER_MODE_OTOFIGURE:
+        render_mode_label = "OtoFigure"
+    elif render_mode == REPORT_RENDER_MODE_MULTI_LIGAND:
+        render_mode_label = "Multi-Ligand Panel"
+    else:
+        render_mode_label = "Classic"
 
     render_jobs: list[dict[str, str]] = []
     for dtype in selected:
