@@ -59,6 +59,14 @@ def ensure_seed_inputs() -> None:
 
 def _first_ligand_name() -> str:
     ligands = sorted(path.name for path in LIGAND_DIR.glob("*.sdf") if path.is_file())
+    if not ligands:
+        ligand_path = LIGAND_DIR / "seed_fixture.sdf"
+        ligand_path.parent.mkdir(parents=True, exist_ok=True)
+        ligand_path.write_text(
+            "\n  Ketcher\n\n  0  0  0     0  0            999 V2000\nM  END\n$$$$\n",
+            encoding="utf-8",
+        )
+        ligands = [ligand_path.name]
     assert ligands, "Expected at least one ligand fixture in workspace/data/ligand."
     return ligands[0]
 

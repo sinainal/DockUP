@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from .. import state as runtime_state
@@ -288,15 +288,6 @@ def _add_receptors_to_active(requested_ids: list[str]) -> tuple[list[dict[str, A
 def configure_templates(templates: Jinja2Templates) -> None:
     global _templates
     _templates = templates
-
-
-@router.get("/", response_class=HTMLResponse)
-def index(request: Request) -> HTMLResponse:
-    if _templates is None:
-        raise HTTPException(status_code=500, detail="Templates not configured.")
-    template = _templates.get_template("index.html")
-    return HTMLResponse(template.render({"request": request, "title": "Docking App"}))
-
 
 @router.get("/api/state")
 def api_state() -> JSONResponse:

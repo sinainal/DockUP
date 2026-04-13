@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -12,10 +13,20 @@ from .services import _existing_files, _load_receptor_meta, _start_run
 from .state import RUN_STATE
 
 
+def _render_main_index() -> str:
+    html = (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
+    return html.replace("{{ title }}", "Docking App")
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Docking App")
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     configure_templates(templates)
+
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    def homepage() -> HTMLResponse:
+        return HTMLResponse(_render_main_index())
+
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.mount("/ligand-3d", ligand3d_app)
     app.include_router(router)
