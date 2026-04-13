@@ -212,10 +212,8 @@ def api(test_cfg: TestConfig) -> ApiClient:
     return ApiClient(test_cfg.base_url)
 
 
-@pytest.fixture(scope="session")
-def ensure_seed_workspace_fixtures(test_cfg: TestConfig) -> None:
+def _ensure_seed_workspace_fixtures(test_cfg: TestConfig) -> list[Path]:
     created_paths: list[Path] = []
-
     test_cfg.ligand_dir.mkdir(parents=True, exist_ok=True)
     ligand_files = sorted(path for path in test_cfg.ligand_dir.glob("*.sdf") if path.is_file())
     if not ligand_files:
@@ -256,26 +254,42 @@ def ensure_seed_workspace_fixtures(test_cfg: TestConfig) -> None:
             encoding="utf-8",
         )
         created_paths.append(results_path)
+    return created_paths
+
+
+def _cleanup_seed_workspace_fixtures(test_cfg: TestConfig, created_paths: list[Path]) -> None:
+    for path in reversed(created_paths):
+        if path.name == "results.json":
+            parent = path.parent
+            path.unlink(missing_ok=True)
+            while parent != test_cfg.dock_dir and parent.exists():
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
+        else:
+            path.unlink(missing_ok=True)
+
+
+@pytest.fixture(scope="session")
+def ensure_seed_workspace_fixtures(test_cfg: TestConfig) -> None:
+    created_paths = _ensure_seed_workspace_fixtures(test_cfg)
 
     try:
         yield
     finally:
-        for path in reversed(created_paths):
-            if path.name == "results.json":
-                parent = path.parent
-                path.unlink(missing_ok=True)
-                while parent != test_cfg.dock_dir and parent.exists():
-                    try:
-                        parent.rmdir()
-                    except OSError:
-                        break
-                    parent = parent.parent
-            else:
-                path.unlink(missing_ok=True)
+        _cleanup_seed_workspace_fixtures(test_cfg, created_paths)
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _autoload_seed_workspace_fixtures(ensure_seed_workspace_fixtures: None) -> None:
+    yield
+
+
+@pytest.fixture(autouse=True)
+def refresh_seed_workspace_fixtures(test_cfg: TestConfig) -> None:
+    _ensure_seed_workspace_fixtures(test_cfg)
     yield
 
 
