@@ -226,6 +226,15 @@ def ensure_seed_workspace_fixtures(test_cfg: TestConfig) -> None:
         )
         created_paths.append(ligand_path)
 
+    test_cfg.receptor_dir.mkdir(parents=True, exist_ok=True)
+    receptor_path = test_cfg.receptor_dir / "6CM4.pdb"
+    if not receptor_path.exists():
+        receptor_path.write_text(
+            "HEADER    TEST RECEPTOR\nATOM      1  N   GLY A   1      11.104  13.207   9.947  1.00 20.00           N\nEND\n",
+            encoding="utf-8",
+        )
+        created_paths.append(receptor_path)
+
     test_cfg.dock_dir.mkdir(parents=True, exist_ok=True)
     result_files = sorted(test_cfg.dock_dir.rglob("results.json"))
     if not result_files:

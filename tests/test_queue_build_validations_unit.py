@@ -31,20 +31,29 @@ def restore_state():
 
 
 @pytest.fixture(autouse=True)
-def ensure_seed_ligand() -> None:
-    created_path: Path | None = None
+def ensure_seed_inputs() -> None:
+    created_paths: list[Path] = []
     existing = sorted(path for path in LIGAND_DIR.glob("*.sdf") if path.is_file())
     if not existing:
-        created_path = LIGAND_DIR / "seed_fixture.sdf"
-        created_path.parent.mkdir(parents=True, exist_ok=True)
-        created_path.write_text(
+        ligand_path = LIGAND_DIR / "seed_fixture.sdf"
+        ligand_path.parent.mkdir(parents=True, exist_ok=True)
+        ligand_path.write_text(
             "\n  Ketcher\n\n  0  0  0     0  0            999 V2000\nM  END\n$$$$\n",
             encoding="utf-8",
         )
+        created_paths.append(ligand_path)
+    receptor_path = RECEPTOR_DIR / "6CM4.pdb"
+    if not receptor_path.exists():
+        receptor_path.parent.mkdir(parents=True, exist_ok=True)
+        receptor_path.write_text(
+            "HEADER    TEST RECEPTOR\nATOM      1  N   GLY A   1      11.104  13.207   9.947  1.00 20.00           N\nEND\n",
+            encoding="utf-8",
+        )
+        created_paths.append(receptor_path)
     try:
         yield
     finally:
-        if created_path is not None:
+        for created_path in reversed(created_paths):
             created_path.unlink(missing_ok=True)
 
 

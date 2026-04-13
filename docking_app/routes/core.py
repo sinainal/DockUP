@@ -294,11 +294,8 @@ def configure_templates(templates: Jinja2Templates) -> None:
 def index(request: Request) -> HTMLResponse:
     if _templates is None:
         raise HTTPException(status_code=500, detail="Templates not configured.")
-    return _templates.TemplateResponse(
-        request,
-        "index.html",
-        {"request": request, "title": "Docking App"},
-    )
+    template = _templates.get_template("index.html")
+    return HTMLResponse(template.render({"request": request, "title": "Docking App"}))
 
 
 @router.get("/api/state")
