@@ -1,8 +1,10 @@
 # DockUP — Core web server dependencies
 # Always installed by setup.sh
 
-fastapi>=0.110.0
-uvicorn[standard]>=0.29.0
+fastapi>=0.128.0,<0.129.0
+starlette>=0.50.0,<0.51.0
+httpx>=0.28.1,<0.29.0
+uvicorn[standard]>=0.40.0,<0.41.0
 pydantic>=2.0
 python-multipart>=0.0.9
 watchfiles>=0.21
@@ -10,7 +12,7 @@ requests>=2.31
 lxml>=5.0
 beautifulsoup4>=4.12
 numpy>=1.26,<3
-jinja2>=3.1
+jinja2>=3.1.6,<3.2.0
 pandas>=2.0
 openpyxl>=3.1
 python-docx>=1.1

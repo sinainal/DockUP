@@ -20,7 +20,7 @@ DOCK_DIR_RESOLVED = DOCK_DIR.resolve()
 
 @router.post("/api/results/scan")
 def scan_results(payload: dict[str, Any]) -> JSONResponse:
-    root_path = str(payload.get("root_path") or STATE.get("results_root_path") or "data/dock").strip() or "data/dock"
+    root_path = str(payload.get("root_path") or "data/dock").strip() or "data/dock"
     rp = resolve_dock_directory(root_path, default=DOCK_DIR_RESOLVED, allow_create=False)
     data = _scan_results(str(rp))
     STATE["results_root_path"] = str(rp)

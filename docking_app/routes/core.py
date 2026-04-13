@@ -295,9 +295,9 @@ def index(request: Request) -> HTMLResponse:
     if _templates is None:
         raise HTTPException(status_code=500, detail="Templates not configured.")
     return _templates.TemplateResponse(
-        request,
-        "index.html",
-        {"title": "Docking App"},
+        request=request,
+        name="index.html",
+        context={"title": "Docking App"},
     )
 
 
@@ -912,7 +912,10 @@ def _prepare_resume_queue(item_id: str, replace_queue: bool = True) -> tuple[lis
     out_root = str(selected.get("resume_out_root") or "").strip() or str((DOCK_DIR / dock_root).resolve())
     STATE["runs"] = 1
     STATE["out_root"] = out_root
-    STATE["out_root_path"] = str(Path(out_root).parent)
+    try:
+        STATE["out_root_path"] = to_display_path(Path(out_root).expanduser().resolve().parent)
+    except Exception:
+        STATE["out_root_path"] = str(Path(out_root).parent)
     STATE["out_root_name"] = Path(out_root).name
     if queue_rows:
         STATE["docking_config"] = normalize_docking_config(queue_rows[0].get("docking_config") or STATE.get("docking_config") or {})

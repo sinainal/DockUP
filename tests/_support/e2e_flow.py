@@ -311,8 +311,9 @@ def provision_single_docking_run(
         where="POST /ligand-3d/api/ligands/add",
     )
     copied = [str(item or "").strip() for item in list(add.get("copied") or []) if str(item or "").strip()]
-    assert copied, f"No copied ligands after add: {add}"
-    dock_ligand_name = copied[0]
+    duplicates = [str(item or "").strip() for item in list(add.get("duplicates") or []) if str(item or "").strip()]
+    assert copied or duplicates, f"No copied or duplicate ligands after add: {add}"
+    dock_ligand_name = copied[0] if copied else duplicates[0]
     artifacts.ligand_name = dock_ligand_name
 
     active = api.assert_ok(
