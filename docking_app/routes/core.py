@@ -295,9 +295,9 @@ def index(request: Request) -> HTMLResponse:
     if _templates is None:
         raise HTTPException(status_code=500, detail="Templates not configured.")
     return _templates.TemplateResponse(
-        request=request,
-        name="index.html",
-        context={"title": "Docking App"},
+        request,
+        "index.html",
+        {"request": request, "title": "Docking App"},
     )
 
 

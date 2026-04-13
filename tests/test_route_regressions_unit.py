@@ -38,6 +38,16 @@ def test_results_scan_empty_body_defaults_to_dock_root(monkeypatch) -> None:
         STATE["results_root_path"] = previous_root
 
 
+def test_results_scan_absolute_path_returns_runs() -> None:
+    client = TestClient(app)
+    response = client.post("/api/results/scan", json={"root_path": str(DOCK_DIR.resolve())})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "runs" in payload
+    assert isinstance(payload["runs"], list)
+
+
 def test_prepare_resume_queue_normalizes_out_root_path_to_display_path(monkeypatch) -> None:
     absolute_out_root = (DOCK_DIR / "resume_probe_root").resolve()
     selected = {

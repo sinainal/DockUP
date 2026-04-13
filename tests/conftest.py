@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import json
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -209,6 +210,64 @@ def test_cfg(pytestconfig: pytest.Config) -> TestConfig:
 @pytest.fixture(scope="session")
 def api(test_cfg: TestConfig) -> ApiClient:
     return ApiClient(test_cfg.base_url)
+
+
+@pytest.fixture(scope="session")
+def ensure_seed_workspace_fixtures(test_cfg: TestConfig) -> None:
+    created_paths: list[Path] = []
+
+    test_cfg.ligand_dir.mkdir(parents=True, exist_ok=True)
+    ligand_files = sorted(path for path in test_cfg.ligand_dir.glob("*.sdf") if path.is_file())
+    if not ligand_files:
+        ligand_path = test_cfg.ligand_dir / "seed_fixture.sdf"
+        ligand_path.write_text(
+            "\n  Ketcher\n\n  0  0  0     0  0            999 V2000\nM  END\n$$$$\n",
+            encoding="utf-8",
+        )
+        created_paths.append(ligand_path)
+
+    test_cfg.dock_dir.mkdir(parents=True, exist_ok=True)
+    result_files = sorted(test_cfg.dock_dir.rglob("results.json"))
+    if not result_files:
+        run_dir = test_cfg.dock_dir / "seed_scan" / "6CM4" / "seed_fixture" / "run1"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        results_path = run_dir / "results.json"
+        results_path.write_text(
+            json.dumps(
+                {
+                    "mock": {
+                        "best_affinity": -8.5,
+                        "rmsd": 1.2,
+                        "job_type": "Docking",
+                        "docking_mode": "standard",
+                    }
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        created_paths.append(results_path)
+
+    try:
+        yield
+    finally:
+        for path in reversed(created_paths):
+            if path.name == "results.json":
+                parent = path.parent
+                path.unlink(missing_ok=True)
+                while parent != test_cfg.dock_dir and parent.exists():
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
+                    parent = parent.parent
+            else:
+                path.unlink(missing_ok=True)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _autoload_seed_workspace_fixtures(ensure_seed_workspace_fixtures: None) -> None:
+    yield
 
 
 @pytest.fixture(scope="session")
