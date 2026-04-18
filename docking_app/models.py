@@ -10,6 +10,9 @@ class ModePayload(BaseModel):
 class LoadReceptorsPayload(BaseModel):
     pdb_ids: str = ""
 
+class FetchLigandsPayload(BaseModel):
+    ligand_ids: str = ""
+
 
 class SelectReceptorPayload(BaseModel):
     pdb_id: str

@@ -8,9 +8,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link
-    href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&family=Inter:wght@400;500;600;700&display=swap"
     rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=41">
+  <link rel="icon" type="image/png" href="/static/image.png?v=2">
+  <link rel="shortcut icon" type="image/png" href="/static/image.png?v=2">
+  <link rel="apple-touch-icon" href="/static/image.png?v=2">
+  <link rel="stylesheet" href="/static/styles.css?v=45">
   <link rel="stylesheet" href="/static/grid_selection_search.css?v=1">
   <link rel="stylesheet" href="/static/docking_flex_selection.css?v=1">
   <link rel="stylesheet" href="/static/pocket_finder.css?v=1">
@@ -28,7 +31,9 @@
       <div class="brand-row">
         <img src="/static/image.png?v=2" alt="" class="brand-mark" aria-hidden="true">
         <div>
-          <div class="brand">DockUP</div>
+          <div class="brand">
+            <span class="brand-dock">Dock</span><span class="brand-up">UP</span>
+          </div>
           <div class="subtitle">GPU docking, redocking, grid preparation, and live visualization</div>
         </div>
       </div>
@@ -48,56 +53,77 @@
             </div>
           </div>
 
-          <div class="section" id="ligandSection" data-mode="dock">
-            <div class="section-title">Ligands (SDF)</div>
-            <div class="field">
-              <label class="field-label">Upload ligand files</label>
-              <div class="file-input">
-                <input id="ligandUpload" class="file-native" type="file" multiple accept=".sdf">
-                <label class="file-button" for="ligandUpload">Choose ligand files</label>
-                <span id="ligandUploadName" class="file-name">No files selected.</span>
-              </div>
-            </div>
-            <div class="results-toolbar" style="margin-bottom: 10px; justify-content:flex-start;">
-              <button class="primary" id="openLigand3dPopup" type="button">Fetch Ligand</button>
-            </div>
-            <div class="helper" style="margin-bottom:10px;">
-              Ligand secimi ve dock-ready listeye ekleme islemlerini <b>Fetch Ligand</b> popup tablosundan yapin.
-            </div>
-            <div class="selected-ligands-card" style="margin-top:10px;">
-              <div class="selected-ligands-header">
+          <div class="section" data-mode="dock" style="background: transparent; border: none; padding: 0; box-shadow: none;">
+            <div style="display: flex; gap: 16px; align-items: stretch; flex-wrap: wrap;">
+              <!-- Ligands Panel -->
+              <div class="section" id="ligandSection" style="flex: 1; min-width: 250px; margin-bottom: 0; display: flex; flex-direction: column;">
                 <div>
-                  <div class="selected-ligands-title">Dock-ready Ligands</div>
-                  <div class="helper">Queue sadece bu listedeki ligandlari kullanir</div>
+                  <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
+                    Ligands (SDF)
+                    <button class="secondary" id="openLigand3dPopup" type="button" style="padding: 2px 8px; font-size: 11px; height: 22px; border-radius: 6px;">Advanced Ligand Fetch</button>
+                  </div>
+                  <div class="field">
+                    <label class="field-label">Ligand IDs or Names (line or space separated)</label>
+                    <textarea id="ligandIds" rows="4" placeholder="Aspirin&#10;CID:2244&#10;Remdesivir" style="resize: none;"></textarea>
+                  </div>
+                  <div class="field">
+                    <label class="field-label">Sources (Upload or Fetch)</label>
+                    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                      <button class="primary" id="fetchLigandsBtn" type="button" style="margin: 0; padding: 8px 16px;">Fetch Ligand</button>
+                      <div class="file-input" style="margin: 0;">
+                        <input id="ligandUpload" class="file-native" type="file" multiple accept=".sdf">
+                        <label class="file-button" for="ligandUpload" style="margin: 0;">Choose files</label>
+                      </div>
+                    </div>
+                    <div style="margin-top: 6px;">
+                      <span id="ligandUploadName" class="file-name" style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block;">No files selected.</span>
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div class="pill-list" id="activeLigandList"></div>
-            </div>
-          </div>
 
-          <div class="section" data-mode="dock">
-            <div class="section-title">Receptors</div>
-            <div class="field">
-              <label class="field-label">PDB IDs (line or space separated)</label>
-              <textarea id="pdbIds" rows="4" placeholder="7X2F&#10;6CM4&#10;3PBL"></textarea>
-            </div>
-            <div class="field">
-              <label class="field-label">Upload PDB files</label>
-              <div class="file-input">
-                <input id="receptorUpload" class="file-native" type="file" multiple accept=".pdb">
-                <label class="file-button" for="receptorUpload">Choose receptor files</label>
-                <span id="receptorUploadName" class="file-name">No files selected.</span>
-              </div>
-            </div>
-            <button class="primary" id="loadReceptors">Load receptor info</button>
-            <div class="selected-ligands-card" style="margin-top:10px;">
-              <div class="selected-ligands-header">
-                <div>
-                  <div class="selected-ligands-title">Stored Receptors</div>
-                  <div class="helper">Previously saved receptor PDB files in <code>data/receptor</code></div>
+                <div class="selected-ligands-card" style="margin-top: auto; display: flex; flex-direction: column;">
+                  <div class="selected-ligands-header" style="flex-shrink: 0;">
+                    <div class="selected-ligands-title">Stored Ligands</div>
+                    <button class="secondary" id="clearLigandsBtn" type="button" style="padding: 2px 6px; font-size: 10px; height: 18px; border-radius: 4px; color: #ef4444; border-color: #fecaca; background: #fef2f2;">Delete All</button>
+                  </div>
+                  <div class="pill-list modern-scroll" id="activeLigandList" style="height: 100px; overflow-y: auto; align-content: flex-start; padding-right: 4px;"></div>
                 </div>
               </div>
-              <div class="pill-list" id="receptorFileList"></div>
+
+              <!-- Receptors Panel -->
+              <div class="section" style="flex: 1; min-width: 250px; margin-bottom: 0; display: flex; flex-direction: column;">
+                <div>
+                  <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
+                    Receptors
+                    <button class="secondary" id="openReceptorAdvancedPopup" type="button" style="padding: 2px 8px; font-size: 11px; height: 22px; border-radius: 6px;">Advanced Receptor Fetch</button>
+                  </div>
+                  <div class="field">
+                    <label class="field-label">PDB IDs (line or space separated)</label>
+                    <textarea id="pdbIds" rows="4" placeholder="7X2F&#10;6CM4" style="resize: none;"></textarea>
+                  </div>
+                  <div class="field">
+                    <label class="field-label">Sources (Upload or Fetch)</label>
+                    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                      <button class="primary" id="loadReceptors" type="button" style="margin: 0; padding: 8px 16px;">Fetch Receptor</button>
+                      <div class="file-input" style="margin: 0;">
+                        <input id="receptorUpload" class="file-native" type="file" multiple accept=".pdb">
+                        <label class="file-button" for="receptorUpload" style="margin: 0;">Choose files</label>
+                      </div>
+                    </div>
+                    <div style="margin-top: 6px;">
+                      <span id="receptorUploadName" class="file-name" style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block;">No files selected.</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="selected-ligands-card" style="margin-top: auto; display: flex; flex-direction: column;">
+                  <div class="selected-ligands-header" style="flex-shrink: 0;">
+                    <div class="selected-ligands-title">Stored Receptors</div>
+                    <button class="secondary" id="clearReceptorsBtn" type="button" style="padding: 2px 6px; font-size: 10px; height: 18px; border-radius: 4px; color: #ef4444; border-color: #fecaca; background: #fef2f2;">Delete All</button>
+                  </div>
+                  <div class="pill-list modern-scroll" id="receptorFileList" style="height: 100px; overflow-y: auto; align-content: flex-start; padding-right: 4px;"></div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -556,56 +582,63 @@
       <section class="panel right" id="rightPanel">
         <div class="panel-scroll">
           <div class="section viewer">
-            <div class="section-title">Visualization</div>
-            <details class="viewer-controls" open>
+            <details class="viewer-controls">
               <summary>Viewer options</summary>
-              <div class="controls-grid">
-                <label>
-                  Color
-                  <select id="colorScheme">
-                    <option value="chainname">chainname</option>
-                    <option value="residueindex">residueindex</option>
-                    <option value="uniform">uniform</option>
-                  </select>
-                </label>
-                <label>
-                  Chain
-                  <select id="viewerChain"></select>
-                </label>
-                <label>
-                  Show surface
-                  <input type="checkbox" id="showSurface">
-                </label>
-                <label>
-                  Native ligand
-                  <input type="checkbox" id="showNativeLigand" checked>
-                </label>
-
-                <label>
-                  Docked ligand
-                  <input type="checkbox" id="showDockedLigand" checked>
-                </label>
-                <label>
-                  Show interactions
-                  <input type="checkbox" id="showInteractions" checked>
-                </label>
-                <label>
-                  Show sticks
-                  <input type="checkbox" id="showSticks">
-                </label>
-                <label>
-                  Show flex residues
-                  <input type="checkbox" id="showFlexResidues" checked>
-                </label>
-                <label>
-                  Show gridbox
-                  <input type="checkbox" id="showGrid">
-                </label>
+              <div class="viewer-controls-body">
+                <div class="viewer-options-row">
+                  <label class="viewer-control-card">
+                    <span class="viewer-control-label">Color</span>
+                    <select id="colorScheme">
+                      <option value="chainname">chainname</option>
+                      <option value="residueindex">residueindex</option>
+                      <option value="uniform">uniform</option>
+                    </select>
+                  </label>
+                  <label class="viewer-control-card">
+                    <span class="viewer-control-label">Chain</span>
+                    <select id="viewerChain"></select>
+                  </label>
+                  <details class="viewer-control-card viewer-show-menu">
+                    <summary>Show</summary>
+                    <div class="viewer-show-panel">
+                      <label class="viewer-check">
+                        <input type="checkbox" id="showSurface">
+                        <span>Surface</span>
+                      </label>
+                      <label class="viewer-check">
+                        <input type="checkbox" id="showNativeLigand" checked>
+                        <span>Native ligand</span>
+                      </label>
+                      <label class="viewer-check">
+                        <input type="checkbox" id="showDockedLigand" checked>
+                        <span>Docked ligand</span>
+                      </label>
+                      <label class="viewer-check">
+                        <input type="checkbox" id="showInteractions" checked>
+                        <span>Interactions</span>
+                      </label>
+                      <label class="viewer-check">
+                        <input type="checkbox" id="showSticks">
+                        <span>Sticks</span>
+                      </label>
+                      <label class="viewer-check">
+                        <input type="checkbox" id="showFlexResidues" checked>
+                        <span>Flex residues</span>
+                      </label>
+                      <label class="viewer-check">
+                        <input type="checkbox" id="showGrid">
+                        <span>Gridbox</span>
+                      </label>
+                    </div>
+                  </details>
+                </div>
+                <div class="interaction-legend" id="interactionLegend"></div>
+                <div class="interaction-hover" id="interactionHover">Hover: -</div>
               </div>
-              <div class="interaction-legend" id="interactionLegend"></div>
-              <div class="interaction-hover" id="interactionHover">Hover: -</div>
             </details>
-            <div id="viewport" class="viewer-canvas"></div>
+            <div id="viewport" class="viewer-canvas">
+              <div id="viewport-message-overlay" class="viewport-message-overlay hidden"></div>
+            </div>
           </div>
           <div class="section" id="resultDetailSection" data-mode="results">
             <div class="section-title">Selected Result</div>

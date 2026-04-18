@@ -42,6 +42,7 @@ from ..models import (
     RunStartPayload,
     SelectLigandPayload,
     SelectReceptorPayload,
+    FetchLigandsPayload,
 )
 from ..services import (
     _build_queue,
@@ -370,6 +371,52 @@ def list_ligands() -> JSONResponse:
     return JSONResponse({"ligands": [f.name for f in lig_files]})
 
 
+@router.post("/api/ligands/fetch")
+def fetch_ligands(payload: FetchLigandsPayload) -> JSONResponse:
+    from urllib.request import urlopen, Request
+    from urllib.parse import quote
+
+    raw_ids = [val.strip() for val in re.split(r"[\s,;]+", payload.ligand_ids) if val.strip()]
+    saved_files = []
+    failed_ids = []
+
+    for identifier in raw_ids:
+        if identifier.upper().startswith("CID:"):
+            url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{identifier[4:]}/SDF?record_type=3d"
+        elif identifier.upper().startswith("ID:"):
+            url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{identifier[3:]}/SDF?record_type=3d"
+        elif identifier.isdigit():
+            url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{identifier}/SDF?record_type=3d"
+        else:
+            url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{quote(identifier)}/SDF?record_type=3d"
+
+        try:
+            req = Request(url)
+            with urlopen(req, timeout=10) as response:
+                sdf_data = response.read()
+                safe_name = _sanitize_upload_filename(f"{identifier}.sdf".replace(":", "_").replace("/", "_"))
+                target_path = _next_available_ligand_path(safe_name)
+                target_path.write_bytes(sdf_data)
+                saved_files.append(target_path.name)
+        except Exception:
+            failed_ids.append(identifier)
+
+    if saved_files:
+        current = _normalize_active_ligands_state()
+        for f in saved_files:
+            if f not in current:
+                current.append(f)
+        STATE["active_ligands"] = current
+        save_state_cache()
+
+    lig_files = _existing_files(LIGAND_DIR, (".sdf",))
+    return JSONResponse({
+        "saved": saved_files,
+        "failed": failed_ids,
+        "ligands": [f.name for f in lig_files]
+    })
+
+
 @router.post("/api/ligands/delete")
 def delete_ligand(payload: dict[str, Any]) -> JSONResponse:
     name = str(payload.get("name", "")).strip()
@@ -386,6 +433,19 @@ def delete_ligand(payload: dict[str, Any]) -> JSONResponse:
     save_state_cache()
     lig_files = _existing_files(LIGAND_DIR, (".sdf",))
     return JSONResponse({"ligands": [f.name for f in lig_files]})
+
+
+@router.post("/api/ligands/clear_all")
+def clear_all_ligands() -> JSONResponse:
+    for f in LIGAND_DIR.glob("*.sdf"):
+        try:
+            f.unlink()
+        except Exception:
+            pass
+    STATE["active_ligands"] = []
+    _normalize_active_ligands_state()
+    save_state_cache()
+    return JSONResponse({"ligands": []})
 
 
 @router.get("/api/ligands/active")
@@ -433,6 +493,15 @@ def clear_active_ligands() -> JSONResponse:
     STATE["active_ligands"] = []
     save_state_cache()
     return JSONResponse({"active_ligands": []})
+
+
+@router.get("/api/ligands/content/{name}")
+def get_ligand_content(name: str) -> JSONResponse:
+    target = (LIGAND_DIR / name).resolve()
+    if LIGAND_DIR_RESOLVED not in target.parents or target.suffix.lower() != ".sdf" or not target.exists():
+        return JSONResponse({"error": "Ligand not found"}, status_code=404)
+    content = target.read_text(encoding="utf-8")
+    return JSONResponse({"sdf_text": content})
 
 
 @router.post("/api/receptors/upload")
@@ -503,6 +572,23 @@ def delete_receptor_file(payload: dict[str, Any]) -> JSONResponse:
 
     receptors = _collect_receptor_rows()
     return JSONResponse({"receptors": receptors})
+
+
+@router.post("/api/receptors/clear_all")
+def clear_all_receptors() -> JSONResponse:
+    for f in RECEPTOR_DIR.glob("*.pdb"):
+        try:
+            f.unlink()
+        except Exception:
+            pass
+    STATE["receptor_meta"] = []
+    STATE["selection_map"] = {}
+    STATE["selected_receptor"] = ""
+    STATE["selected_ligand"] = ""
+    STATE["selected_chain"] = "all"
+    STATE["selected_ids"] = []
+    save_state_cache()
+    return JSONResponse({"receptors": []})
 
 
 @router.post("/api/receptors/add")

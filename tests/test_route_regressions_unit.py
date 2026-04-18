@@ -21,7 +21,7 @@ def test_home_page_renders_without_template_type_error() -> None:
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "<title>Docking App</title>" in response.text
+    assert "<title>DockUP</title>" in response.text
 
 
 def test_results_scan_empty_body_defaults_to_dock_root(monkeypatch) -> None:

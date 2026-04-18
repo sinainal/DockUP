@@ -89,6 +89,7 @@ let runPoll = null;
 let recentAutoRefreshTs = 0;
 let selectedLigandData = null; // {resname, resno, chainname}
 let selectedAtomData = null; // {index, atomname, resname, resno, chainname, x, y, z, selection}
+let selectedAtomHighlightMode = "receptor"; // "receptor" | "ligand-preview"
 let nativeLigComp = null;
 let interactionResiduesByType = {};
 let interactionResidueInfo = {};
@@ -196,10 +197,18 @@ function initElements() {
   els.closeLigand3dPopup = document.getElementById("closeLigand3dPopup");
   els.ligand3dModal = document.getElementById("ligand3dModal");
   els.ligand3dFrame = document.getElementById("ligand3dFrame");
+
+  els.clearLigandsBtn = document.getElementById("clearLigandsBtn");
+  els.clearReceptorsBtn = document.getElementById("clearReceptorsBtn");
+
+  els.dockingModeToggle = document.getElementById("dockingModeToggle");
+  els.multiLigandModeToggle = document.getElementById("multiLigandModeToggle");
   els.pdbIds = document.getElementById("pdbIds");
   els.receptorUpload = document.getElementById("receptorUpload");
   els.receptorUploadName = document.getElementById("receptorUploadName");
   els.loadReceptors = document.getElementById("loadReceptors");
+  els.fetchLigandsBtn = document.getElementById("fetchLigandsBtn");
+  els.ligandIds = document.getElementById("ligandIds");
   els.receptorFileList = document.getElementById("receptorFileList");
   els.receptorSummary = document.getElementById("receptorSummary");
   els.ligandTable = document.getElementById("ligandTable");
@@ -449,6 +458,152 @@ function initElements() {
 
   els.infoCenter = document.getElementById("infoCenter");
   els.infoSize = document.getElementById("infoSize");
+}
+
+let modernRowDropdownHandlersBound = false;
+
+function closeModernRowDropdowns(except = null) {
+  document.querySelectorAll(".modern-row-dropdown.is-open").forEach((dropdown) => {
+    if (except && dropdown === except) return;
+    dropdown.classList.remove("is-open");
+    const menu = dropdown.querySelector(".modern-row-dropdown-menu");
+    if (menu) menu.hidden = true;
+    const trigger = dropdown.querySelector(".modern-row-dropdown-trigger");
+    if (trigger) trigger.setAttribute("aria-expanded", "false");
+  });
+}
+
+function bindModernRowDropdownHandlers() {
+  if (modernRowDropdownHandlersBound) return;
+  modernRowDropdownHandlersBound = true;
+
+  document.addEventListener("pointerdown", (event) => {
+    if (event.target.closest(".modern-row-dropdown")) return;
+    closeModernRowDropdowns();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeModernRowDropdowns();
+    }
+  });
+}
+
+function createModernRowDropdown({
+  value = "",
+  placeholder = "",
+  options = [],
+  onSelect = null,
+  emptyLabel = "",
+}) {
+  bindModernRowDropdownHandlers();
+
+  const dropdown = document.createElement("div");
+  dropdown.className = "modern-row-dropdown";
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "modern-row-dropdown-trigger";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+
+  const triggerLabel = document.createElement("span");
+  triggerLabel.className = "modern-row-dropdown-trigger-label";
+
+  const caret = document.createElement("span");
+  caret.className = "modern-row-dropdown-caret";
+  caret.textContent = "▾";
+
+  trigger.appendChild(triggerLabel);
+  trigger.appendChild(caret);
+  dropdown.appendChild(trigger);
+
+  const menu = document.createElement("div");
+  menu.className = "modern-row-dropdown-menu";
+  menu.hidden = true;
+  dropdown.appendChild(menu);
+
+  const selectedValue = String(value ?? "");
+
+  const setSelection = (nextValue, nextLabel = "") => {
+    dropdown.dataset.value = String(nextValue ?? "");
+    dropdown.dataset.label = String(nextLabel || "");
+    triggerLabel.textContent = nextLabel || placeholder || "Select...";
+    Array.from(menu.querySelectorAll(".modern-row-dropdown-option")).forEach((item) => {
+      item.classList.toggle("active", item.dataset.value === String(nextValue ?? ""));
+    });
+  };
+
+  const openMenu = () => {
+    closeModernRowDropdowns(dropdown);
+    dropdown.classList.add("is-open");
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+  };
+
+  const closeMenu = () => {
+    dropdown.classList.remove("is-open");
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+  };
+
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (dropdown.classList.contains("is-open")) {
+      closeMenu();
+    } else {
+      openMenu();
+    }
+  });
+
+  dropdown.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  if (emptyLabel) {
+    const emptyRow = document.createElement("div");
+    emptyRow.className = "modern-row-dropdown-empty";
+    emptyRow.textContent = emptyLabel;
+    menu.appendChild(emptyRow);
+  }
+
+  options.forEach((option) => {
+    const optValue = String(option?.value ?? "");
+    const optLabel = String(option?.label ?? optValue);
+    const optDisabled = Boolean(option?.disabled);
+
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "modern-row-dropdown-option";
+    item.dataset.value = optValue;
+    item.textContent = optLabel;
+    item.disabled = optDisabled;
+    if (optDisabled) item.classList.add("disabled");
+    if (optValue === selectedValue) item.classList.add("active");
+
+    item.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (optDisabled) return;
+      setSelection(optValue, optLabel);
+      closeMenu();
+      if (typeof onSelect === "function") {
+        await onSelect(optValue, optLabel, dropdown);
+      }
+    });
+
+    menu.appendChild(item);
+  });
+
+  const initialLabel = options.find((option) => String(option?.value ?? "") === selectedValue)?.label || placeholder;
+  setSelection(selectedValue, initialLabel);
+
+  dropdown.close = closeMenu;
+  dropdown.open = openMenu;
+  dropdown.setSelection = setSelection;
+  dropdown.menu = menu;
+  dropdown.trigger = trigger;
+
+  return dropdown;
 }
 
 // =====================================================
@@ -1514,9 +1669,22 @@ function closeLigand3dModal() {
 // =====================================================
 
 function setViewportMessage(message) {
-  const viewport = document.getElementById("viewport");
-  if (!viewport) return;
-  viewport.innerHTML = `<div class="helper" style="padding:12px;">${message}</div>`;
+  const overlay = document.getElementById("viewport-message-overlay");
+  if (!overlay) {
+    const viewport = document.getElementById("viewport");
+    if (viewport && message) {
+      viewport.innerHTML = `<div class="helper" style="padding:12px;">${message}</div>`;
+    }
+    return;
+  }
+
+  if (!message) {
+    overlay.classList.add("hidden");
+    overlay.textContent = "";
+  } else {
+    overlay.textContent = message;
+    overlay.classList.remove("hidden");
+  }
 }
 
 function initViewer() {
@@ -2059,13 +2227,23 @@ function renderSelectedAtomHighlight() {
     representations.selectedAtom = null;
   }
   if (!comp || !selectedAtomData || !selectedAtomData.selection) return;
+  const isLigandPreview = selectedAtomHighlightMode === "ligand-preview";
   try {
-    representations.selectedAtom = comp.addRepresentation("spacefill", {
-      sele: selectedAtomData.selection,
-      color: 0xFFD700,
-      radiusScale: 0.33,
-      opacity: 1,
-    });
+    const highlightOptions = isLigandPreview
+      ? {
+          sele: selectedAtomData.selection,
+          color: 0xFFD700,
+          radiusType: "size",
+          radius: 0.34,
+          opacity: 1,
+        }
+      : {
+          sele: selectedAtomData.selection,
+          color: 0xFFD700,
+          radiusScale: 0.33,
+          opacity: 1,
+        };
+    representations.selectedAtom = comp.addRepresentation("spacefill", highlightOptions);
   } catch (err) {
     representations.selectedAtom = null;
   }
@@ -2463,6 +2641,7 @@ async function refreshViewer() {
     dispatchFlexSelectionContext("no-receptor");
     return;
   }
+  setViewportMessage(null); // Clear any "Previewing Ligand" or other messages
   if (!initViewer()) return;
   const requestId = ++refreshViewerRequestId;
 
@@ -2490,6 +2669,7 @@ async function refreshViewer() {
     const previousComp = comp;
     const previousNativeLigComp = nativeLigComp;
     comp = component;
+    selectedAtomHighlightMode = "receptor";
 
     // Reset viewer state only after the new structure is ready.
     representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, residueSearch: null, flexResidueSearch: null };
@@ -4038,6 +4218,7 @@ async function renderReceptorSummary(rows) {
     item.className = "table-row";
     item.style.gridTemplateColumns = "0.2fr 0.6fr 0.6fr 1.0fr 0.8fr 0.8fr";
     item.style.alignItems = "center";
+    item.style.overflow = "visible";
 
     if (row.status === "error") item.classList.add("error");
     if (row.pdb_id === appState.selectedReceptor) item.classList.add("selected");
@@ -4047,87 +4228,74 @@ async function renderReceptorSummary(rows) {
     const gridStatus = grid ? '<span style="color:var(--success);font-weight:bold;">Set</span>' : '<span style="color:var(--muted);">No</span>';
 
     // Chain Dropdown
-    const chainSelect = document.createElement("select");
-    chainSelect.style.width = "100%";
-    chainSelect.style.padding = "4px";
-
-    // Populate chains
     let chains = row.chains || ["all"];
-    // Ensure chains is an array
     if (typeof chains === "string") {
-      chains = chains.split(",").map(c => c.trim()).filter(c => c);
+      chains = chains.split(",").map((c) => c.trim()).filter(Boolean);
       if (chains.length === 0) chains = ["all"];
     }
-    chains.forEach(c => {
-      const opt = document.createElement("option");
-      opt.value = c;
-      opt.textContent = c;
-      if (appState.selectionMap && appState.selectionMap[row.pdb_id] && appState.selectionMap[row.pdb_id].chain === c) {
-        opt.selected = true;
-      }
-      chainSelect.appendChild(opt);
-    });
-
-    chainSelect.addEventListener("click", (e) => e.stopPropagation());
-    chainSelect.addEventListener("change", async (e) => {
-      const previousChain = getSelectedChainForReceptor(row.pdb_id);
-      const selectedChain = setSelectedChainForReceptor(row.pdb_id, e.target.value);
-      const previousLigand = String(appState.selectionMap?.[row.pdb_id]?.ligand_resname || "");
-      const previousLigands = getSelectedLigandsForReceptor(row.pdb_id);
-      const allowedLigands = appState.mode === "Redocking"
-        ? getNativeLigandsForChain(row.ligands_by_chain, selectedChain)
-        : [...activeLigands];
-      let nextLigand = previousLigand;
-      let nextLigands = [];
-      if (appState.mode === "Redocking") {
-        nextLigand = previousLigand && previousLigand !== "all_set" && !allowedLigands.includes(previousLigand)
-          ? ""
-          : previousLigand;
-        nextLigands = nextLigand && nextLigand !== "all_set" ? [nextLigand] : [];
-      } else if (isMultiLigandMode()) {
-        nextLigands = previousLigands.filter((name) => allowedLigands.includes(name)).slice(0, 2);
-        nextLigand = buildLigandSetLabel(nextLigands);
-      } else {
-        nextLigand = previousLigand && previousLigand !== "all_set" && !allowedLigands.includes(previousLigand)
-          ? ""
-          : previousLigand;
-        nextLigands = nextLigand && nextLigand !== "all_set" ? [nextLigand] : [];
-      }
-      // Update selection map
-      if (!appState.selectionMap) appState.selectionMap = {};
-      if (!appState.selectionMap[row.pdb_id]) appState.selectionMap[row.pdb_id] = {};
-      appState.selectionMap[row.pdb_id].chain = selectedChain;
-      appState.selectionMap[row.pdb_id].ligand_resname = nextLigand;
-      appState.selectionMap[row.pdb_id].ligand_resnames = nextLigands;
-      if (selectedChain !== previousChain) {
-        clearFlexResiduesForReceptor(row.pdb_id);
-      }
-
-      // Send to backend
-      await fetchJSON("/api/ligands/select", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pdb_id: row.pdb_id,
-          chain: selectedChain,
-          ligand: nextLigand,
-          ligands: nextLigands,
-        }),
-      });
-      await refreshReceptorSummary();
-      if (row.pdb_id === appState.selectedReceptor) {
-        clearResidueSearchSelection({ refreshUI: false, reason: "chain-change" });
-        renderFlexResidueHighlight();
-        syncDockingModeUI();
-        renderDockingConfigSummary();
-        dispatchFlexSelectionContext("chain-change");
-        await Promise.resolve(window.DockUPPocketFinder?.syncSelectedChain?.(row.pdb_id, selectedChain));
-        await refreshViewer();
-      }
-      scheduleUIStateSave();
-    });
 
     const selectedChainForRow = getSelectedChainForReceptor(row.pdb_id);
+    const chainDropdown = createModernRowDropdown({
+      value: selectedChainForRow || "all",
+      placeholder: "all",
+      options: chains.map((c) => ({ value: c, label: c })),
+      onSelect: async (selectedChain) => {
+        const previousChain = getSelectedChainForReceptor(row.pdb_id);
+        const previousLigand = String(appState.selectionMap?.[row.pdb_id]?.ligand_resname || "");
+        const previousLigands = getSelectedLigandsForReceptor(row.pdb_id);
+        const allowedLigands = appState.mode === "Redocking"
+          ? getNativeLigandsForChain(row.ligands_by_chain, selectedChain)
+          : [...activeLigands];
+        let nextLigand = previousLigand;
+        let nextLigands = [];
+        if (appState.mode === "Redocking") {
+          nextLigand = previousLigand && previousLigand !== "all_set" && !allowedLigands.includes(previousLigand)
+            ? ""
+            : previousLigand;
+          nextLigands = nextLigand && nextLigand !== "all_set" ? [nextLigand] : [];
+        } else if (isMultiLigandMode()) {
+          nextLigands = previousLigands.filter((name) => allowedLigands.includes(name)).slice(0, 2);
+          nextLigand = buildLigandSetLabel(nextLigands);
+        } else {
+          nextLigand = previousLigand && previousLigand !== "all_set" && !allowedLigands.includes(previousLigand)
+            ? ""
+            : previousLigand;
+          nextLigands = nextLigand && nextLigand !== "all_set" ? [nextLigand] : [];
+        }
+
+        if (!appState.selectionMap) appState.selectionMap = {};
+        if (!appState.selectionMap[row.pdb_id]) appState.selectionMap[row.pdb_id] = {};
+        appState.selectionMap[row.pdb_id].chain = selectedChain;
+        appState.selectionMap[row.pdb_id].ligand_resname = nextLigand;
+        appState.selectionMap[row.pdb_id].ligand_resnames = nextLigands;
+        if (selectedChain !== previousChain) {
+          clearFlexResiduesForReceptor(row.pdb_id);
+        }
+
+        await fetchJSON("/api/ligands/select", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            pdb_id: row.pdb_id,
+            chain: selectedChain,
+            ligand: nextLigand,
+            ligands: nextLigands,
+          }),
+        });
+        await refreshReceptorSummary();
+        if (row.pdb_id === appState.selectedReceptor) {
+          clearResidueSearchSelection({ refreshUI: false, reason: "chain-change" });
+          renderFlexResidueHighlight();
+          syncDockingModeUI();
+          renderDockingConfigSummary();
+          dispatchFlexSelectionContext("chain-change");
+          await Promise.resolve(window.DockUPPocketFinder?.syncSelectedChain?.(row.pdb_id, selectedChain));
+          await refreshViewer();
+        }
+        scheduleUIStateSave();
+      },
+    });
+
     const selectedLigandsForRow = getSelectedLigandsForReceptor(row.pdb_id);
     let ligandControl = null;
 
@@ -4155,97 +4323,84 @@ async function renderReceptorSummary(rows) {
         event.stopPropagation();
         openMultiLigandPicker({
           pdbId: row.pdb_id,
-          chain: chainSelect.value || selectedChainForRow || "all",
+          chain: String(chainDropdown.dataset.value || selectedChainForRow || "all"),
         });
       });
       shell.appendChild(trigger);
       ligandControl = shell;
     } else {
-      const ligSelect = document.createElement("select");
-      ligSelect.style.width = "100%";
-      ligSelect.style.padding = "4px";
-
-      const defOpt = document.createElement("option");
-      defOpt.value = "";
-      defOpt.textContent = "Select Ligand...";
-      ligSelect.appendChild(defOpt);
-
       let availableLigands = [];
       if (appState.mode === "Redocking") {
         availableLigands = getNativeLigandsForChain(row.ligands_by_chain, selectedChainForRow);
       } else {
         availableLigands = activeLigands;
-        const allOpt = document.createElement("option");
-        allOpt.value = "all_set";
-        allOpt.textContent = "All Ligands (Dock All)";
-        allOpt.style.fontWeight = "bold";
-        if (appState.selectionMap && appState.selectionMap[row.pdb_id] && appState.selectionMap[row.pdb_id].ligand_resname === "all_set") {
-          allOpt.selected = true;
-        }
-        ligSelect.appendChild(allOpt);
       }
 
+      const ligandOptions = [];
+      if (appState.mode !== "Redocking") {
+        ligandOptions.push({ value: "all_set", label: "All Ligands (Dock All)" });
+      }
       availableLigands.forEach((ligName) => {
-        const opt = document.createElement("option");
-        opt.value = ligName;
-        opt.textContent = ligName;
-        if (appState.selectionMap && appState.selectionMap[row.pdb_id] && appState.selectionMap[row.pdb_id].ligand_resname === ligName) {
-          opt.selected = true;
-        }
-        ligSelect.appendChild(opt);
+        ligandOptions.push({ value: ligName, label: ligName });
       });
 
-      ligSelect.addEventListener("click", (e) => e.stopPropagation());
-      ligSelect.addEventListener("change", async (e) => {
-        const selectedLig = e.target.value;
+      const selectedLigandValue = String(appState.selectionMap?.[row.pdb_id]?.ligand_resname || "");
+      const ligandDropdown = createModernRowDropdown({
+        value: selectedLigandValue,
+        placeholder: "Select Ligand...",
+        options: ligandOptions,
+        emptyLabel: availableLigands.length ? "" : "No ligands available for the selected chain.",
+        onSelect: async (selectedLig) => {
+          const previousChain = String(chainDropdown.dataset.value || selectedChainForRow || "all");
+          let targetChain = previousChain;
 
-        const previousChain = chainSelect.value;
-        let targetChain = chainSelect.value;
-
-        if (selectedLig && selectedLig !== "all_set" && row.ligands_by_chain) {
-          for (const [chn, ligs] of Object.entries(row.ligands_by_chain)) {
-            if (chn === "all") continue;
-            if (ligs.includes(selectedLig)) {
-              targetChain = chn;
-              break;
+          if (selectedLig && selectedLig !== "all_set" && row.ligands_by_chain) {
+            for (const [chn, ligs] of Object.entries(row.ligands_by_chain)) {
+              if (chn === "all") continue;
+              if (ligs.includes(selectedLig)) {
+                targetChain = chn;
+                break;
+              }
             }
           }
-        }
 
-        chainSelect.value = targetChain;
+          chainDropdown.setSelection(targetChain, targetChain);
 
-        if (!appState.selectionMap) appState.selectionMap = {};
-        if (!appState.selectionMap[row.pdb_id]) appState.selectionMap[row.pdb_id] = {};
-        appState.selectionMap[row.pdb_id].ligand_resname = selectedLig;
-        appState.selectionMap[row.pdb_id].ligand_resnames = selectedLig && selectedLig !== "all_set" ? [selectedLig] : [];
-        appState.selectionMap[row.pdb_id].chain = targetChain;
-        if (targetChain !== previousChain) {
-          clearFlexResiduesForReceptor(row.pdb_id);
-        }
+          if (!appState.selectionMap) appState.selectionMap = {};
+          if (!appState.selectionMap[row.pdb_id]) appState.selectionMap[row.pdb_id] = {};
+          appState.selectionMap[row.pdb_id].ligand_resname = selectedLig;
+          appState.selectionMap[row.pdb_id].ligand_resnames = selectedLig && selectedLig !== "all_set" ? [selectedLig] : [];
+          appState.selectionMap[row.pdb_id].chain = targetChain;
+          if (targetChain !== previousChain) {
+            clearFlexResiduesForReceptor(row.pdb_id);
+          }
 
-        await fetchJSON("/api/ligands/select", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            pdb_id: row.pdb_id,
-            chain: targetChain,
-            ligand: selectedLig,
-            ligands: selectedLig && selectedLig !== "all_set" ? [selectedLig] : [],
-          }),
-        });
-        await refreshReceptorSummary();
-        if (row.pdb_id === appState.selectedReceptor) {
-          clearResidueSearchSelection({ refreshUI: false, reason: "ligand-chain-change" });
-          renderFlexResidueHighlight();
-          syncDockingModeUI();
-          renderDockingConfigSummary();
-          dispatchFlexSelectionContext("chain-change");
-          await Promise.resolve(window.DockUPPocketFinder?.syncSelectedChain?.(row.pdb_id, targetChain));
-          await refreshViewer();
-        }
-        scheduleUIStateSave();
+          await fetchJSON("/api/ligands/select", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              pdb_id: row.pdb_id,
+              chain: targetChain,
+              ligand: selectedLig,
+              ligands: selectedLig && selectedLig !== "all_set" ? [selectedLig] : [],
+            }),
+          });
+          await refreshReceptorSummary();
+          if (row.pdb_id === appState.selectedReceptor) {
+            clearResidueSearchSelection({ refreshUI: false, reason: "ligand-chain-change" });
+            renderFlexResidueHighlight();
+            syncDockingModeUI();
+            renderDockingConfigSummary();
+            dispatchFlexSelectionContext("chain-change");
+            await Promise.resolve(window.DockUPPocketFinder?.syncSelectedChain?.(row.pdb_id, targetChain));
+            await refreshViewer();
+          }
+          scheduleUIStateSave();
+        },
       });
-      ligandControl = ligSelect;
+
+      ligandDropdown.addEventListener("click", (e) => e.stopPropagation());
+      ligandControl = ligandDropdown;
     }
 
     // Delete Button
@@ -4286,8 +4441,8 @@ async function renderReceptorSummary(rows) {
     colAction.appendChild(delBtn);
 
     const colPdb = document.createElement("div"); colPdb.textContent = row.pdb_id;
-    const colChain = document.createElement("div"); colChain.appendChild(chainSelect);
-    const colLig = document.createElement("div"); colLig.appendChild(ligandControl);
+    const colChain = document.createElement("div"); colChain.style.overflow = "visible"; colChain.appendChild(chainDropdown);
+    const colLig = document.createElement("div"); colLig.style.overflow = "visible"; colLig.appendChild(ligandControl);
 
     // Grid Details
     let gridCenter = "-";
@@ -4440,6 +4595,48 @@ function renderActiveLigands() {
         alert(err.message || "Failed to remove dock-ready ligand.");
       }
     });
+
+    pill.addEventListener("click", async (event) => {
+      // Load this standalone ligand into NGL and remove everything else since they want to preview it
+      const originalMessage = "Previewing Ligand: " + name;
+      try {
+        setViewportMessage("Loading " + name + "...");
+        const res = await fetchJSON(`/api/ligands/content/${name}`);
+        if (!res.sdf_text) throw new Error("No content received.");
+        const blob = new Blob([res.sdf_text], { type: "text/plain" });
+
+        if (initViewer()) {
+          stage.removeAllComponents();
+
+          // Clear global references so we don't try to use destroyed components
+          comp = null;
+          nativeLigComp = null;
+          gridComp = null;
+          selectedAtomHighlightMode = "ligand-preview";
+          representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, residueSearch: null, flexResidueSearch: null };
+          selectedAtomData = null;
+          updateSelectedAtomInfo();
+
+          const component = await stage.loadFile(blob, { ext: "sdf" });
+          comp = component;
+          component.addRepresentation("ball+stick", { multipleBond: "symmetric" });
+          component.autoView();
+
+          setViewportMessage(originalMessage + " (Select a receptor to return)");
+        }
+      } catch (err) {
+        console.error("Preview error:", err);
+        setViewportMessage("Failed to preview: " + name);
+        setTimeout(() => {
+          if (!appState.selectedReceptor) {
+             setViewportMessage("Load a receptor to start the viewer.");
+          } else {
+             setViewportMessage(null);
+          }
+        }, 3000);
+      }
+    });
+
     pill.appendChild(label);
     pill.appendChild(del);
     els.activeLigandList.appendChild(pill);
@@ -5543,6 +5740,63 @@ function bindEvents() {
         alert(`Ignored invalid/unavailable receptor IDs: ${ignored.join(", ")}`);
       }
       await refreshReceptorFiles();
+    });
+  }
+
+  if (els.fetchLigandsBtn) {
+    els.fetchLigandsBtn.addEventListener("click", async () => {
+      const ids = els.ligandIds?.value || "";
+      if (!ids.trim()) {
+        alert("Please enter at least one Ligand name or ID to fetch.");
+        return;
+      }
+
+      els.fetchLigandsBtn.disabled = true;
+      const originalText = els.fetchLigandsBtn.textContent;
+      els.fetchLigandsBtn.textContent = "Fetching...";
+
+      try {
+        const data = await fetchJSON("/api/ligands/fetch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ligand_ids: ids }),
+        });
+
+        if (data) {
+          if (data.failed && data.failed.length > 0) {
+            alert(`Failed to fetch these ligands (check names or IDs): ${data.failed.join(", ")}`);
+          }
+          await refreshLigands();
+          if (els.ligandIds && (!data.failed || data.failed.length === 0)) {
+            els.ligandIds.value = "";
+          }
+        }
+      } catch (err) {
+        alert("Server error. Please restart the backend or check your input! " + err.message);
+      } finally {
+        els.fetchLigandsBtn.disabled = false;
+        els.fetchLigandsBtn.textContent = originalText;
+      }
+    });
+  }
+
+  // Clear All Receptors
+  if (els.clearReceptorsBtn) {
+    els.clearReceptorsBtn.addEventListener("click", async () => {
+      if (!confirm("Are you sure you want to delete ALL stored receptors?")) return;
+      await fetchJSON("/api/receptors/clear_all", { method: "POST" });
+      await refreshReceptorFiles();
+      await refreshReceptorSummary();
+      if (typeof stage !== "undefined" && stage) stage.removeAllComponents();
+    });
+  }
+
+  // Clear All Ligands
+  if (els.clearLigandsBtn) {
+    els.clearLigandsBtn.addEventListener("click", async () => {
+      if (!confirm("Are you sure you want to delete ALL stored ligands?")) return;
+      await fetchJSON("/api/ligands/clear_all", { method: "POST" });
+      await refreshLigands();
     });
   }
 
