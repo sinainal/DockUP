@@ -15,11 +15,11 @@ from .state import RUN_STATE
 
 def _render_main_index() -> str:
     html = (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
-    return html.replace("{{ title }}", "Docking App")
+    return html.replace("{{ title }}", "DockUP")
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Docking App")
+    app = FastAPI(title="DockUP")
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     configure_templates(templates)
 

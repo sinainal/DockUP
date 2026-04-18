@@ -564,8 +564,16 @@ if [ -d "$VENV_DIR" ] && [ "$FORCE" -eq 1 ]; then
 fi
 
 if [ ! -d "$VENV_DIR" ]; then
-  "$PYTHON" -m venv "$VENV_DIR"
-  success "Created .venv"
+  if "$PYTHON" -m venv "$VENV_DIR" 2>/dev/null; then
+    success "Created .venv"
+  elif command -v uv >/dev/null 2>&1; then
+    info "python -m venv is unavailable; using uv to create .venv"
+    uv venv --seed --python "$PYTHON" "$VENV_DIR"
+    success "Created .venv with uv"
+  else
+    error "Failed to create .venv and uv is not available"
+    exit 1
+  fi
 else
   success ".venv already exists — skipping creation"
 fi
@@ -573,6 +581,26 @@ fi
 # Use venv's pip exclusively going forward
 PIP="$VENV_DIR/bin/pip"
 VENV_PYTHON="$VENV_DIR/bin/python"
+
+ensure_pip_wrapper() {
+  if [ -x "$PIP" ]; then
+    return 0
+  fi
+  if command -v uv >/dev/null 2>&1; then
+    cat > "$PIP" <<EOF
+#!/usr/bin/env bash
+cmd="\${1:-}"
+shift || true
+exec uv pip "\$cmd" --python "$VENV_PYTHON" "\$@"
+EOF
+    chmod +x "$PIP"
+    return 0
+  fi
+  error "pip is missing in .venv and uv is unavailable"
+  exit 1
+}
+
+ensure_pip_wrapper
 
 # Upgrade pip silently
 "$PIP" install --upgrade pip --quiet
