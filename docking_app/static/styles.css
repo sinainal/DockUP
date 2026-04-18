@@ -504,12 +504,17 @@ input[type="number"]::-webkit-outer-spin-button {
   min-width: 0;
 }
 
+.modern-native-select-source {
+  display: none !important;
+}
+
 .modern-row-dropdown.is-open {
   z-index: 40;
 }
 
 .modern-row-dropdown-trigger {
   width: 100%;
+  min-height: 38px;
   display: inline-flex;
   align-items: center;
   justify-content: space-between;

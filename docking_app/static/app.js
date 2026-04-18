@@ -606,6 +606,174 @@ function createModernRowDropdown({
   return dropdown;
 }
 
+let modernSelectMutationObserver = null;
+
+function enhanceModernNativeSelect(selectEl) {
+  if (!selectEl) return null;
+  if (selectEl.dataset.modernEnhanced === "1") {
+    selectEl._modernDropdownEnhancer?.refresh?.();
+    return selectEl._modernDropdownEnhancer?.wrapper || null;
+  }
+  if (selectEl.dataset.modernSkip === "1") return null;
+
+  bindModernRowDropdownHandlers();
+
+  const placeholder = String(selectEl.getAttribute("data-placeholder") || selectEl.getAttribute("placeholder") || "Select...");
+  const wrapper = document.createElement("div");
+  wrapper.className = "modern-row-dropdown modern-native-select";
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "modern-row-dropdown-trigger";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+
+  const triggerLabel = document.createElement("span");
+  triggerLabel.className = "modern-row-dropdown-trigger-label";
+
+  const caret = document.createElement("span");
+  caret.className = "modern-row-dropdown-caret";
+  caret.textContent = "▾";
+
+  trigger.appendChild(triggerLabel);
+  trigger.appendChild(caret);
+  wrapper.appendChild(trigger);
+
+  const menu = document.createElement("div");
+  menu.className = "modern-row-dropdown-menu";
+  menu.hidden = true;
+  wrapper.appendChild(menu);
+
+  const closeMenu = () => {
+    wrapper.classList.remove("is-open");
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+  };
+
+  const syncTriggerLabel = () => {
+    const selectedOption = selectEl.selectedOptions && selectEl.selectedOptions.length
+      ? selectEl.selectedOptions[0]
+      : selectEl.options?.[selectEl.selectedIndex] || null;
+    triggerLabel.textContent = selectedOption?.textContent || placeholder;
+    trigger.title = selectedOption?.textContent || placeholder;
+    trigger.disabled = Boolean(selectEl.disabled);
+    wrapper.classList.toggle("is-disabled", Boolean(selectEl.disabled));
+  };
+
+  const rebuildMenu = () => {
+    menu.innerHTML = "";
+    const options = Array.from(selectEl.options || []);
+    const currentValue = String(selectEl.value ?? "");
+    if (!options.length) {
+      const emptyRow = document.createElement("div");
+      emptyRow.className = "modern-row-dropdown-empty";
+      emptyRow.textContent = placeholder;
+      menu.appendChild(emptyRow);
+      syncTriggerLabel();
+      return;
+    }
+    options.forEach((option) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "modern-row-dropdown-option";
+      item.dataset.value = String(option.value ?? "");
+      item.textContent = String(option.textContent || option.label || option.value || placeholder);
+      item.disabled = Boolean(option.disabled);
+      if (item.dataset.value === currentValue) item.classList.add("active");
+      if (item.disabled) item.classList.add("disabled");
+      item.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (item.disabled) return;
+        selectEl.value = item.dataset.value || "";
+        selectEl.dispatchEvent(new Event("change", { bubbles: true }));
+        closeMenu();
+        syncTriggerLabel();
+      });
+      menu.appendChild(item);
+    });
+    syncTriggerLabel();
+  };
+
+  const openMenu = () => {
+    closeModernRowDropdowns(wrapper);
+    wrapper.classList.add("is-open");
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+  };
+
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (wrapper.classList.contains("is-open")) {
+      closeMenu();
+    } else {
+      openMenu();
+    }
+  });
+
+  wrapper.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  selectEl.insertAdjacentElement("afterend", wrapper);
+  selectEl.classList.add("modern-native-select-source");
+  selectEl.setAttribute("aria-hidden", "true");
+  selectEl.style.display = "none";
+  selectEl.dataset.modernEnhanced = "1";
+
+  const observer = new MutationObserver(() => {
+    rebuildMenu();
+  });
+  observer.observe(selectEl, { childList: true, subtree: true, characterData: true });
+
+  selectEl.addEventListener("change", syncTriggerLabel);
+  selectEl.addEventListener("input", syncTriggerLabel);
+
+  selectEl._modernDropdownEnhancer = {
+    wrapper,
+    refresh: rebuildMenu,
+    destroy: () => observer.disconnect(),
+  };
+
+  rebuildMenu();
+  return wrapper;
+}
+
+function enhanceModernSelects(root = document) {
+  if (!root) return;
+  const scope = root.querySelectorAll ? root : document;
+  scope.querySelectorAll("select").forEach((selectEl) => {
+    enhanceModernNativeSelect(selectEl);
+  });
+}
+
+function bindModernSelectMutationObserver() {
+  if (modernSelectMutationObserver || typeof MutationObserver === "undefined") return;
+  modernSelectMutationObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      if (!mutation.addedNodes || !mutation.addedNodes.length) continue;
+      let needsRefresh = false;
+      mutation.addedNodes.forEach((node) => {
+        if (needsRefresh) return;
+        if (!node || node.nodeType !== 1) return;
+        if (node.matches?.("select")) {
+          needsRefresh = true;
+          return;
+        }
+        if (node.querySelector?.("select")) {
+          needsRefresh = true;
+        }
+      });
+      if (needsRefresh) {
+        enhanceModernSelects(document);
+        break;
+      }
+    }
+  });
+  if (document.body) {
+    modernSelectMutationObserver.observe(document.body, { childList: true, subtree: true });
+  }
+}
+
 // =====================================================
 // Utility Functions
 // =====================================================
@@ -1271,6 +1439,7 @@ function applyAdvancedDockingConfigToModal(config) {
     if (!el.value && fallback) {
       el.value = fallback;
     }
+    enhanceModernNativeSelect(el);
   };
 
   if (els.dockCfgDockingMode) els.dockCfgDockingMode.value = cfg.docking_mode || "standard";
@@ -2739,6 +2908,7 @@ function updateViewerChainOptions(chains, preferredChain = "") {
   if (!options.includes(currentValue)) {
     els.viewerChain.value = "all";
   }
+  enhanceModernNativeSelect(els.viewerChain);
 }
 
 function clearInteractionReps() {
@@ -4083,6 +4253,7 @@ async function restoreUIState() {
   renderQueueTable(appState.queueData);
   updateQueueEditorUI();
   enforceResultsInteractionToggle();
+  enhanceModernSelects(document);
 }
 
 function normalizeReceptorIds(rawText) {
@@ -4802,6 +4973,7 @@ function applyQueueBatchDockingConfigToInputs(config) {
     if (!el.value && fallback) {
       el.value = fallback;
     }
+    enhanceModernNativeSelect(el);
   };
 
   if (els.queueBatchDockingMode) els.queueBatchDockingMode.value = cfg.docking_mode || "standard";
@@ -6595,6 +6767,8 @@ async function init() {
   await restoreUIState();
   await syncLatestDockingRootSelection({ forceSelection: true, refreshVisible: false });
   bindEvents();
+  bindModernSelectMutationObserver();
+  enhanceModernSelects(document);
   await refreshLigands();
   await refreshReceptorSummary();
   await refreshViewer();
