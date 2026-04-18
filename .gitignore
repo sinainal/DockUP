@@ -40,3 +40,8 @@ tests/.last_test_log.txt
 .vscode/
 .idea/
 .DS_Store
+
+# Internal notes and local test harnesses
+documents/ISSUES_ANALYSIS.md
+open_problems/
+plot_test/
