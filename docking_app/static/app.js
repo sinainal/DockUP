@@ -202,7 +202,6 @@ function initElements() {
   els.clearReceptorsBtn = document.getElementById("clearReceptorsBtn");
 
   els.dockingModeToggle = document.getElementById("dockingModeToggle");
-  els.multiLigandModeToggle = document.getElementById("multiLigandModeToggle");
   els.pdbIds = document.getElementById("pdbIds");
   els.receptorUpload = document.getElementById("receptorUpload");
   els.receptorUploadName = document.getElementById("receptorUploadName");
@@ -319,6 +318,9 @@ function initElements() {
   els.recentDockingsTable = document.getElementById("recentDockingsTable");
   els.colorScheme = document.getElementById("colorScheme");
   els.viewerChain = document.getElementById("viewerChain");
+  els.viewerShowMenu = document.getElementById("viewerShowMenu");
+  els.viewerShowTrigger = document.getElementById("viewerShowTrigger");
+  els.viewerShowPanel = document.getElementById("viewerShowPanel");
   els.showSurface = document.getElementById("showSurface");
   els.showNativeLigand = document.getElementById("showNativeLigand");
   els.showDockedLigand = document.getElementById("showDockedLigand");
@@ -461,15 +463,155 @@ function initElements() {
 }
 
 let modernRowDropdownHandlersBound = false;
+let modernDropdownPortalRoot = null;
+const modernOpenDropdowns = new Set();
+
+function ensureModernDropdownPortalRoot() {
+  if (modernDropdownPortalRoot) return modernDropdownPortalRoot;
+  const root = document.createElement("div");
+  root.className = "modern-dropdown-portal-root";
+  root.setAttribute("aria-hidden", "true");
+  document.body.appendChild(root);
+  modernDropdownPortalRoot = root;
+  return root;
+}
+
+function getScrollableAncestors(node) {
+  const ancestors = [];
+  let current = node?.parentElement || null;
+  while (current && current !== document.body) {
+    const style = window.getComputedStyle(current);
+    const overflowY = `${style.overflowY || ""} ${style.overflowX || ""}`;
+    if (/(auto|scroll|overlay)/.test(overflowY)) {
+      ancestors.push(current);
+    }
+    current = current.parentElement;
+  }
+  ancestors.push(window);
+  return ancestors;
+}
+
+function detachModernDropdownPositioning(dropdown) {
+  if (!dropdown?._modernOverlayCleanup) return;
+  try {
+    dropdown._modernOverlayCleanup();
+  } catch (e) { }
+  dropdown._modernOverlayCleanup = null;
+}
+
+function restoreModernDropdownMenu(dropdown) {
+  const menu = dropdown?.menu;
+  if (!menu) return;
+  const wrapper = dropdown.wrapper || dropdown;
+  if (menu.parentNode !== wrapper) {
+    wrapper.appendChild(menu);
+  }
+  menu.hidden = true;
+  menu.classList.remove("is-portal");
+  menu.removeAttribute("style");
+  delete menu.dataset.modernDropdownOwner;
+}
+
+function positionModernDropdown(dropdown) {
+  const menu = dropdown?.menu;
+  const trigger = dropdown?.trigger;
+  if (!menu || !trigger) return;
+  const portalRoot = ensureModernDropdownPortalRoot();
+  if (menu.parentNode !== portalRoot) {
+    portalRoot.appendChild(menu);
+  }
+
+  const rect = trigger.getBoundingClientRect();
+  const gutter = 8;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const desiredWidth = Math.round(rect.width);
+  const maxWidth = Math.max(160, viewportWidth - gutter * 2);
+  const width = Math.min(Math.max(desiredWidth, 160), maxWidth);
+  const left = Math.min(Math.max(Math.round(rect.left), gutter), Math.max(gutter, viewportWidth - width - gutter));
+
+  menu.hidden = false;
+  menu.classList.add("is-portal");
+  menu.dataset.modernDropdownOwner = dropdown.id || dropdown.dataset?.modernId || "";
+  menu.style.position = "fixed";
+  menu.style.left = `${left}px`;
+  menu.style.width = `${width}px`;
+  menu.style.minWidth = `${width}px`;
+  menu.style.maxWidth = `${maxWidth}px`;
+  menu.style.right = "auto";
+  menu.style.pointerEvents = "auto";
+  menu.style.zIndex = "4000";
+  menu.style.transform = "none";
+  menu.style.margin = "0";
+
+  const naturalHeight = Math.min(menu.scrollHeight || 0, 360);
+  const below = Math.max(0, Math.floor(viewportHeight - rect.bottom - gutter));
+  const above = Math.max(0, Math.floor(rect.top - gutter));
+  const openBelow = below >= Math.min(naturalHeight || 0, 180) || below >= above;
+  const targetHeight = Math.max(140, Math.min(360, openBelow ? below : above));
+
+  menu.style.maxHeight = `${targetHeight}px`;
+  if (openBelow) {
+    menu.classList.remove("opens-up");
+    menu.style.top = `${Math.round(rect.bottom + 6)}px`;
+    menu.style.bottom = "auto";
+  } else {
+    menu.classList.add("opens-up");
+    const menuHeight = Math.min(menu.scrollHeight || targetHeight, targetHeight);
+    menu.style.top = `${Math.max(gutter, Math.round(rect.top - menuHeight - 6))}px`;
+    menu.style.bottom = "auto";
+  }
+}
+
+function attachModernDropdownPositioning(dropdown) {
+  if (!dropdown || dropdown._modernOverlayCleanup) return;
+  const update = () => {
+    if (!modernOpenDropdowns.has(dropdown)) return;
+    positionModernDropdown(dropdown);
+  };
+  const ancestors = getScrollableAncestors(dropdown.trigger || dropdown);
+  ancestors.forEach((ancestor) => {
+    ancestor.addEventListener("scroll", update, { passive: true });
+  });
+  window.addEventListener("resize", update, { passive: true });
+  dropdown._modernOverlayCleanup = () => {
+    ancestors.forEach((ancestor) => {
+      ancestor.removeEventListener("scroll", update);
+    });
+    window.removeEventListener("resize", update);
+  };
+}
+
+function openModernDropdown(dropdown) {
+  if (!dropdown || !dropdown.menu || !dropdown.trigger) return;
+  closeModernRowDropdowns(dropdown);
+  modernOpenDropdowns.add(dropdown);
+  dropdown.classList.add("is-open");
+  dropdown.trigger.setAttribute("aria-expanded", "true");
+  attachModernDropdownPositioning(dropdown);
+  positionModernDropdown(dropdown);
+  requestAnimationFrame(() => {
+    if (modernOpenDropdowns.has(dropdown)) {
+      positionModernDropdown(dropdown);
+    }
+  });
+}
+
+function closeModernDropdown(dropdown) {
+  if (!dropdown || !modernOpenDropdowns.has(dropdown)) return;
+  modernOpenDropdowns.delete(dropdown);
+  detachModernDropdownPositioning(dropdown);
+  dropdown.classList.remove("is-open");
+  if (dropdown.trigger) {
+    dropdown.trigger.setAttribute("aria-expanded", "false");
+  }
+  restoreModernDropdownMenu(dropdown);
+}
 
 function closeModernRowDropdowns(except = null) {
-  document.querySelectorAll(".modern-row-dropdown.is-open").forEach((dropdown) => {
+  Array.from(modernOpenDropdowns).forEach((dropdown) => {
     if (except && dropdown === except) return;
-    dropdown.classList.remove("is-open");
-    const menu = dropdown.querySelector(".modern-row-dropdown-menu");
-    if (menu) menu.hidden = true;
-    const trigger = dropdown.querySelector(".modern-row-dropdown-trigger");
-    if (trigger) trigger.setAttribute("aria-expanded", "false");
+    closeModernDropdown(dropdown);
   });
 }
 
@@ -478,7 +620,7 @@ function bindModernRowDropdownHandlers() {
   modernRowDropdownHandlersBound = true;
 
   document.addEventListener("pointerdown", (event) => {
-    if (event.target.closest(".modern-row-dropdown")) return;
+    if (event.target.closest(".modern-row-dropdown") || event.target.closest(".modern-row-dropdown-menu")) return;
     closeModernRowDropdowns();
   });
 
@@ -535,16 +677,11 @@ function createModernRowDropdown({
   };
 
   const openMenu = () => {
-    closeModernRowDropdowns(dropdown);
-    dropdown.classList.add("is-open");
-    menu.hidden = false;
-    trigger.setAttribute("aria-expanded", "true");
+    openModernDropdown(dropdown);
   };
 
   const closeMenu = () => {
-    dropdown.classList.remove("is-open");
-    menu.hidden = true;
-    trigger.setAttribute("aria-expanded", "false");
+    closeModernDropdown(dropdown);
   };
 
   trigger.addEventListener("click", (event) => {
@@ -602,6 +739,7 @@ function createModernRowDropdown({
   dropdown.setSelection = setSelection;
   dropdown.menu = menu;
   dropdown.trigger = trigger;
+  dropdown.wrapper = dropdown;
 
   return dropdown;
 }
@@ -645,9 +783,7 @@ function enhanceModernNativeSelect(selectEl) {
   wrapper.appendChild(menu);
 
   const closeMenu = () => {
-    wrapper.classList.remove("is-open");
-    menu.hidden = true;
-    trigger.setAttribute("aria-expanded", "false");
+    closeModernDropdown(wrapper);
   };
 
   const syncTriggerLabel = () => {
@@ -692,13 +828,13 @@ function enhanceModernNativeSelect(selectEl) {
       menu.appendChild(item);
     });
     syncTriggerLabel();
+    if (wrapper.classList.contains("is-open")) {
+      positionModernDropdown(wrapper);
+    }
   };
 
   const openMenu = () => {
-    closeModernRowDropdowns(wrapper);
-    wrapper.classList.add("is-open");
-    menu.hidden = false;
-    trigger.setAttribute("aria-expanded", "true");
+    openModernDropdown(wrapper);
   };
 
   trigger.addEventListener("click", (event) => {
@@ -734,6 +870,10 @@ function enhanceModernNativeSelect(selectEl) {
     destroy: () => observer.disconnect(),
   };
 
+  wrapper.menu = menu;
+  wrapper.trigger = trigger;
+  wrapper.wrapper = wrapper;
+
   rebuildMenu();
   return wrapper;
 }
@@ -743,6 +883,43 @@ function enhanceModernSelects(root = document) {
   const scope = root.querySelectorAll ? root : document;
   scope.querySelectorAll("select").forEach((selectEl) => {
     enhanceModernNativeSelect(selectEl);
+  });
+}
+
+function setupViewerShowMenu() {
+  const wrapper = els.viewerShowMenu || document.getElementById("viewerShowMenu");
+  const trigger = els.viewerShowTrigger || document.getElementById("viewerShowTrigger");
+  const panel = els.viewerShowPanel || document.getElementById("viewerShowPanel");
+  if (!wrapper || !trigger || !panel || wrapper.dataset.modernEnhanced === "1") return;
+
+  bindModernRowDropdownHandlers();
+
+  wrapper.dataset.modernEnhanced = "1";
+  wrapper.menu = panel;
+  wrapper.trigger = trigger;
+  wrapper.wrapper = wrapper;
+
+  panel.hidden = true;
+
+  const openMenu = () => {
+    openModernDropdown(wrapper);
+  };
+
+  const closeMenu = () => {
+    closeModernDropdown(wrapper);
+  };
+
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (wrapper.classList.contains("is-open")) {
+      closeMenu();
+    } else {
+      openMenu();
+    }
+  });
+
+  wrapper.addEventListener("click", (event) => {
+    event.stopPropagation();
   });
 }
 
@@ -1442,9 +1619,13 @@ function applyAdvancedDockingConfigToModal(config) {
     enhanceModernNativeSelect(el);
   };
 
-  if (els.dockCfgDockingMode) els.dockCfgDockingMode.value = cfg.docking_mode || "standard";
+  if (els.dockCfgDockingMode) {
+    els.dockCfgDockingMode.value = cfg.docking_mode || "standard";
+    enhanceModernNativeSelect(els.dockCfgDockingMode);
+  }
   if (els.dockCfgLigandBindingMode) {
     els.dockCfgLigandBindingMode.value = normalizeLigandBindingMode(cfg.ligand_binding_mode);
+    enhanceModernNativeSelect(els.dockCfgLigandBindingMode);
   }
   if (els.dockCfgPdb2pqrPh) els.dockCfgPdb2pqrPh.value = String(cfg.pdb2pqr_ph);
   setSelectValue(els.dockCfgPdb2pqrFf, cfg.pdb2pqr_ff, "AMBER");
@@ -1494,6 +1675,7 @@ function syncDockingModeUI() {
     els.dockCfgDockingMode.title = multiLigandSelected
       ? "Multi-Ligand mode currently supports standard docking only."
       : "";
+    enhanceModernNativeSelect(els.dockCfgDockingMode);
   }
   if (els.dockCfgLigandBindingMode) {
     const inRedocking = String(appState.mode || "").trim() === "Redocking";
@@ -1501,6 +1683,7 @@ function syncDockingModeUI() {
     els.dockCfgLigandBindingMode.title = inRedocking
       ? "Redocking currently supports single-ligand selection only."
       : "";
+    enhanceModernNativeSelect(els.dockCfgLigandBindingMode);
   }
   if (els.dockCfgLigandBindingHint) {
     if (String(appState.mode || "").trim() === "Redocking") {
@@ -6769,6 +6952,7 @@ async function init() {
   bindEvents();
   bindModernSelectMutationObserver();
   enhanceModernSelects(document);
+  setupViewerShowMenu();
   await refreshLigands();
   await refreshReceptorSummary();
   await refreshViewer();

@@ -13,7 +13,7 @@
   <link rel="icon" type="image/png" href="/static/image.png?v=2">
   <link rel="shortcut icon" type="image/png" href="/static/image.png?v=2">
   <link rel="apple-touch-icon" href="/static/image.png?v=2">
-  <link rel="stylesheet" href="/static/styles.css?v=45">
+  <link rel="stylesheet" href="/static/styles.css?v=46">
   <link rel="stylesheet" href="/static/grid_selection_search.css?v=1">
   <link rel="stylesheet" href="/static/docking_flex_selection.css?v=1">
   <link rel="stylesheet" href="/static/pocket_finder.css?v=1">
@@ -598,9 +598,12 @@
                     <span class="viewer-control-label">Chain</span>
                     <select id="viewerChain"></select>
                   </label>
-                  <details class="viewer-control-card viewer-show-menu">
-                    <summary>Show</summary>
-                    <div class="viewer-show-panel">
+                  <div class="viewer-control-card viewer-show-menu modern-row-dropdown" id="viewerShowMenu">
+                    <button type="button" class="modern-row-dropdown-trigger viewer-show-trigger" id="viewerShowTrigger" aria-haspopup="menu" aria-expanded="false">
+                      <span class="modern-row-dropdown-trigger-label">Show</span>
+                      <span class="modern-row-dropdown-caret">▾</span>
+                    </button>
+                    <div class="viewer-show-panel modern-row-dropdown-menu" id="viewerShowPanel" hidden>
                       <label class="viewer-check">
                         <input type="checkbox" id="showSurface">
                         <span>Surface</span>
@@ -630,7 +633,7 @@
                         <span>Gridbox</span>
                       </label>
                     </div>
-                  </details>
+                  </div>
                 </div>
                 <div class="interaction-legend" id="interactionLegend"></div>
                 <div class="interaction-hover" id="interactionHover">Hover: -</div>
@@ -1368,7 +1371,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=54"></script>
+  <script src="/static/app.js?v=55"></script>
   <script src="/static/grid_selection_search.js?v=1"></script>
   <script src="/static/docking_flex_selection.js?v=1"></script>
   <script src="/static/pocket_finder.js?v=1"></script>
