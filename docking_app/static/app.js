@@ -5756,10 +5756,6 @@ async function buildQueue() {
     out_root_name: document.getElementById("outRootName")?.value || "",
     replace_queue: false,
   };
-  const selectedBatchId = normalizeQueueBatchId(appState.selectedQueueBatchId);
-  if (selectedBatchId) {
-    payload.update_batch_id = parseInt(selectedBatchId, 10);
-  }
   const previousBatchIds = new Set((appState.queueData || []).map((row) => normalizeQueueBatchId(row?.batch_id)).filter(Boolean));
 
   const data = await fetchJSON("/api/queue/build", {
@@ -5771,7 +5767,7 @@ async function buildQueue() {
   appState.queueCount = data.queue_count || 0;
   const nextBatchIds = [...new Set(appState.queueData.map((row) => normalizeQueueBatchId(row?.batch_id)).filter(Boolean))];
   const appendedBatchIds = nextBatchIds.filter((batchId) => !previousBatchIds.has(batchId));
-  appState.selectedQueueBatchId = selectedBatchId || (appendedBatchIds.length === 1 ? appendedBatchIds[0] : null);
+  appState.selectedQueueBatchId = appendedBatchIds.length === 1 ? appendedBatchIds[0] : null;
   updateQueueCount();
   updateQueueEditorUI();
   renderQueueTable(appState.queueData);
