@@ -9,6 +9,14 @@ PORT_SEARCH_LIMIT="${PORT_SEARCH_LIMIT:-50}"
 APP_MODULE="docking_app.app:app"
 export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
+docking_runtime_ready() {
+  [ -x "$ROOT_DIR/.venv/bin/vina" ] &&
+    [ -x "$ROOT_DIR/.venv/bin/mk_prepare_receptor.py" ] &&
+    [ -x "$ROOT_DIR/.venv/bin/mk_prepare_ligand.py" ] &&
+    [ -x "$ROOT_DIR/docking_app/workspace/tools/p2rank/prank" ] &&
+    [ -x "$ROOT_DIR/docking_app/workspace/tools/p2rank_java/bin/java" ]
+}
+
 # ── Setup Check ─────────────────────────────────────────────────────────────
 if [ ! -f "$ROOT_DIR/.venv/bin/activate" ] || [ ! -x "$ROOT_DIR/.venv/bin/python" ]; then
   echo "=== Running First-time Setup ==="
@@ -16,8 +24,12 @@ if [ ! -f "$ROOT_DIR/.venv/bin/activate" ] || [ ! -x "$ROOT_DIR/.venv/bin/python
 elif ! "$ROOT_DIR/.venv/bin/python" -c "import fastapi, uvicorn, matplotlib, docx" 2>/dev/null; then
   echo "=== Core dependencies missing in venv (fastapi/uvicorn/matplotlib/docx) — running setup ==="
   bash "$ROOT_DIR/setup.sh"
+elif ! docking_runtime_ready; then
+  echo "=== Docking tools missing in venv (vina/meeko/P2Rank) — running setup ==="
+  bash "$ROOT_DIR/setup.sh"
 elif [ ! -f "$ROOT_DIR/.setup_done" ]; then
-  echo "[WARN] .setup_done is missing, but the existing venv looks usable. Skipping setup."
+  echo "=== .setup_done missing — validating setup ==="
+  bash "$ROOT_DIR/setup.sh"
 fi
 
 if ! "$ROOT_DIR/.venv/bin/python" -c "import cv2" 2>/dev/null; then

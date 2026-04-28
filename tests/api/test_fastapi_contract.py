@@ -47,4 +47,3 @@ def test_http_exception_shape_for_invalid_scan_path(server_ready: None, api: Api
     payload = api.json(resp)
     assert "detail" in payload, f"FastAPI HTTPException shape missing detail: {payload}"
     assert isinstance(payload["detail"], str), f"detail must be a string: {payload}"
-

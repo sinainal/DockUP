@@ -40,6 +40,7 @@ def config_to_manifest_values(cfg: dict[str, Any]) -> list[str]:
     """Serialise a normalised docking config dict into TSV column strings."""
     normalized = normalize_docking_config(cfg)
     return [
+        str(normalized.get("docking_engine", "vina")),
         str(normalized.get("pdb2pqr_ph", "")),
         str(normalized.get("pdb2pqr_ff", "")),
         str(normalized.get("pdb2pqr_ffout", "")),
@@ -60,19 +61,20 @@ def manifest_values_to_config(cols: list[str]) -> dict[str, Any]:
     """Deserialise TSV column strings back into a docking config dict."""
     return normalize_docking_config(
         {
-            "pdb2pqr_ph": restore_manifest_value(cols[9] if len(cols) > 9 else ""),
-            "pdb2pqr_ff": restore_manifest_value(cols[10] if len(cols) > 10 else ""),
-            "pdb2pqr_ffout": restore_manifest_value(cols[11] if len(cols) > 11 else ""),
-            "pdb2pqr_nodebump": restore_manifest_value(cols[12] if len(cols) > 12 else ""),
-            "pdb2pqr_keep_chain": restore_manifest_value(cols[13] if len(cols) > 13 else ""),
-            "mkrec_allow_bad_res": restore_manifest_value(cols[14] if len(cols) > 14 else ""),
-            "mkrec_default_altloc": restore_manifest_value(cols[15] if len(cols) > 15 else ""),
-            "docking_mode": restore_manifest_value(cols[16] if len(cols) > 16 else ""),
-            "vina_exhaustiveness": restore_manifest_value(cols[17] if len(cols) > 17 else ""),
-            "vina_num_modes": restore_manifest_value(cols[18] if len(cols) > 18 else ""),
-            "vina_energy_range": restore_manifest_value(cols[19] if len(cols) > 19 else ""),
-            "vina_cpu": restore_manifest_value(cols[20] if len(cols) > 20 else ""),
-            "vina_seed": restore_manifest_value(cols[21] if len(cols) > 21 else ""),
+            "docking_engine": restore_manifest_value(cols[9] if len(cols) > 9 else ""),
+            "pdb2pqr_ph": restore_manifest_value(cols[10] if len(cols) > 10 else ""),
+            "pdb2pqr_ff": restore_manifest_value(cols[11] if len(cols) > 11 else ""),
+            "pdb2pqr_ffout": restore_manifest_value(cols[12] if len(cols) > 12 else ""),
+            "pdb2pqr_nodebump": restore_manifest_value(cols[13] if len(cols) > 13 else ""),
+            "pdb2pqr_keep_chain": restore_manifest_value(cols[14] if len(cols) > 14 else ""),
+            "mkrec_allow_bad_res": restore_manifest_value(cols[15] if len(cols) > 15 else ""),
+            "mkrec_default_altloc": restore_manifest_value(cols[16] if len(cols) > 16 else ""),
+            "docking_mode": restore_manifest_value(cols[17] if len(cols) > 17 else ""),
+            "vina_exhaustiveness": restore_manifest_value(cols[18] if len(cols) > 18 else ""),
+            "vina_num_modes": restore_manifest_value(cols[19] if len(cols) > 19 else ""),
+            "vina_energy_range": restore_manifest_value(cols[20] if len(cols) > 20 else ""),
+            "vina_cpu": restore_manifest_value(cols[21] if len(cols) > 21 else ""),
+            "vina_seed": restore_manifest_value(cols[22] if len(cols) > 22 else ""),
         }
     )
 
@@ -80,6 +82,7 @@ def manifest_values_to_config(cols: list[str]) -> dict[str, Any]:
 def append_docking_config_args(args: list[str], cfg_raw: Any) -> None:
     """Append docking config flags to an argument list (for shell command preview)."""
     cfg = normalize_docking_config(cfg_raw)
+    args.extend(["--docking_engine", str(cfg.get("docking_engine", "vina"))])
     args.extend(["--pdb2pqr_ph", str(cfg.get("pdb2pqr_ph", 7.4))])
     args.extend(["--pdb2pqr_ff", str(cfg.get("pdb2pqr_ff", "AMBER"))])
     args.extend(["--pdb2pqr_ffout", str(cfg.get("pdb2pqr_ffout", "AMBER"))])
@@ -122,8 +125,11 @@ def parse_manifest_rows(manifest_path: Path) -> list[dict[str, str]]:
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         cols = line.split("\t")
-        cols += [""] * max(0, 23 - len(cols))
-        cfg = manifest_values_to_config(cols)
+        is_new_schema = len(cols) >= 24
+        cols += [""] * max(0, 24 - len(cols))
+        cfg_cols = cols if is_new_schema else cols[:9] + [""] + cols[9:22]
+        cfg = manifest_values_to_config(cfg_cols)
+        job_type_idx = 23 if is_new_schema else 22
         rows.append(
             {
                 "pdb_id": restore_manifest_value(cols[0]),
@@ -137,7 +143,7 @@ def parse_manifest_rows(manifest_path: Path) -> list[dict[str, str]]:
                 "flex_residue_spec": restore_manifest_value(cols[8]),
                 "flex_residues": normalize_flex_residue_list(restore_manifest_value(cols[8])),
                 "docking_config": cfg,
-                "job_type": restore_manifest_value(cols[22]),
+                "job_type": restore_manifest_value(cols[job_type_idx]),
             }
         )
     return rows

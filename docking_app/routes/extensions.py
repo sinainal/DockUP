@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+
+from ..extensions import vina_gpu_21
+from ..helpers import normalize_docking_config
+from ..state import STATE, save_state_cache
+
+router = APIRouter(prefix="/api/extensions", tags=["extensions"])
+
+
+@router.get("/vina-gpu-21/status")
+def vina_gpu_21_status() -> JSONResponse:
+    return JSONResponse(vina_gpu_21.status())
+
+
+@router.post("/vina-gpu-21/install")
+def vina_gpu_21_install() -> JSONResponse:
+    return JSONResponse(vina_gpu_21.start_install())
+
+
+@router.post("/vina-gpu-21/test")
+def vina_gpu_21_test() -> JSONResponse:
+    return JSONResponse(vina_gpu_21.start_test())
+
+
+@router.post("/vina-gpu-21/uninstall")
+def vina_gpu_21_uninstall() -> JSONResponse:
+    if normalize_docking_config(STATE.get("docking_config") or {}).get("docking_engine") == "vina_gpu_21":
+        STATE["docking_config"] = normalize_docking_config({**(STATE.get("docking_config") or {}), "docking_engine": "vina"})
+        save_state_cache()
+    return JSONResponse(vina_gpu_21.start_uninstall())
+
+
+@router.post("/vina-gpu-21/use-default")
+def vina_gpu_21_use_default() -> JSONResponse:
+    cfg = normalize_docking_config({**(STATE.get("docking_config") or {}), "docking_engine": "vina_gpu_21"})
+    STATE["docking_config"] = cfg
+    save_state_cache()
+    return JSONResponse({"ok": True, "docking_config": cfg})
+
+
+@router.post("/vina/use-default")
+def vina_use_default() -> JSONResponse:
+    cfg = normalize_docking_config({**(STATE.get("docking_config") or {}), "docking_engine": "vina"})
+    STATE["docking_config"] = cfg
+    save_state_cache()
+    return JSONResponse({"ok": True, "docking_config": cfg})

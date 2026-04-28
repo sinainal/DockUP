@@ -37,7 +37,10 @@
           <div class="subtitle">GPU docking, redocking, grid preparation, and live visualization</div>
         </div>
       </div>
-      <div class="status-chip" id="runStatus">Idle</div>
+      <div class="topbar-actions">
+        <button class="extensions-trigger" id="openExtensionsModal" type="button">Extensions</button>
+        <div class="status-chip" id="runStatus">Idle</div>
+      </div>
     </header>
 
     <main class="split" id="mainSplit">
@@ -654,6 +657,50 @@
     </main>
   </div>
 
+  <div id="extensionsModal" class="report-modal" role="dialog" aria-modal="true" aria-labelledby="extensionsModalTitle">
+    <div class="report-modal-card extensions-modal-card">
+      <div class="report-modal-header">
+        <div>
+          <div class="section-title" id="extensionsModalTitle" style="margin-bottom: 2px;">Extensions</div>
+          <div class="helper">Optional engines installed into DockUP without changing the default CPU Vina path.</div>
+        </div>
+        <button class="secondary" id="closeExtensionsModal" type="button">Close</button>
+      </div>
+      <div class="extension-card">
+        <div class="extension-card-head">
+          <div>
+            <div class="extension-kicker">Docking engine</div>
+            <div class="extension-title">Vina-GPU 2.1</div>
+            <div class="helper">Official Vina-GPU 2.1 build, installed under DockUP virtualenv and runnable as a standard docking engine.</div>
+          </div>
+          <div class="extension-status-pill" id="vinaGpuStatusPill">Checking</div>
+        </div>
+        <div class="extension-metrics">
+          <div>
+            <span class="metric-label">Install footprint</span>
+            <strong id="vinaGpuSizeLabel">reserve at least 2 GB</strong>
+          </div>
+          <div>
+            <span class="metric-label">Last smoke test</span>
+            <strong id="vinaGpuTestLabel">not tested</strong>
+          </div>
+        </div>
+        <div class="extension-progress">
+          <div class="extension-progress-bar" id="vinaGpuProgressBar"></div>
+        </div>
+        <div class="extension-req-grid" id="vinaGpuRequirements"></div>
+        <div class="extension-actions">
+          <button class="primary" id="installVinaGpuBtn" type="button">Download / Install</button>
+          <button class="secondary" id="testVinaGpuBtn" type="button">Test</button>
+          <button class="secondary" id="useVinaGpuDefaultBtn" type="button">Use as default engine</button>
+          <button class="secondary" id="useCpuVinaDefaultBtn" type="button">Use CPU Vina</button>
+          <button class="secondary danger-soft" id="uninstallVinaGpuBtn" type="button">Uninstall</button>
+        </div>
+        <div class="extension-log" id="vinaGpuInstallLog">Extension log will appear here.</div>
+      </div>
+    </div>
+  </div>
+
   <div id="dockingConfigModal" class="report-modal" role="dialog" aria-modal="true" aria-labelledby="dockingConfigModalTitle">
     <div class="report-modal-card docking-config-modal-card">
       <div class="report-modal-header">
@@ -664,6 +711,14 @@
         <button class="secondary" id="closeDockingConfigModal" type="button">Close</button>
       </div>
       <div class="field-grid" style="margin-bottom: 6px;">
+        <div class="field" style="margin-bottom: 0;">
+          <label class="field-label">Docking Engine</label>
+          <select id="dockCfgDockingEngine">
+            <option value="vina">AutoDock Vina</option>
+            <option value="vina_gpu_21">Vina-GPU 2.1</option>
+          </select>
+          <div class="helper" style="margin-top: 4px;">Install and test Vina-GPU from Extensions before selecting it.</div>
+        </div>
         <div class="field" style="margin-bottom: 0;">
           <label class="field-label">Docking Mode</label>
           <select id="dockCfgDockingMode">

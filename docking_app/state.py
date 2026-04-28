@@ -37,6 +37,7 @@ KIND_ORDER: tuple[str, ...] = (
 )
 
 DOCKING_CONFIG_DEFAULTS: dict[str, Any] = {
+    "docking_engine": "vina",
     "docking_mode": "standard",
     "ligand_binding_mode": "single",
     "pdb2pqr_ph": 7.4,

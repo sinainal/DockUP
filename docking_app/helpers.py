@@ -265,7 +265,14 @@ def normalize_docking_config(raw: Any) -> dict[str, Any]:
     defaults = dict(DOCKING_CONFIG_DEFAULTS)
     ligand_binding_mode = str(source.get("ligand_binding_mode", defaults.get("ligand_binding_mode", "single")) or "single").strip().lower()
     ligand_binding_mode = "multi_ligand" if ligand_binding_mode in {"multi_ligand", "multi-ligand"} else "single"
+    docking_engine = str(source.get("docking_engine", defaults.get("docking_engine", "vina")) or "vina").strip().lower()
+    docking_engine = docking_engine.replace("-", "_")
+    if docking_engine in {"vina_gpu", "vina_gpu2.1", "vina_gpu_2_1", "vina_gpu_21"}:
+        docking_engine = "vina_gpu_21"
+    elif docking_engine not in {"vina", "vina_gpu_21"}:
+        docking_engine = "vina"
     cfg: dict[str, Any] = {
+        "docking_engine": docking_engine,
         "docking_mode": normalize_docking_mode(source.get("docking_mode", defaults.get("docking_mode", "standard"))),
         "ligand_binding_mode": ligand_binding_mode,
         "pdb2pqr_ph": defaults["pdb2pqr_ph"],

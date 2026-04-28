@@ -27,11 +27,10 @@ if [ -n "$DOCKUP_VINA" ] && [ -x "$DOCKUP_VINA" ]; then
 elif command -v vina >/dev/null 2>&1; then
   VINA_BIN=$(command -v vina)
 else
-  echo "Error: vina CLI not found. Re-run ./setup.sh to install AutoDock Vina." >&2
-  exit 2
+  VINA_BIN=""
 fi
 
-[ $# -ge 3 ] || { echo "Usage: $0 <PDBID> <CHAIN> <LIGAND_RESNAME> [--lig_spec path_to_sdf] [--pdb_file path_to_receptor.pdb] [--grid_pad value|x,y,z] [--grid_file path] [--flexres A:114[,A:118]] [--pdb2pqr_ph value] [--pdb2pqr_ff name] [--pdb2pqr_ffout name] [--pdb2pqr_nodebump 1|0] [--pdb2pqr_keep_chain 1|0] [--mkrec_allow_bad_res 1|0] [--mkrec_default_altloc A] [--vina_exhaustiveness N] [--vina_num_modes N] [--vina_energy_range E] [--vina_cpu N] [--vina_seed N]"; exit 1; }
+[ $# -ge 3 ] || { echo "Usage: $0 <PDBID> <CHAIN> <LIGAND_RESNAME> [--lig_spec path_to_sdf] [--pdb_file path_to_receptor.pdb] [--grid_pad value|x,y,z] [--grid_file path] [--flexres A:114[,A:118]] [--docking_engine vina|vina_gpu_21] [--pdb2pqr_ph value] [--pdb2pqr_ff name] [--pdb2pqr_ffout name] [--pdb2pqr_nodebump 1|0] [--pdb2pqr_keep_chain 1|0] [--mkrec_allow_bad_res 1|0] [--mkrec_default_altloc A] [--vina_exhaustiveness N] [--vina_num_modes N] [--vina_energy_range E] [--vina_cpu N] [--vina_seed N]"; exit 1; }
 PDB=$1
 CHAIN=$2
 LIGAND_RESNAME=$3
@@ -41,6 +40,7 @@ LIG_SPEC=""
 PDB_FILE=""
 GRID_PADDING=""
 GRID_FILE=""
+DOCKING_ENGINE="${DOCKUP_DOCKING_ENGINE:-vina}"
 PDB2PQR_PH="7.4"
 PDB2PQR_FF="AMBER"
 PDB2PQR_FFOUT="AMBER"
@@ -73,6 +73,8 @@ if [ "$#" -gt 3 ]; then
         GRID_FILE="$2"; shift 2;;
       --flexres)
         FLEXRES="$2"; shift 2;;
+      --docking_engine)
+        DOCKING_ENGINE="$2"; shift 2;;
       --pdb2pqr_ph)
         PDB2PQR_PH="$2"; shift 2;;
       --pdb2pqr_ff)
@@ -118,6 +120,20 @@ to_bool01() {
 PDB2PQR_NODEBUMP=$(to_bool01 "$PDB2PQR_NODEBUMP" "1")
 PDB2PQR_KEEP_CHAIN=$(to_bool01 "$PDB2PQR_KEEP_CHAIN" "1")
 MKREC_ALLOW_BAD_RES=$(to_bool01 "$MKREC_ALLOW_BAD_RES" "1")
+DOCKING_ENGINE=$(echo "${DOCKING_ENGINE:-vina}" | tr '[:upper:]-' '[:lower:]_')
+case "$DOCKING_ENGINE" in
+  vina_gpu|vina_gpu2.1|vina_gpu_2_1|vina_gpu_21) DOCKING_ENGINE="vina_gpu_21" ;;
+  vina|"") DOCKING_ENGINE="vina" ;;
+  *)
+    echo "Error: unsupported docking engine '$DOCKING_ENGINE' (expected vina or vina_gpu_21)" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$DOCKING_ENGINE" = "vina" ] && [ -z "$VINA_BIN" ]; then
+  echo "Error: vina CLI not found. Re-run ./setup.sh to install AutoDock Vina." >&2
+  exit 2
+fi
 
 if ! [[ "$VINA_EXHAUSTIVENESS" =~ ^[0-9]+$ ]] || [ "$VINA_EXHAUSTIVENESS" -lt 1 ]; then
   echo "Error: --vina_exhaustiveness must be a positive integer" >&2
@@ -533,29 +549,73 @@ if ! "$MK_PREP_LIG" -i "${PDB}_ligand_fixed.sdf" -o "${PDB}_ligand.pdbqt"; then
   fi
 fi
 
-#──────────────── 7. Docking – AutoDock Vina ────────────────────────
-vina_cmd=(
-  "$VINA_BIN"
-  --receptor "${RIGID_RECEPTOR_PDBQT}"
-  --ligand "${PDB}_ligand.pdbqt"
-  --config "$GRIDBOX"
-  --exhaustiveness "$VINA_EXHAUSTIVENESS"
-  --out "${PDB}_out_vina.pdbqt"
-)
-if [ -n "$FLEX_RECEPTOR_PDBQT" ]; then
-  vina_cmd+=(--flex "${FLEX_RECEPTOR_PDBQT}")
-fi
-if [ -n "$VINA_NUM_MODES" ]; then
-  vina_cmd+=(--num_modes "$VINA_NUM_MODES")
-fi
-if [ -n "$VINA_ENERGY_RANGE" ]; then
-  vina_cmd+=(--energy_range "$VINA_ENERGY_RANGE")
-fi
-if [ -n "$VINA_CPU" ]; then
-  vina_cmd+=(--cpu "$VINA_CPU")
-fi
-if [ -n "$VINA_SEED" ]; then
-  vina_cmd+=(--seed "$VINA_SEED")
+#──────────────── 7. Docking – AutoDock Vina / Vina-GPU 2.1 ────────────────────────
+if [ "$DOCKING_ENGINE" = "vina_gpu_21" ]; then
+  VINA_GPU_BIN="${DOCKUP_VINA_GPU_21:-$root_dir/.venv/bin/vina-gpu-2.1}"
+  VINA_GPU_OPENCL_BINARY_PATH="${DOCKUP_VINA_GPU_21_OPENCL_BINARY_PATH:-${VINA_GPU_21_OPENCL_BINARY_PATH:-}}"
+  if [ ! -x "$VINA_GPU_BIN" ]; then
+    echo "Error: Vina-GPU 2.1 launcher not found. Install it from DockUP Extensions first: $VINA_GPU_BIN" >&2
+    exit 2
+  fi
+  if [ -z "$VINA_GPU_OPENCL_BINARY_PATH" ]; then
+    VINA_GPU_OPENCL_BINARY_PATH=$(cd "$(dirname "$VINA_GPU_BIN")/../dockup_extensions/vina_gpu_21/src/AutoDock-Vina-GPU-2.1" 2>/dev/null && pwd || true)
+  fi
+  if [ -z "$VINA_GPU_OPENCL_BINARY_PATH" ] || [ ! -d "$VINA_GPU_OPENCL_BINARY_PATH" ]; then
+    echo "Error: Vina-GPU 2.1 OpenCL binary path not found. Re-test the extension installation." >&2
+    exit 2
+  fi
+  run_dir_abs=$(pwd)
+  vina_cmd=(
+    "$VINA_GPU_BIN"
+    --receptor "$run_dir_abs/${RIGID_RECEPTOR_PDBQT}"
+    --ligand "$run_dir_abs/${PDB}_ligand.pdbqt"
+    --opencl_binary_path "$VINA_GPU_OPENCL_BINARY_PATH"
+    --center_x "$CX"
+    --center_y "$CY"
+    --center_z "$CZ"
+    --size_x "$SX"
+    --size_y "$SY"
+    --size_z "$SZ"
+    --thread "${DOCKUP_VINA_GPU_21_THREADS:-8000}"
+    --out "$run_dir_abs/${PDB}_out_vina.pdbqt"
+    --log "$run_dir_abs/${PDB}_vina_gpu.log"
+  )
+  if [ -n "$FLEX_RECEPTOR_PDBQT" ]; then
+    vina_cmd+=(--flex "$run_dir_abs/${FLEX_RECEPTOR_PDBQT}")
+  fi
+  if [ -n "$VINA_NUM_MODES" ]; then
+    vina_cmd+=(--num_modes "$VINA_NUM_MODES")
+  fi
+  if [ -n "$VINA_ENERGY_RANGE" ]; then
+    vina_cmd+=(--energy_range "$VINA_ENERGY_RANGE")
+  fi
+  if [ -n "$VINA_SEED" ]; then
+    vina_cmd+=(--seed "$VINA_SEED")
+  fi
+else
+  vina_cmd=(
+    "$VINA_BIN"
+    --receptor "${RIGID_RECEPTOR_PDBQT}"
+    --ligand "${PDB}_ligand.pdbqt"
+    --config "$GRIDBOX"
+    --exhaustiveness "$VINA_EXHAUSTIVENESS"
+    --out "${PDB}_out_vina.pdbqt"
+  )
+  if [ -n "$FLEX_RECEPTOR_PDBQT" ]; then
+    vina_cmd+=(--flex "${FLEX_RECEPTOR_PDBQT}")
+  fi
+  if [ -n "$VINA_NUM_MODES" ]; then
+    vina_cmd+=(--num_modes "$VINA_NUM_MODES")
+  fi
+  if [ -n "$VINA_ENERGY_RANGE" ]; then
+    vina_cmd+=(--energy_range "$VINA_ENERGY_RANGE")
+  fi
+  if [ -n "$VINA_CPU" ]; then
+    vina_cmd+=(--cpu "$VINA_CPU")
+  fi
+  if [ -n "$VINA_SEED" ]; then
+    vina_cmd+=(--seed "$VINA_SEED")
+  fi
 fi
 if command -v stdbuf >/dev/null 2>&1; then
   stdbuf -o0 -e0 "${vina_cmd[@]}"
@@ -574,6 +634,9 @@ if [ -f "${PDB}.json" ]; then
 fi
 mv "${PDB}_ligand.pdbqt"   "$OUTDIR/"
 mv "${PDB}_out_vina.pdbqt" "$OUTDIR/"
+if [ -f "${PDB}_vina_gpu.log" ]; then
+  mv "${PDB}_vina_gpu.log" "$OUTDIR/"
+fi
 mv "$GRIDBOX"              "$OUTDIR/"
 
 echo "✅ Docking tamamlandı → $OUTDIR/"

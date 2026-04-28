@@ -488,6 +488,39 @@ verify_p2rank_runtime() {
   return 0
 }
 
+verify_core_runtime() {
+  "$VENV_DIR/bin/python" -c "import fastapi, uvicorn, matplotlib, docx, cv2" >/dev/null 2>&1
+}
+
+verify_docking_runtime() {
+  local missing=()
+  local bin_name
+  for bin_name in vina mk_prepare_receptor.py mk_prepare_ligand.py pdb2pqr30; do
+    if [ ! -x "$VENV_DIR/bin/$bin_name" ]; then
+      missing+=("$bin_name")
+    fi
+  done
+  if [ ! -x "$P2RANK_DIR/prank" ] && [ ! -x "$VENV_DIR/bin/prank" ]; then
+    missing+=("p2rank/prank")
+  fi
+  if ! verify_java_runtime "$P2RANK_JAVA_HOME/bin/java"; then
+    missing+=("p2rank-java")
+  fi
+  if [ ${#missing[@]} -gt 0 ]; then
+    warn "Docking runtime is incomplete: ${missing[*]}"
+    return 1
+  fi
+  if ! "$VENV_DIR/bin/vina" --version >/dev/null 2>&1; then
+    warn "Vina CLI exists but does not run"
+    return 1
+  fi
+  if ! PATH="$VENV_DIR/bin:$PATH" JAVA_HOME="$P2RANK_JAVA_HOME" "$P2RANK_DIR/prank" -v >/dev/null 2>&1; then
+    warn "P2Rank exists but does not run"
+    return 1
+  fi
+  return 0
+}
+
 # ── Argument parsing ─────────────────────────────────────────────────────────
 CORE_ONLY=0
 FORCE=0
@@ -516,13 +549,13 @@ echo ""
 
 # ── Check if already set up ──────────────────────────────────────────────────
 if [ "$FORCE" -eq 0 ] && [ -f "$SETUP_DONE_FILE" ] && [ -f "$VENV_DIR/bin/activate" ]; then
-  # Verify the venv Python still works
-  if "$VENV_DIR/bin/python" -c "import fastapi, uvicorn, matplotlib, docx, cv2" 2>/dev/null; then
+  # Verify the venv still has the requested profile, not just the web server.
+  if verify_core_runtime && { [ "$CORE_ONLY" -eq 1 ] || verify_docking_runtime; }; then
     success "DockUP is already set up (use --force to re-install)"
     echo ""
     exit 0
   else
-    warn "Existing venv seems broken — re-running setup..."
+    warn "Existing setup is incomplete for the requested profile — re-running setup..."
     rm -f "$SETUP_DONE_FILE"
   fi
 fi
@@ -655,10 +688,15 @@ if [ "$CORE_ONLY" -eq 0 ]; then
   fi
 
   if [ ${#DOCKING_FAILED[@]} -gt 0 ]; then
-    warn ""
-    warn "Some docking tools failed to install: ${DOCKING_FAILED[*]}"
-    warn "You can retry manually: $PIP install ${DOCKING_FAILED[*]}"
-    warn "The web server will still start — only docking may fail."
+    error "Some required docking tools failed to install: ${DOCKING_FAILED[*]}"
+    error "Full setup cannot be marked complete because docking would fail."
+    error "Check $LOG_FILE, fix the dependency issue, then re-run: ./setup.sh --force"
+    exit 1
+  elif ! verify_docking_runtime; then
+    error "Docking runtime verification failed after installation."
+    error "Full setup cannot be marked complete because docking would fail."
+    error "Check $LOG_FILE, then re-run: ./setup.sh --force"
+    exit 1
   else
     success "All docking tools installed"
   fi

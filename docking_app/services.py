@@ -1112,6 +1112,7 @@ def _start_run(
             "    ! is_empty \"$pdb2pqr_keep_chain\" && args+=(--pdb2pqr_keep_chain \"$pdb2pqr_keep_chain\")\n"
             "    ! is_empty \"$mkrec_allow_bad_res\" && args+=(--mkrec_allow_bad_res \"$mkrec_allow_bad_res\")\n"
             "    ! is_empty \"$mkrec_default_altloc\" && args+=(--mkrec_default_altloc \"$mkrec_default_altloc\")\n"
+            "    ! is_empty \"$docking_engine\" && args+=(--docking_engine \"$docking_engine\")\n"
             "    ! is_empty \"$vina_exhaustiveness\" && args+=(--vina_exhaustiveness \"$vina_exhaustiveness\")\n"
             "    ! is_empty \"$vina_num_modes\" && args+=(--vina_num_modes \"$vina_num_modes\")\n"
             "    ! is_empty \"$vina_energy_range\" && args+=(--vina_energy_range \"$vina_energy_range\")\n"
@@ -1160,8 +1161,10 @@ def _start_run(
         "run_idx=0",
         "batch_start_epoch=$(date +%s)",
         "echo \"[$(ts)] Batch start | jobs=$job_total runs=$RUNS total_runs=$run_total\"",
-        "while IFS=$'\\t' read -r pdb chain ligand lig_spec pdb_file grid_pad grid_file force_run_id flex_residue_spec pdb2pqr_ph pdb2pqr_ff pdb2pqr_ffout pdb2pqr_nodebump pdb2pqr_keep_chain mkrec_allow_bad_res mkrec_default_altloc docking_mode vina_exhaustiveness vina_num_modes vina_energy_range vina_cpu vina_seed job_type; do",
+        "while IFS=$'\\t' read -r pdb chain ligand lig_spec pdb_file grid_pad grid_file force_run_id flex_residue_spec docking_engine pdb2pqr_ph pdb2pqr_ff pdb2pqr_ffout pdb2pqr_nodebump pdb2pqr_keep_chain mkrec_allow_bad_res mkrec_default_altloc docking_mode vina_exhaustiveness vina_num_modes vina_energy_range vina_cpu vina_seed job_type; do",
         "  [[ -z \"$pdb\" || \"$pdb\" =~ ^# ]] && continue",
+        "  if [[ \"$docking_engine\" != \"vina\" && \"$docking_engine\" != \"vina_gpu_21\" && \"$docking_engine\" != \"__EMPTY__\" && ( -z \"$job_type\" || \"$job_type\" == \"__EMPTY__\" ) ]]; then job_type=\"$docking_engine\"; docking_engine=\"vina\"; fi",
+        "  if is_empty \"$docking_engine\"; then docking_engine=\"vina\"; fi",
         "  if is_empty \"$job_type\"; then job_type=\"Docking\"; fi",
         "  run_start=1",
         "  run_end=$RUNS",

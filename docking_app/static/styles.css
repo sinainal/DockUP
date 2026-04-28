@@ -48,6 +48,29 @@ body {
   box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.extensions-trigger {
+  border: 1px solid #bfdbfe;
+  background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%);
+  color: #1d4ed8;
+  border-radius: 999px;
+  padding: 7px 13px;
+  font-weight: 800;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.10);
+}
+
+.extensions-trigger:hover {
+  border-color: #93c5fd;
+  background: #dbeafe;
+}
+
 .brand-row {
   display: flex;
   align-items: center;
@@ -2420,6 +2443,197 @@ input[type="range"]::-webkit-slider-thumb {
 
 .docking-config-modal-card {
   width: min(780px, 96vw);
+}
+
+.extensions-modal-card {
+  width: min(900px, 96vw);
+}
+
+.extension-card {
+  border: 1px solid #dbeafe;
+  border-radius: 18px;
+  padding: 16px;
+  background:
+    radial-gradient(circle at top right, rgba(59, 130, 246, 0.10), transparent 32%),
+    linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.extension-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.extension-kicker {
+  color: #2563eb;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.extension-title {
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  color: #0f172a;
+}
+
+.extension-status-pill {
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+  padding: 7px 11px;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.extension-status-pill.is-ready,
+.extension-status-pill.is-installed {
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.extension-status-pill.is-missing {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.extension-status-pill.is-waiting {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.extension-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.extension-metrics > div {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.75);
+  padding: 10px 12px;
+}
+
+.metric-label {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+
+.extension-progress {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #e2e8f0;
+  margin-bottom: 14px;
+}
+
+.extension-progress-bar {
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0284c7, #10b981);
+  transition: width 0.25s ease;
+}
+
+.extension-req-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.extension-req {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 9px;
+}
+
+.extension-req-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  font-weight: 900;
+  background: #e2e8f0;
+  color: #475569;
+}
+
+.extension-req.ok .extension-req-mark {
+  background: #d1fae5;
+  color: #047857;
+}
+
+.extension-req.missing .extension-req-mark {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.extension-req strong {
+  display: block;
+  font-size: 12px;
+}
+
+.extension-req small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  margin-top: 2px;
+}
+
+.extension-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.danger-soft {
+  color: #b91c1c;
+  border-color: #fecaca;
+  background: #fff7f7;
+}
+
+.danger-soft:hover {
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+
+.extension-log {
+  min-height: 110px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border-radius: 12px;
+  border: 1px solid #cbd5e1;
+  background: #0f172a;
+  color: #dbeafe;
+  font-family: "SFMono-Regular", "Consolas", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 10px;
 }
 
 .report-source-modal-card {

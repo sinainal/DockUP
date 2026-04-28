@@ -28,6 +28,7 @@ const appState = {
 };
 
 const DEFAULT_DOCKING_CONFIG = {
+  docking_engine: "vina",
   docking_mode: "standard",
   ligand_binding_mode: "single",
   pdb2pqr_ph: 7.4,
@@ -113,6 +114,7 @@ let queueBatchModalActiveJobIndex = 0;
 let latestReceptorSummaryRows = [];
 let dockingFlexTargetReceptorId = "";
 let lastAutoDockingRootKey = "";
+let extensionsPoll = null;
 
 const EXCLUDED_RESN = new Set([
   "HOH", "DOD", "WAT", "NA", "CL", "K", "MG", "CA", "ZN", "FE", "CU", "MN", "CO", "NI",
@@ -188,6 +190,20 @@ const els = {};
 // Initialize elements after DOM ready
 function initElements() {
   els.runStatus = document.getElementById("runStatus");
+  els.openExtensionsModal = document.getElementById("openExtensionsModal");
+  els.extensionsModal = document.getElementById("extensionsModal");
+  els.closeExtensionsModal = document.getElementById("closeExtensionsModal");
+  els.vinaGpuStatusPill = document.getElementById("vinaGpuStatusPill");
+  els.vinaGpuSizeLabel = document.getElementById("vinaGpuSizeLabel");
+  els.vinaGpuTestLabel = document.getElementById("vinaGpuTestLabel");
+  els.vinaGpuProgressBar = document.getElementById("vinaGpuProgressBar");
+  els.vinaGpuRequirements = document.getElementById("vinaGpuRequirements");
+  els.installVinaGpuBtn = document.getElementById("installVinaGpuBtn");
+  els.testVinaGpuBtn = document.getElementById("testVinaGpuBtn");
+  els.useVinaGpuDefaultBtn = document.getElementById("useVinaGpuDefaultBtn");
+  els.useCpuVinaDefaultBtn = document.getElementById("useCpuVinaDefaultBtn");
+  els.uninstallVinaGpuBtn = document.getElementById("uninstallVinaGpuBtn");
+  els.vinaGpuInstallLog = document.getElementById("vinaGpuInstallLog");
   els.modeToggle = document.getElementById("modeToggle");
   els.ligandSection = document.getElementById("ligandSection");
   els.ligandUpload = document.getElementById("ligandUpload");
@@ -279,6 +295,7 @@ function initElements() {
   els.cancelDockingConfigModal = document.getElementById("cancelDockingConfigModal");
   els.dockCfgLigandBindingMode = document.getElementById("dockCfgLigandBindingMode");
   els.dockCfgLigandBindingHint = document.getElementById("dockCfgLigandBindingHint");
+  els.dockCfgDockingEngine = document.getElementById("dockCfgDockingEngine");
   els.dockCfgPdb2pqrPh = document.getElementById("dockCfgPdb2pqrPh");
   els.dockCfgDockingMode = document.getElementById("dockCfgDockingMode");
   els.dockCfgPdb2pqrFf = document.getElementById("dockCfgPdb2pqrFf");
@@ -964,6 +981,98 @@ async function fetchJSON(url, options = {}) {
   return resp.json();
 }
 
+function renderVinaGpuExtension(data) {
+  if (!data || !els.vinaGpuStatusPill) return;
+  const job = data.job || {};
+  const running = Boolean(job.running);
+  const installed = Boolean(data.installed);
+  const tested = Boolean(data.tested);
+  els.vinaGpuStatusPill.textContent = running
+    ? (job.message || "Working")
+    : tested
+      ? "Ready"
+      : installed
+        ? "Installed"
+        : data.requirements_ok
+          ? "Ready to install"
+          : "Needs requirements";
+  els.vinaGpuStatusPill.className = `extension-status-pill ${tested ? "is-ready" : installed ? "is-installed" : data.requirements_ok ? "is-waiting" : "is-missing"}`;
+  if (els.vinaGpuProgressBar) {
+    const progress = Math.max(0, Math.min(100, Number(job.progress || 0)));
+    els.vinaGpuProgressBar.style.width = `${running || progress ? progress : installed ? 100 : 0}%`;
+  }
+  if (els.vinaGpuSizeLabel) {
+    els.vinaGpuSizeLabel.textContent = data.expected_download_size || "reserve at least 2 GB";
+  }
+  if (els.vinaGpuTestLabel) {
+    const elapsed = data.last_test_elapsed_sec ? `${data.last_test_elapsed_sec}s` : "";
+    const affinity = data.last_test_affinity ? ` | ${data.last_test_affinity}` : "";
+    els.vinaGpuTestLabel.textContent = tested ? `passed ${elapsed}${affinity}` : "not tested";
+  }
+  if (els.vinaGpuRequirements) {
+    els.vinaGpuRequirements.innerHTML = "";
+    (data.requirements || []).forEach((req) => {
+      const item = document.createElement("div");
+      item.className = `extension-req ${req.ok ? "ok" : req.required ? "missing" : "optional"}`;
+      const mark = req.ok ? "✓" : req.required ? "!" : "i";
+      item.innerHTML = `<span class="extension-req-mark">${mark}</span><div><strong></strong><small></small></div>`;
+      item.querySelector("strong").textContent = req.label || req.key;
+      item.querySelector("small").textContent = req.detail || "";
+      els.vinaGpuRequirements.appendChild(item);
+    });
+  }
+  if (els.vinaGpuInstallLog) {
+    const lines = Array.isArray(data.log) && data.log.length ? data.log : [job.message || "Extension log will appear here."];
+    els.vinaGpuInstallLog.textContent = lines.join("\n");
+    els.vinaGpuInstallLog.scrollTop = els.vinaGpuInstallLog.scrollHeight;
+  }
+  if (els.installVinaGpuBtn) els.installVinaGpuBtn.disabled = running || !data.requirements_ok;
+  if (els.testVinaGpuBtn) els.testVinaGpuBtn.disabled = running || !installed;
+  if (els.useVinaGpuDefaultBtn) els.useVinaGpuDefaultBtn.disabled = running || !tested;
+  if (els.uninstallVinaGpuBtn) els.uninstallVinaGpuBtn.disabled = running || !installed;
+  if (!running && extensionsPoll) {
+    clearInterval(extensionsPoll);
+    extensionsPoll = null;
+  }
+}
+
+async function refreshVinaGpuExtension() {
+  const data = await fetchJSON("/api/extensions/vina-gpu-21/status");
+  renderVinaGpuExtension(data);
+  return data;
+}
+
+function startExtensionsPolling() {
+  if (extensionsPoll) clearInterval(extensionsPoll);
+  extensionsPoll = setInterval(() => {
+    refreshVinaGpuExtension().catch((err) => {
+      if (els.vinaGpuInstallLog) els.vinaGpuInstallLog.textContent = err.message || String(err);
+    });
+  }, 1200);
+}
+
+async function openExtensionsModal() {
+  if (!els.extensionsModal) return;
+  els.extensionsModal.classList.add("active");
+  try {
+    const data = await refreshVinaGpuExtension();
+    if (data?.job?.running) startExtensionsPolling();
+  } catch (err) {
+    if (els.vinaGpuInstallLog) els.vinaGpuInstallLog.textContent = err.message || String(err);
+  }
+}
+
+function closeExtensionsModal() {
+  if (!els.extensionsModal) return;
+  els.extensionsModal.classList.remove("active");
+}
+
+async function runVinaGpuAction(url) {
+  const data = await fetchJSON(url, { method: "POST" });
+  renderVinaGpuExtension(data);
+  startExtensionsPolling();
+}
+
 async function resolvePathFromPicker(files, scope = "generic", pickerEl = null) {
   let rel = "";
   if (files && files.length > 0) {
@@ -1537,6 +1646,10 @@ function normalizeDockingConfig(rawConfig) {
     return out;
   };
 
+  const engine = String(source.docking_engine ?? normalized.docking_engine).trim().toLowerCase().replace(/-/g, "_");
+  normalized.docking_engine = ["vina_gpu", "vina_gpu2.1", "vina_gpu_2_1", "vina_gpu_21"].includes(engine)
+    ? "vina_gpu_21"
+    : "vina";
   normalized.docking_mode = normalizeDockingMode(source.docking_mode ?? normalized.docking_mode);
   normalized.ligand_binding_mode = normalizeLigandBindingMode(
     source.ligand_binding_mode ?? normalized.ligand_binding_mode
@@ -1581,6 +1694,7 @@ function applyQueueCoreValues(values) {
 
 function readAdvancedDockingConfigFromModal() {
   return normalizeDockingConfig({
+    docking_engine: els.dockCfgDockingEngine?.value,
     docking_mode: els.dockCfgDockingMode?.value,
     ligand_binding_mode: els.dockCfgLigandBindingMode?.value,
     pdb2pqr_ph: els.dockCfgPdb2pqrPh?.value,
@@ -1623,6 +1737,10 @@ function applyAdvancedDockingConfigToModal(config) {
     els.dockCfgDockingMode.value = cfg.docking_mode || "standard";
     enhanceModernNativeSelect(els.dockCfgDockingMode);
   }
+  if (els.dockCfgDockingEngine) {
+    els.dockCfgDockingEngine.value = cfg.docking_engine || "vina";
+    enhanceModernNativeSelect(els.dockCfgDockingEngine);
+  }
   if (els.dockCfgLigandBindingMode) {
     els.dockCfgLigandBindingMode.value = normalizeLigandBindingMode(cfg.ligand_binding_mode);
     enhanceModernNativeSelect(els.dockCfgLigandBindingMode);
@@ -1650,7 +1768,8 @@ function renderDockingConfigSummary() {
     const ligandWorkflowLabel = normalizeLigandBindingMode(cfg.ligand_binding_mode) === "multi_ligand"
       ? "multi-ligand"
       : "single";
-    els.openDockingConfigModal.title = `${ligandWorkflowLabel} | ${cfg.docking_mode} | pH ${cfg.pdb2pqr_ph} | Exhaustiveness ${cfg.vina_exhaustiveness}${flexSuffix}`;
+    const engineLabel = cfg.docking_engine === "vina_gpu_21" ? "Vina-GPU 2.1" : "AutoDock Vina";
+    els.openDockingConfigModal.title = `${engineLabel} | ${ligandWorkflowLabel} | ${cfg.docking_mode} | pH ${cfg.pdb2pqr_ph} | Exhaustiveness ${cfg.vina_exhaustiveness}${flexSuffix}`;
   }
 }
 
@@ -5176,6 +5295,7 @@ function applyQueueBatchDockingConfigToInputs(config) {
 
 function readQueueBatchDockingConfigFromInputs() {
   return normalizeDockingConfig({
+    docking_engine: queueBatchModalDraft?.dockingConfig?.docking_engine || appState.dockingConfig?.docking_engine,
     docking_mode: els.queueBatchDockingMode?.value,
     pdb2pqr_ph: els.queueBatchPdb2pqrPh?.value,
     pdb2pqr_ff: els.queueBatchPdb2pqrFf?.value,
@@ -5939,6 +6059,61 @@ function pollRunStatus() {
 // =====================================================
 
 function bindEvents() {
+  if (els.openExtensionsModal) {
+    els.openExtensionsModal.addEventListener("click", () => {
+      openExtensionsModal();
+    });
+  }
+  if (els.closeExtensionsModal) {
+    els.closeExtensionsModal.addEventListener("click", () => {
+      closeExtensionsModal();
+    });
+  }
+  if (els.extensionsModal) {
+    els.extensionsModal.addEventListener("click", (event) => {
+      if (event.target === els.extensionsModal) closeExtensionsModal();
+    });
+  }
+  if (els.installVinaGpuBtn) {
+    els.installVinaGpuBtn.addEventListener("click", async () => {
+      await runVinaGpuAction("/api/extensions/vina-gpu-21/install");
+    });
+  }
+  if (els.testVinaGpuBtn) {
+    els.testVinaGpuBtn.addEventListener("click", async () => {
+      await runVinaGpuAction("/api/extensions/vina-gpu-21/test");
+    });
+  }
+  if (els.useVinaGpuDefaultBtn) {
+    els.useVinaGpuDefaultBtn.addEventListener("click", async () => {
+      const data = await fetchJSON("/api/extensions/vina-gpu-21/use-default", { method: "POST" });
+      appState.dockingConfig = normalizeDockingConfig(data.docking_config || appState.dockingConfig || DEFAULT_DOCKING_CONFIG);
+      applyAdvancedDockingConfigToModal(appState.dockingConfig);
+      renderDockingConfigSummary();
+    });
+  }
+  if (els.useCpuVinaDefaultBtn) {
+    els.useCpuVinaDefaultBtn.addEventListener("click", async () => {
+      const data = await fetchJSON("/api/extensions/vina/use-default", { method: "POST" });
+      appState.dockingConfig = normalizeDockingConfig(data.docking_config || appState.dockingConfig || DEFAULT_DOCKING_CONFIG);
+      applyAdvancedDockingConfigToModal(appState.dockingConfig);
+      renderDockingConfigSummary();
+    });
+  }
+  if (els.uninstallVinaGpuBtn) {
+    els.uninstallVinaGpuBtn.addEventListener("click", async () => {
+      const ok = confirm("Uninstall Vina-GPU 2.1 from DockUP? CPU Vina will remain available.");
+      if (!ok) return;
+      await runVinaGpuAction("/api/extensions/vina-gpu-21/uninstall");
+      appState.dockingConfig = normalizeDockingConfig({
+        ...(appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
+        docking_engine: "vina",
+      });
+      applyAdvancedDockingConfigToModal(appState.dockingConfig);
+      renderDockingConfigSummary();
+    });
+  }
+
   // Mode toggle
   if (els.modeToggle) {
     els.modeToggle.addEventListener("click", async (event) => {
