@@ -6,11 +6,18 @@ export LC_NUMERIC=C
 
 # ── Environment Discovery ───────────────────────────────────────────────────
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-root_dir=$(dirname "$script_dir")
+root_dir="${DOCKUP_ROOT:-}"
+if [ -z "$root_dir" ] && [ -n "${DOCKUP_VENV:-}" ]; then
+  root_dir=$(cd "$(dirname "$DOCKUP_VENV")" && pwd)
+fi
+if [ -z "$root_dir" ]; then
+  root_dir=$(dirname "$script_dir")
+fi
 
 if [ -f "$root_dir/.env" ]; then
   source "$root_dir/.env"
 fi
+DOCKUP_VENV="${DOCKUP_VENV:-$root_dir/.venv}"
 
 # Determine the best Python to use
 DOCKUP_PYTHON="${DOCKUP_PYTHON:-python3}"
@@ -551,7 +558,7 @@ fi
 
 #──────────────── 7. Docking – AutoDock Vina / Vina-GPU 2.1 ────────────────────────
 if [ "$DOCKING_ENGINE" = "vina_gpu_21" ]; then
-  VINA_GPU_BIN="${DOCKUP_VINA_GPU_21:-$root_dir/.venv/bin/vina-gpu-2.1}"
+  VINA_GPU_BIN="${DOCKUP_VINA_GPU_21:-$DOCKUP_VENV/bin/vina-gpu-2.1}"
   VINA_GPU_OPENCL_BINARY_PATH="${DOCKUP_VINA_GPU_21_OPENCL_BINARY_PATH:-${VINA_GPU_21_OPENCL_BINARY_PATH:-}}"
   if [ ! -x "$VINA_GPU_BIN" ]; then
     echo "Error: Vina-GPU 2.1 launcher not found. Install it from DockUP Extensions first: $VINA_GPU_BIN" >&2

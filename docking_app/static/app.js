@@ -1847,6 +1847,16 @@ function closeDockingConfigModal({ restore = false } = {}) {
 async function saveDockingConfigModal() {
   appState.dockingConfig = readAdvancedDockingConfigFromModal();
   syncSelectionMapForLigandWorkflow();
+  try {
+    const data = await fetchJSON("/api/config/docking", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ docking_config: appState.dockingConfig }),
+    });
+    appState.dockingConfig = normalizeDockingConfig(data.docking_config || appState.dockingConfig);
+  } catch (err) {
+    console.warn("Failed to persist docking settings:", err);
+  }
   applyAdvancedDockingConfigToModal(appState.dockingConfig);
 
   closeDockingConfigModal({ restore: false });
@@ -5746,6 +5756,10 @@ async function buildQueue() {
     out_root_name: document.getElementById("outRootName")?.value || "",
     replace_queue: false,
   };
+  const selectedBatchId = normalizeQueueBatchId(appState.selectedQueueBatchId);
+  if (selectedBatchId) {
+    payload.update_batch_id = parseInt(selectedBatchId, 10);
+  }
   const previousBatchIds = new Set((appState.queueData || []).map((row) => normalizeQueueBatchId(row?.batch_id)).filter(Boolean));
 
   const data = await fetchJSON("/api/queue/build", {
@@ -5757,10 +5771,11 @@ async function buildQueue() {
   appState.queueCount = data.queue_count || 0;
   const nextBatchIds = [...new Set(appState.queueData.map((row) => normalizeQueueBatchId(row?.batch_id)).filter(Boolean))];
   const appendedBatchIds = nextBatchIds.filter((batchId) => !previousBatchIds.has(batchId));
-  appState.selectedQueueBatchId = appendedBatchIds.length === 1 ? appendedBatchIds[0] : null;
+  appState.selectedQueueBatchId = selectedBatchId || (appendedBatchIds.length === 1 ? appendedBatchIds[0] : null);
   updateQueueCount();
   updateQueueEditorUI();
   renderQueueTable(appState.queueData);
+  scheduleUIStateSave();
 }
 
 function renderQueueTable(queue) {
@@ -6235,6 +6250,8 @@ function bindEvents() {
       if (Array.isArray(res?.duplicates) && res.duplicates.length) {
         alert(`Skipped already existing ligands: ${res.duplicates.join(", ")}`);
       }
+      activeLigands = Array.isArray(res?.active_ligands) ? res.active_ligands : activeLigands;
+      appState.activeLigands = [...activeLigands];
       await refreshLigands();
       await refreshReceptorSummary(); // Auto-refresh receptor table to show new ligands
     });
@@ -6297,6 +6314,7 @@ function bindEvents() {
             alert(`Failed to fetch these ligands (check names or IDs): ${data.failed.join(", ")}`);
           }
           await refreshLigands();
+          await refreshReceptorSummary();
           if (els.ligandIds && (!data.failed || data.failed.length === 0)) {
             els.ligandIds.value = "";
           }
@@ -6327,6 +6345,7 @@ function bindEvents() {
       if (!confirm("Are you sure you want to delete ALL stored ligands?")) return;
       await fetchJSON("/api/ligands/clear_all", { method: "POST" });
       await refreshLigands();
+      await refreshReceptorSummary();
     });
   }
 

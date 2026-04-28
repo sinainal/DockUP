@@ -32,6 +32,9 @@ elif command -v plip >/dev/null 2>&1; then
 fi
 export DOCKUP_PYTHON
 export DOCKUP_PYMOL_PYTHON
+export DOCKUP_VENV="${DOCKUP_VENV:-$root_dir/.venv}"
+export DOCKUP_ROOT="${DOCKUP_ROOT:-$root_dir}"
+export DOCKUP_VINA="${DOCKUP_VINA:-$DOCKUP_VENV/bin/vina}"
 
 # Inputs
 PDB=$1

@@ -350,7 +350,14 @@ def upload_ligands(files: list[UploadFile] = File(...)) -> JSONResponse:
         target_path = _next_available_ligand_path(safe_name)
         target_path.write_bytes(file_bytes)
         saved.append(str(target_path))
-    _normalize_active_ligands_state()
+    active = _normalize_active_ligands_state()
+    seen_active = set(active)
+    for saved_path in saved:
+        saved_name = Path(saved_path).name
+        if saved_name not in seen_active:
+            active.append(saved_name)
+            seen_active.add(saved_name)
+    STATE["active_ligands"] = active
     save_state_cache()
     lig_files = _existing_files(LIGAND_DIR, (".sdf",))
     return JSONResponse(
@@ -359,6 +366,7 @@ def upload_ligands(files: list[UploadFile] = File(...)) -> JSONResponse:
             "duplicates": duplicates,
             "created_count": max(0, len(saved) - len(duplicates)),
             "ligands": [f.name for f in lig_files],
+            "active_ligands": STATE.get("active_ligands", []),
         }
     )
 

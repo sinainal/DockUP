@@ -19,9 +19,17 @@ from ..helpers import (
     write_json,
 )
 from ..services import _existing_files, _init_selection_map, _load_receptor_meta, _normalize_receptor_id
-from ..state import DOCKING_CONFIG_DEFAULTS, STATE
+from ..state import DOCKING_CONFIG_DEFAULTS, STATE, save_state_cache
 
 router = APIRouter()
+
+
+@router.post("/api/config/docking")
+def save_docking_config(payload: dict[str, Any]) -> JSONResponse:
+    cfg = normalize_docking_config(payload.get("docking_config") or payload or STATE.get("docking_config") or {})
+    STATE["docking_config"] = cfg
+    save_state_cache()
+    return JSONResponse({"ok": True, "docking_config": cfg})
 
 @router.post("/api/config/save")
 def save_config(payload: dict[str, Any]) -> StreamingResponse:
