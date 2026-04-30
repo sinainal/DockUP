@@ -87,6 +87,7 @@ def chat(
     model: str,
     messages: list[dict[str, Any]],
     keep_alive: str | int | float | None = "10m",
+    think: bool | str | None = None,
     options: dict[str, Any] | None = None,
     timeout_seconds: float = 180.0,
 ) -> dict[str, Any]:
@@ -97,6 +98,8 @@ def chat(
     }
     if options:
         payload["options"] = options
+    if think is not None:
+        payload["think"] = think
     if keep_alive is not None:
         payload["keep_alive"] = keep_alive
     timeout = httpx.Timeout(timeout_seconds, connect=5.0)
@@ -107,6 +110,10 @@ def chat(
     message = data.get("message")
     if isinstance(message, dict):
         message = dict(message)
+        thinking = message.get("thinking")
+        if thinking is None and isinstance(data.get("thinking"), str):
+            thinking = data.get("thinking")
+        message["thinking"] = clean_ollama_text(str(thinking or "")) if thinking is not None else ""
         message["content"] = clean_ollama_text(str(message.get("content") or ""))
         data["message"] = message
     return data

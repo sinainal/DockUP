@@ -831,7 +831,19 @@
                 </div>
               </div>
               <span class="assistant-toolbar-divider" aria-hidden="true"></span>
-              <button id="dockupAgentStateBtn" class="assistant-toolbar-btn" type="button" disabled>State only</button>
+              <div class="assistant-model-picker" id="dockupAgentThinkWrap">
+                <button id="dockupAgentThinkBtn" class="assistant-toolbar-btn assistant-model-btn" type="button"
+                  aria-haspopup="menu" aria-expanded="false">
+                  <span id="dockupAgentThinkLabel">Auto</span>
+                  <svg class="assistant-toolbar-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+                    <polyline points="6 9 12 15 18 9"/>
+                  </svg>
+                </button>
+                <div id="dockupAgentThinkMenu" class="assistant-toolbar-menu assistant-think-menu" hidden>
+                  <div class="assistant-toolbar-menu-empty">Think mode</div>
+                </div>
+              </div>
             </div>
           </div>
           <button id="dockupAgentSend" class="btn-send btn-send-minimal" type="button" aria-label="Send">

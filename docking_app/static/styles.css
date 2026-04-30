@@ -279,6 +279,10 @@
   font-weight: 800;
 }
 
+.dockup-agent-panel .assistant-think-menu .assistant-toolbar-menu-item {
+  align-items: center;
+}
+
 .dockup-agent-panel .assistant-model-size {
   margin-left: auto;
   color: #94a3b8;
@@ -323,6 +327,69 @@
   border: 1px solid rgba(226, 232, 240, .9);
   border-bottom-left-radius: 6px;
   box-shadow: 0 8px 22px rgba(15, 23, 42, .045);
+}
+
+.dockup-thinking-block {
+  margin: 2px 0 8px;
+  border: 1px solid rgba(199, 210, 254, .7);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(238, 242, 255, .92) 0%, rgba(248, 250, 252, .98) 100%);
+  overflow: hidden;
+}
+
+.dockup-thinking-block summary {
+  list-style: none;
+}
+
+.dockup-thinking-block summary::-webkit-details-marker {
+  display: none;
+}
+
+.dockup-thinking-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  cursor: pointer;
+  color: #4f46e5;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dockup-thinking-summary::after {
+  content: "⌄";
+  color: #6366f1;
+  font-size: 14px;
+  line-height: 1;
+  transition: transform 0.18s ease;
+}
+
+.dockup-thinking-block[open] .dockup-thinking-summary::after {
+  transform: rotate(180deg);
+}
+
+.dockup-thinking-badge {
+  margin-left: auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, .1);
+  color: #4338ca;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.dockup-thinking-text {
+  padding: 0 12px 12px;
+  color: #475569;
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .dockup-agent-panel .assistant-message-role {

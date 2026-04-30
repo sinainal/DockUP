@@ -20,11 +20,13 @@ DEFAULT_NUM_BATCH = 128
 DEFAULT_KEEP_ALIVE = -1
 DEFAULT_NUM_GPU = -1
 DEFAULT_WARMUP_TOKENS = 1
+DEFAULT_THINK_MODE = "auto"
 NUM_CTX_CHOICES = (1024, 2048, 4096, 8192, 16384)
 NUM_BATCH_CHOICES = (64, 128, 256, 512)
 KEEP_ALIVE_CHOICES = (-1, 300, 900, 1800, 3600)
 NUM_GPU_CHOICES = (-1, 40, 48, 56, 64)
 WARMUP_TOKEN_CHOICES = (1, 2, 4, 8)
+THINK_MODE_CHOICES = ("auto", "think", "no_think")
 PREFERRED_MODEL_PATTERNS = ("qwen36-merged", "qwen36_merged", "merged", "qwen36", "qwen3.6", "35b", "iq3_xs", "iq3-xs")
 
 ROOT_DIR = BASE / ".venv" / "dockup_extensions" / EXTENSION_ID
@@ -35,6 +37,7 @@ _WARMUP_JOB: dict[str, Any] = {
     "running": False,
     "message": "",
     "model": "",
+    "think_mode": DEFAULT_THINK_MODE,
     "error": "",
     "started_at": None,
     "finished_at": None,
@@ -82,6 +85,19 @@ def _normalize_bool(value: Any, default: bool = True) -> bool:
     return default
 
 
+def _normalize_think_mode(value: Any, default: str = DEFAULT_THINK_MODE) -> str:
+    if isinstance(value, bool):
+        return "think" if value else "no_think"
+    if value is None:
+        return default
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized in THINK_MODE_CHOICES:
+        return normalized
+    if normalized in {"nothink", "no think"}:
+        return "no_think"
+    return default
+
+
 def _default_settings() -> dict[str, Any]:
     return {
         "num_ctx": DEFAULT_NUM_CTX,
@@ -123,6 +139,13 @@ def _settings_from_payload(payload: dict[str, Any], fallback: dict[str, Any] | N
     return _normalize_settings(merged)
 
 
+def _think_flag(mode: Any) -> bool | None:
+    normalized = _normalize_think_mode(mode)
+    if normalized == "auto":
+        return None
+    return normalized == "think"
+
+
 def _ollama_options(settings: dict[str, Any], *, warmup: bool = False) -> dict[str, Any]:
     options: dict[str, Any] = {
         "num_ctx": settings["num_ctx"],
@@ -145,16 +168,31 @@ def _ollama_options(settings: dict[str, Any], *, warmup: bool = False) -> dict[s
 
 def _read_state() -> dict[str, Any]:
     if not STATE_PATH.exists():
-        return {"base_url": DEFAULT_BASE_URL, "model": "", "settings": _default_settings(), "connected": False, "last_error": ""}
+        return {
+            "base_url": DEFAULT_BASE_URL,
+            "model": "",
+            "settings": _default_settings(),
+            "think_mode": DEFAULT_THINK_MODE,
+            "connected": False,
+            "last_error": "",
+        }
     try:
         data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
     except Exception:
-        return {"base_url": DEFAULT_BASE_URL, "model": "", "settings": _default_settings(), "connected": False, "last_error": ""}
+        return {
+            "base_url": DEFAULT_BASE_URL,
+            "model": "",
+            "settings": _default_settings(),
+            "think_mode": DEFAULT_THINK_MODE,
+            "connected": False,
+            "last_error": "",
+        }
     settings_source = data.get("settings") if isinstance(data.get("settings"), dict) else data
     return {
         "base_url": normalize_base_url(data.get("base_url"), DEFAULT_BASE_URL),
         "model": str(data.get("model") or "").strip(),
         "settings": _normalize_settings(settings_source),
+        "think_mode": _normalize_think_mode(data.get("think_mode"), DEFAULT_THINK_MODE),
         "connected": bool(data.get("connected")),
         "last_error": str(data.get("last_error") or "").strip(),
     }
@@ -199,10 +237,12 @@ def _snapshot(base_url: str | None = None, model: str | None = None) -> dict[str
     selected = str(model if model is not None else saved.get("model") or "").strip()
     selected = _preferred_model(models, selected)
     settings = _normalize_settings(saved.get("settings"))
+    think_mode = _normalize_think_mode(saved.get("think_mode"), DEFAULT_THINK_MODE)
     state = {
         "base_url": target_base_url,
         "model": selected,
         "settings": settings,
+        "think_mode": think_mode,
         "connected": connected,
         "last_error": "" if connected else (error or saved.get("last_error") or ""),
     }
@@ -217,6 +257,8 @@ def _snapshot(base_url: str | None = None, model: str | None = None) -> dict[str
         "model": selected,
         "num_ctx": settings["num_ctx"],
         "settings": settings,
+        "think_mode": think_mode,
+        "think_mode_choices": list(THINK_MODE_CHOICES),
         "num_ctx_choices": list(NUM_CTX_CHOICES),
         "num_batch_choices": list(NUM_BATCH_CHOICES),
         "keep_alive_choices": list(KEEP_ALIVE_CHOICES),
@@ -270,13 +312,14 @@ def _stop_model(base_url: str, model: str) -> str:
     return ""
 
 
-def _warmup_worker(base_url: str, model: str, settings: dict[str, Any], token: int) -> None:
+def _warmup_worker(base_url: str, model: str, settings: dict[str, Any], think_mode: str, token: int) -> None:
     with _LOCK:
         _WARMUP_JOB.update(
             {
                 "running": True,
                 "message": "Loading local model",
                 "model": model,
+                "think_mode": think_mode,
                 "settings": settings,
                 "num_ctx": settings["num_ctx"],
                 "error": "",
@@ -290,6 +333,7 @@ def _warmup_worker(base_url: str, model: str, settings: dict[str, Any], token: i
             model=model,
             messages=[{"role": "user", "content": "."}],
             keep_alive=settings["keep_alive"],
+            think=_think_flag(think_mode),
             options=_ollama_options(settings, warmup=True),
             timeout_seconds=180.0,
         )
@@ -305,6 +349,7 @@ def _warmup_worker(base_url: str, model: str, settings: dict[str, Any], token: i
             {
                 "running": False,
                 "message": message,
+                "think_mode": think_mode,
                 "error": error,
                 "finished_at": time.time(),
             }
@@ -318,6 +363,7 @@ def connect(payload: dict[str, Any]) -> dict[str, Any]:
     warmup = bool(payload.get("warmup", True))
     previous = _read_state()
     requested_settings = _settings_from_payload(payload, previous.get("settings"))
+    requested_think_mode = _normalize_think_mode(payload.get("think_mode"), previous.get("think_mode", DEFAULT_THINK_MODE))
     snapshot = _snapshot(base_url, requested_model)
     model = str(snapshot.get("model") or requested_model).strip()
     previous_model = str(previous.get("model") or "").strip()
@@ -339,6 +385,7 @@ def connect(payload: dict[str, Any]) -> dict[str, Any]:
         "base_url": base_url,
         "model": model,
         "settings": requested_settings,
+        "think_mode": requested_think_mode,
         "connected": bool(snapshot.get("connected")),
         "last_error": str(snapshot.get("error") or ""),
     }
@@ -348,13 +395,18 @@ def connect(payload: dict[str, Any]) -> dict[str, Any]:
             running_same = (
                 bool(_WARMUP_JOB.get("running"))
                 and _WARMUP_JOB.get("model") == model
+                and _normalize_think_mode(_WARMUP_JOB.get("think_mode"), DEFAULT_THINK_MODE) == requested_think_mode
                 and _normalize_settings(_WARMUP_JOB.get("settings")) == requested_settings
             )
         if not running_same:
             with _LOCK:
                 _WARMUP_TOKEN += 1
                 token = _WARMUP_TOKEN
-            thread = threading.Thread(target=_warmup_worker, args=(base_url, model, requested_settings, token), daemon=True)
+            thread = threading.Thread(
+                target=_warmup_worker,
+                args=(base_url, model, requested_settings, requested_think_mode, token),
+                daemon=True,
+            )
             thread.start()
     result = _snapshot(base_url, model)
     if stop_error:
@@ -367,6 +419,7 @@ def ask(payload: dict[str, Any]) -> dict[str, Any]:
     base_url = normalize_base_url(payload.get("base_url") or saved.get("base_url"), DEFAULT_BASE_URL)
     model = str(payload.get("model") or saved.get("model") or "").strip()
     settings = _settings_from_payload(payload, saved.get("settings"))
+    think_mode = _normalize_think_mode(payload.get("think_mode"), saved.get("think_mode", DEFAULT_THINK_MODE))
     message = str(payload.get("message") or "").strip()
     history = payload.get("history") if isinstance(payload.get("history"), list) else []
     if not model:
@@ -394,12 +447,15 @@ def ask(payload: dict[str, Any]) -> dict[str, Any]:
             model=model,
             messages=messages,
             keep_alive=settings["keep_alive"],
+            think=_think_flag(think_mode),
             options=_ollama_options(settings),
             timeout_seconds=240.0,
         )
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "state_context": state_context}
     answer = ""
+    thinking = ""
     if isinstance(data.get("message"), dict):
         answer = str(data["message"].get("content") or "").strip()
-    return {"ok": True, "answer": answer, "model": model, "state_context": state_context, "raw": data}
+        thinking = str(data["message"].get("thinking") or "").strip()
+    return {"ok": True, "answer": answer, "thinking": thinking, "model": model, "think_mode": think_mode, "state_context": state_context, "raw": data}

@@ -120,6 +120,7 @@ let ollamaState = {
   connected: false,
   baseUrl: "http://localhost:11434",
   model: "",
+  thinkMode: "auto",
   numCtx: 4096,
   settings: {
     num_ctx: 4096,
@@ -249,6 +250,10 @@ function initElements() {
   els.dockupAgentModelLabel = document.getElementById("dockupAgentModelLabel");
   els.dockupAgentModelMenu = document.getElementById("dockupAgentModelMenu");
   els.dockupAgentModelWrap = document.getElementById("dockupAgentModelWrap");
+  els.dockupAgentThinkBtn = document.getElementById("dockupAgentThinkBtn");
+  els.dockupAgentThinkLabel = document.getElementById("dockupAgentThinkLabel");
+  els.dockupAgentThinkMenu = document.getElementById("dockupAgentThinkMenu");
+  els.dockupAgentThinkWrap = document.getElementById("dockupAgentThinkWrap");
   els.dockupModelLoadingPopup = document.getElementById("dockupModelLoadingPopup");
   els.dockupModelLoadingSize = document.getElementById("dockupModelLoadingSize");
   els.dockupModelLoadingTitle = document.getElementById("dockupModelLoadingTitle");
@@ -1118,6 +1123,24 @@ function normalizeOllamaSettings(settings = {}) {
   };
 }
 
+function normalizeThinkMode(value) {
+  const normalized = String(value || "auto").trim().toLowerCase().replace(/-/g, "_");
+  if (["auto", "think", "no_think"].includes(normalized)) return normalized;
+  if (normalized === "nothink" || normalized === "no think") return "no_think";
+  return "auto";
+}
+
+function thinkModeLabel(mode) {
+  switch (normalizeThinkMode(mode)) {
+    case "think":
+      return "Think on";
+    case "no_think":
+      return "No think";
+    default:
+      return "Auto";
+  }
+}
+
 function readOllamaSettingsFromForm() {
   return normalizeOllamaSettings({
     num_ctx: els.ollamaNumCtx?.value || ollamaState.settings?.num_ctx,
@@ -1130,6 +1153,19 @@ function readOllamaSettingsFromForm() {
     repeat_penalty: els.ollamaRepeatPenalty?.value || ollamaState.settings?.repeat_penalty,
     warmup_tokens: els.ollamaWarmupTokens?.value || ollamaState.settings?.warmup_tokens,
   });
+}
+
+function readOllamaThinkModeFromForm() {
+  return normalizeThinkMode(ollamaState.thinkMode || "auto");
+}
+
+function applyOllamaThinkModeToState(mode) {
+  ollamaState.thinkMode = normalizeThinkMode(mode);
+}
+
+function applyOllamaThinkModeToForm(mode) {
+  const next = normalizeThinkMode(mode);
+  if (els.dockupAgentThinkLabel) els.dockupAgentThinkLabel.textContent = thinkModeLabel(next);
 }
 
 function applyOllamaSettingsToForm(settings) {
@@ -1145,6 +1181,20 @@ function applyOllamaSettingsToForm(settings) {
   if (els.ollamaUseMmap) els.ollamaUseMmap.checked = Boolean(next.use_mmap);
 }
 
+function renderDockupAgentThinkingMenu() {
+  if (!els.dockupAgentThinkMenu) return;
+  els.dockupAgentThinkMenu.innerHTML = ["auto", "think", "no_think"].map((mode) => {
+    const active = normalizeThinkMode(ollamaState.thinkMode) === mode ? " is-active" : "";
+    const label = thinkModeLabel(mode);
+    const description = mode === "auto"
+      ? "Use the model default"
+      : mode === "think"
+        ? "Show reasoning trace"
+        : "Hide reasoning trace";
+    return `<button class="assistant-toolbar-menu-item assistant-think-item${active}" type="button" data-think-mode="${mode}"><span>${escapeHtml(label)}</span><span class="assistant-model-size">${escapeHtml(description)}</span></button>`;
+  }).join("");
+}
+
 function ollamaKeepAliveLabel(value) {
   const numeric = Number(value);
   if (numeric < 0) return "until DockUP closes";
@@ -1155,10 +1205,12 @@ function ollamaKeepAliveLabel(value) {
 function renderOllamaStatus(data) {
   if (!data) return;
   const settings = normalizeOllamaSettings(data.settings || { num_ctx: data.num_ctx });
+  const thinkMode = normalizeThinkMode(data.think_mode || ollamaState.thinkMode || "auto");
   ollamaState = {
     connected: Boolean(data.connected),
     baseUrl: data.base_url || "http://localhost:11434",
     model: data.model || "",
+    thinkMode,
     numCtx: Number(settings.num_ctx || 4096),
     settings,
     models: Array.isArray(data.models) ? data.models : [],
@@ -1168,6 +1220,7 @@ function renderOllamaStatus(data) {
   };
   if (els.ollamaBaseUrl) els.ollamaBaseUrl.value = ollamaState.baseUrl;
   applyOllamaSettingsToForm(settings);
+  applyOllamaThinkModeToForm(thinkMode);
   const job = ollamaState.job || {};
   const loading = Boolean(job.running);
   if (els.ollamaStatusPill) {
@@ -1189,6 +1242,7 @@ function renderOllamaStatus(data) {
     const lines = [];
     lines.push(ollamaState.connected ? `Connected to ${ollamaState.baseUrl}` : `Disconnected: ${ollamaState.error || "No response"}`);
     if (ollamaState.model) lines.push(`Selected model: ${ollamaState.model}`);
+    lines.push(`Thinking: ${thinkModeLabel(thinkMode)}`);
     lines.push(`Context: ${Number(settings.num_ctx || 4096).toLocaleString()} tokens`);
     lines.push(`Batch: ${settings.num_batch} | GPU layers: ${settings.num_gpu < 0 ? "auto" : settings.num_gpu} | Keep alive: ${ollamaKeepAliveLabel(settings.keep_alive)}`);
     lines.push(`Sampling: temp ${settings.temperature}, top_p ${settings.top_p}, repeat ${settings.repeat_penalty}`);
@@ -1197,6 +1251,7 @@ function renderOllamaStatus(data) {
     els.ollamaExtensionLog.textContent = lines.join("\n");
   }
   renderOllamaModels();
+  renderDockupAgentThinkingMenu();
   renderDockupAgentShell();
   updateDockupModelLoadingPopup();
   if (!loading && ollamaStatusPoll) {
@@ -1263,12 +1318,13 @@ function startOllamaStatusPolling() {
 async function connectOllama({ model = "", openAgent = true } = {}) {
   const baseUrl = String(els.ollamaBaseUrl?.value || ollamaState.baseUrl || "http://localhost:11434").trim();
   const settings = readOllamaSettingsFromForm();
+  const thinkMode = readOllamaThinkModeFromForm();
   if (els.connectOllamaBtn) els.connectOllamaBtn.disabled = true;
   try {
     const data = await fetchJSON("/api/extensions/ollama/connect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ base_url: baseUrl, model: model || ollamaState.model || "", settings, warmup: true }),
+      body: JSON.stringify({ base_url: baseUrl, model: model || ollamaState.model || "", settings, think_mode: thinkMode, warmup: true }),
     });
     renderOllamaStatus(data);
     if (data?.job?.running) startOllamaStatusPolling();
@@ -1288,7 +1344,11 @@ function renderDockupAgentShell() {
   if (els.dockupAgentModelLabel) {
     els.dockupAgentModelLabel.textContent = visible ? compactModelName(ollamaState.model || "Ollama") : "Ollama";
   }
+  if (els.dockupAgentThinkLabel) {
+    els.dockupAgentThinkLabel.textContent = thinkModeLabel(ollamaState.thinkMode || "auto");
+  }
   renderDockupAgentModelMenu();
+  renderDockupAgentThinkingMenu();
   updateDockupModelLoadingPopup();
 }
 
@@ -1335,6 +1395,13 @@ function setDockupAgentOpen(next) {
   }
 }
 
+function closeDockupAgentMenus() {
+  if (els.dockupAgentModelMenu) els.dockupAgentModelMenu.hidden = true;
+  if (els.dockupAgentModelBtn) els.dockupAgentModelBtn.setAttribute("aria-expanded", "false");
+  if (els.dockupAgentThinkMenu) els.dockupAgentThinkMenu.hidden = true;
+  if (els.dockupAgentThinkBtn) els.dockupAgentThinkBtn.setAttribute("aria-expanded", "false");
+}
+
 function renderDockupAgentMessages() {
   if (!els.dockupAgentMessages) return;
   if (!dockupAgentMessages.length) {
@@ -1346,6 +1413,15 @@ function renderDockupAgentMessages() {
   els.dockupAgentMessages.innerHTML = dockupAgentMessages.map((msg) => `
     <div class="assistant-message dockup-agent-message ${escapeHtml(msg.role)}">
       <div class="assistant-message-role dockup-agent-message-role">${msg.role === "user" ? "You" : "DockUP AI"}</div>
+      ${msg.thinking && msg.role === "assistant" ? `
+        <details class="dockup-thinking-block" open>
+          <summary class="dockup-thinking-summary">
+            <span>Thinking</span>
+            <span class="dockup-thinking-badge">${escapeHtml(thinkModeLabel(msg.thinkMode || ollamaState.thinkMode || "auto"))}</span>
+          </summary>
+          <div class="dockup-thinking-text">${escapeHtml(msg.thinking)}</div>
+        </details>
+      ` : ""}
       <div class="assistant-message-text dockup-agent-message-text" ${msg.loading ? 'data-loading="true"' : ""}>${escapeHtml(msg.content)}</div>
     </div>
   `).join("");
@@ -1358,7 +1434,7 @@ async function sendDockupAgentMessage() {
   if (els.dockupAgentInput) els.dockupAgentInput.value = "";
   if (els.dockupAgentSend) els.dockupAgentSend.disabled = true;
   dockupAgentMessages.push({ role: "user", content: text });
-  dockupAgentMessages.push({ role: "assistant", content: "", loading: true });
+  dockupAgentMessages.push({ role: "assistant", content: "", thinking: "", thinkMode: readOllamaThinkModeFromForm(), loading: true });
   renderDockupAgentMessages();
   try {
     const history = dockupAgentMessages
@@ -1372,6 +1448,7 @@ async function sendDockupAgentMessage() {
         base_url: ollamaState.baseUrl,
         model: ollamaState.model,
         settings: ollamaState.settings || readOllamaSettingsFromForm(),
+        think_mode: readOllamaThinkModeFromForm(),
         message: text,
         history,
       }),
@@ -1379,12 +1456,16 @@ async function sendDockupAgentMessage() {
     dockupAgentMessages[dockupAgentMessages.length - 1] = {
       role: "assistant",
       content: data.ok ? (data.answer || "No answer returned.") : (data.error || "Ollama request failed."),
+      thinking: data.ok ? (data.thinking || "") : "",
+      thinkMode: data.ok ? (data.think_mode || readOllamaThinkModeFromForm()) : readOllamaThinkModeFromForm(),
       loading: false,
     };
   } catch (err) {
     dockupAgentMessages[dockupAgentMessages.length - 1] = {
       role: "assistant",
       content: err.message || String(err),
+      thinking: "",
+      thinkMode: readOllamaThinkModeFromForm(),
       loading: false,
     };
   } finally {
@@ -6503,9 +6584,30 @@ function bindEvents() {
     els.dockupAgentModelMenu.addEventListener("click", async (event) => {
       const item = event.target.closest(".assistant-model-item");
       if (!item) return;
-      if (els.dockupAgentModelMenu) els.dockupAgentModelMenu.hidden = true;
-      if (els.dockupAgentModelBtn) els.dockupAgentModelBtn.setAttribute("aria-expanded", "false");
+      closeDockupAgentMenus();
       await connectOllama({ model: item.dataset.model || "", openAgent: true });
+    });
+  }
+  if (els.dockupAgentThinkBtn) {
+    els.dockupAgentThinkBtn.addEventListener("click", () => {
+      const next = Boolean(els.dockupAgentThinkMenu?.hidden);
+      if (els.dockupAgentThinkMenu) els.dockupAgentThinkMenu.hidden = !next;
+      els.dockupAgentThinkBtn.setAttribute("aria-expanded", next ? "true" : "false");
+    });
+  }
+  if (els.dockupAgentThinkMenu) {
+    els.dockupAgentThinkMenu.addEventListener("click", (event) => {
+      const item = event.target.closest(".assistant-think-item");
+      if (!item) return;
+      applyOllamaThinkModeToState(item.dataset.thinkMode || "auto");
+      applyOllamaThinkModeToForm(ollamaState.thinkMode);
+      renderDockupAgentThinkingMenu();
+      closeDockupAgentMenus();
+      if (ollamaState.connected) {
+        connectOllama({ openAgent: false }).catch((err) => {
+          if (els.ollamaExtensionLog) els.ollamaExtensionLog.textContent = err.message || String(err);
+        });
+      }
     });
   }
   if (els.dockupAgentOverlay) {
@@ -6525,9 +6627,8 @@ function bindEvents() {
     });
   }
   document.addEventListener("click", (event) => {
-    if (!event.target.closest("#dockupAgentModelWrap")) {
-      if (els.dockupAgentModelMenu) els.dockupAgentModelMenu.hidden = true;
-      if (els.dockupAgentModelBtn) els.dockupAgentModelBtn.setAttribute("aria-expanded", "false");
+    if (!event.target.closest("#dockupAgentModelWrap") && !event.target.closest("#dockupAgentThinkWrap")) {
+      closeDockupAgentMenus();
     }
   });
 
