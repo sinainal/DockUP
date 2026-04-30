@@ -245,7 +245,6 @@ function initElements() {
   els.dockupAgentLauncher = document.getElementById("dockupAgentLauncher");
   els.dockupAgentOverlay = document.getElementById("dockupAgentOverlay");
   els.dockupAgentPanel = document.getElementById("dockupAgentPanel");
-  els.closeDockupAgent = document.getElementById("closeDockupAgent");
   els.dockupAgentModelBtn = document.getElementById("dockupAgentModelBtn");
   els.dockupAgentModelLabel = document.getElementById("dockupAgentModelLabel");
   els.dockupAgentModelMenu = document.getElementById("dockupAgentModelMenu");
@@ -6508,9 +6507,6 @@ function bindEvents() {
       if (els.dockupAgentModelBtn) els.dockupAgentModelBtn.setAttribute("aria-expanded", "false");
       await connectOllama({ model: item.dataset.model || "", openAgent: true });
     });
-  }
-  if (els.closeDockupAgent) {
-    els.closeDockupAgent.addEventListener("click", () => setDockupAgentOpen(false));
   }
   if (els.dockupAgentOverlay) {
     els.dockupAgentOverlay.addEventListener("click", () => setDockupAgentOpen(false));

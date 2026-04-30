@@ -3403,16 +3403,6 @@ input[type="range"]::-webkit-slider-thumb {
   letter-spacing: 0;
 }
 
-.dockup-agent-close {
-  border: 1px solid #d7e2ef;
-  border-radius: 999px;
-  background: #ffffff;
-  color: #475569;
-  padding: 8px 12px;
-  font-weight: 800;
-  cursor: pointer;
-}
-
 .dockup-agent-model-bar {
   border: 1px solid #d7e2ef;
   border-radius: 999px;
