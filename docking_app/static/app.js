@@ -1431,7 +1431,7 @@ function renderDockupAgentMessages() {
       ${msg.thinking && msg.role === "assistant" ? `
         <details class="dockup-thinking-block" open>
           <summary class="dockup-thinking-summary">
-            <span>${msg.streaming && !msg.content ? "Thinking..." : "Thinking"}</span>
+            <span>${msg.streaming && !msg.content ? "Thinking..." : "Thought"}</span>
             <span class="dockup-thinking-badge">${escapeHtml(thinkModeLabel(msg.thinkMode || ollamaState.thinkMode || "auto"))}</span>
           </summary>
           <div class="dockup-thinking-text">${escapeHtml(msg.thinking)}</div>
@@ -1441,6 +1441,78 @@ function renderDockupAgentMessages() {
       ${msg.metrics ? `<div class="dockup-agent-message-meta">${escapeHtml(formatDockupAgentMetrics(msg.metrics))}</div>` : ""}
     </div>
   `).join("");
+  els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
+}
+
+function lastDockupAssistantMessageEl() {
+  if (!els.dockupAgentMessages) return null;
+  const rows = els.dockupAgentMessages.querySelectorAll(".dockup-agent-message.assistant");
+  return rows.length ? rows[rows.length - 1] : null;
+}
+
+function ensureDockupThinkingBlock(messageEl, mode) {
+  let block = messageEl?.querySelector(".dockup-thinking-block");
+  if (block) return block.querySelector(".dockup-thinking-text");
+  block = document.createElement("details");
+  block.className = "dockup-thinking-block";
+  block.open = true;
+
+  const summary = document.createElement("summary");
+  summary.className = "dockup-thinking-summary";
+
+  const label = document.createElement("span");
+  label.textContent = "Thinking...";
+
+  const badge = document.createElement("span");
+  badge.className = "dockup-thinking-badge";
+  badge.textContent = thinkModeLabel(mode || ollamaState.thinkMode || "auto");
+
+  const text = document.createElement("div");
+  text.className = "dockup-thinking-text";
+
+  summary.append(label, badge);
+  block.append(summary, text);
+  const answerEl = messageEl.querySelector(".dockup-agent-message-text");
+  messageEl.insertBefore(block, answerEl);
+  return text;
+}
+
+function appendDockupThinkingDelta(delta, mode) {
+  const messageEl = lastDockupAssistantMessageEl();
+  if (!messageEl || !delta) return;
+  const thinkingEl = ensureDockupThinkingBlock(messageEl, mode);
+  thinkingEl.textContent += delta;
+  els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
+}
+
+function appendDockupAnswerDelta(delta) {
+  const messageEl = lastDockupAssistantMessageEl();
+  if (!messageEl || !delta) return;
+  const answerEl = messageEl.querySelector(".dockup-agent-message-text");
+  if (!answerEl) return;
+  answerEl.removeAttribute("data-loading");
+  answerEl.textContent += delta;
+  els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
+}
+
+function finalizeDockupAssistantDom(metrics) {
+  const messageEl = lastDockupAssistantMessageEl();
+  if (!messageEl) return;
+  messageEl.classList.remove("is-streaming");
+  const thinkingLabel = messageEl.querySelector(".dockup-thinking-summary span:first-child");
+  if (thinkingLabel) thinkingLabel.textContent = "Thought";
+  const answerEl = messageEl.querySelector(".dockup-agent-message-text");
+  if (answerEl) answerEl.removeAttribute("data-loading");
+  const label = formatDockupAgentMetrics(metrics || {});
+  if (label) {
+    let meta = messageEl.querySelector(".dockup-agent-message-meta");
+    if (!meta) {
+      meta = document.createElement("div");
+      meta.className = "dockup-agent-message-meta";
+      messageEl.appendChild(meta);
+    }
+    meta.textContent = label;
+  }
   els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
 }
 
@@ -1465,11 +1537,11 @@ async function readDockupAgentStream(response, onEvent) {
   if (tail) onEvent(JSON.parse(tail));
 }
 
-function updateLastDockupAgentMessage(patch) {
+function updateLastDockupAgentMessage(patch, { render = true } = {}) {
   const index = dockupAgentMessages.length - 1;
   if (index < 0) return;
   dockupAgentMessages[index] = { ...dockupAgentMessages[index], ...patch };
-  renderDockupAgentMessages();
+  if (render) renderDockupAgentMessages();
 }
 
 async function sendDockupAgentMessage() {
@@ -1509,21 +1581,27 @@ async function sendDockupAgentMessage() {
     await readDockupAgentStream(response, (event) => {
       const current = dockupAgentMessages[dockupAgentMessages.length - 1] || {};
       if (event.type === "start") {
-        updateLastDockupAgentMessage({ thinkMode: event.think_mode || current.thinkMode });
+        updateLastDockupAgentMessage({ thinkMode: event.think_mode || current.thinkMode }, { render: false });
       } else if (event.type === "thinking") {
-        updateLastDockupAgentMessage({ thinking: `${current.thinking || ""}${event.delta || ""}` });
+        const nextThinking = `${current.thinking || ""}${event.delta || ""}`;
+        updateLastDockupAgentMessage({ thinking: nextThinking }, { render: false });
+        appendDockupThinkingDelta(event.delta || "", current.thinkMode);
       } else if (event.type === "answer") {
-        updateLastDockupAgentMessage({ content: `${current.content || ""}${event.delta || ""}` });
+        const nextContent = `${current.content || ""}${event.delta || ""}`;
+        updateLastDockupAgentMessage({ content: nextContent }, { render: false });
+        appendDockupAnswerDelta(event.delta || "");
       } else if (event.type === "done") {
         const fallbackSeconds = Math.max(0.001, (performance.now() - startedAt) / 1000);
+        const metrics = {
+          ...(event.metrics || {}),
+          total_seconds: event.metrics?.total_seconds || fallbackSeconds,
+        };
         updateLastDockupAgentMessage({
           loading: false,
           streaming: false,
-          metrics: {
-            ...(event.metrics || {}),
-            total_seconds: event.metrics?.total_seconds || fallbackSeconds,
-          },
-        });
+          metrics,
+        }, { render: false });
+        finalizeDockupAssistantDom(metrics);
       } else if (event.type === "error") {
         updateLastDockupAgentMessage({
           content: event.error || "Ollama request failed.",
@@ -1534,7 +1612,8 @@ async function sendDockupAgentMessage() {
     });
     const last = dockupAgentMessages[dockupAgentMessages.length - 1];
     if (last?.loading) {
-      updateLastDockupAgentMessage({ loading: false, streaming: false });
+      updateLastDockupAgentMessage({ loading: false, streaming: false }, { render: false });
+      finalizeDockupAssistantDom(last.metrics || {});
     }
   } catch (err) {
     dockupAgentMessages[dockupAgentMessages.length - 1] = {
