@@ -785,6 +785,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pdb2pqr_keep_chain", default="")
     parser.add_argument("--mkrec_allow_bad_res", default="1")
     parser.add_argument("--mkrec_default_altloc", default="A")
+    parser.add_argument("--docking_engine", default="vina")
     parser.add_argument("--vina_exhaustiveness", default="32")
     parser.add_argument("--vina_num_modes", default="")
     parser.add_argument("--vina_energy_range", default="")
@@ -801,7 +802,19 @@ def main() -> None:
         raise SystemExit("Multi-Ligand mode currently supports standard docking only.")
 
     python_bin = _resolve_python()
-    vina_bin = _find_executable("vina", env_name="DOCKUP_VINA")
+    docking_engine = str(args.docking_engine or "vina").strip().lower().replace("-", "_")
+    if docking_engine in {"vina_gpu", "vina_gpu2.1", "vina_gpu_2_1", "vina_gpu_21"}:
+        docking_engine = "vina_gpu_21"
+    elif docking_engine not in {"vina", ""}:
+        raise SystemExit(f"Unsupported docking engine for Multi-Ligand mode: {args.docking_engine}")
+    else:
+        docking_engine = "vina"
+
+    vina_bin = (
+        _find_executable("vina-gpu-2.1", env_name="DOCKUP_VINA_GPU_21")
+        if docking_engine == "vina_gpu_21"
+        else _find_executable("vina", env_name="DOCKUP_VINA")
+    )
     mk_prepare_receptor = _find_executable("mk_prepare_receptor.py")
     mk_prepare_ligand = _find_executable("mk_prepare_ligand.py")
     plip_cmd = _discover_plip_command(python_bin)
@@ -876,37 +889,107 @@ def main() -> None:
                 }
             )
 
-        vina_out = work_dir / f"{pdb_id}_out_vina.pdbqt"
-        vina_cmd = [
-            str(vina_bin),
-            "--receptor",
-            str(receptor_pdbqt),
-            "--ligand",
-            str(prepared_ligands[0]["ligand_pdbqt"]),
-            str(prepared_ligands[1]["ligand_pdbqt"]),
-            "--config",
-            str(grid_out),
-            "--exhaustiveness",
-            str(args.vina_exhaustiveness or "32"),
-            "--out",
-            str(vina_out),
-        ]
-        if str(args.vina_num_modes or "").strip():
-            vina_cmd.extend(["--num_modes", str(args.vina_num_modes).strip()])
-        if str(args.vina_energy_range or "").strip():
-            vina_cmd.extend(["--energy_range", str(args.vina_energy_range).strip()])
-        if str(args.vina_cpu or "").strip():
-            vina_cmd.extend(["--cpu", str(args.vina_cpu).strip()])
-        if str(args.vina_seed or "").strip():
-            vina_cmd.extend(["--seed", str(args.vina_seed).strip()])
-        vina_completed = _run_command(vina_cmd, cwd=work_dir, capture_output=True)
-        vina_stdout = str(vina_completed.stdout or "")
-        modes = _parse_vina_modes(vina_stdout)
-        best_affinity = float(modes[0]["affinity_kcal_mol"]) if modes else None
+        vina_output_paths: list[Path] = []
+        vina_log_paths: list[Path] = []
+        if docking_engine == "vina_gpu_21":
+            opencl_binary_path = (
+                os.environ.get("DOCKUP_VINA_GPU_21_OPENCL_BINARY_PATH")
+                or os.environ.get("VINA_GPU_21_OPENCL_BINARY_PATH")
+                or str(vina_bin.parent.parent / "dockup_extensions" / "vina_gpu_21" / "src" / "AutoDock-Vina-GPU-2.1")
+            )
+            if not Path(opencl_binary_path).exists():
+                raise RuntimeError(f"Vina-GPU 2.1 OpenCL binary path not found: {opencl_binary_path}")
+            all_modes: list[dict[str, float | int]] = []
+            first_mode_affinities: list[float] = []
+            for index, ligand_meta in enumerate(prepared_ligands, start=1):
+                vina_out = work_dir / f"{pdb_id}_out_vina_ligand_{index}.pdbqt"
+                vina_log = work_dir / f"{pdb_id}_vina_gpu_ligand_{index}.log"
+                vina_output_paths.append(vina_out)
+                vina_log_paths.append(vina_log)
+                vina_cmd = [
+                    str(vina_bin),
+                    "--receptor",
+                    str(receptor_pdbqt),
+                    "--ligand",
+                    str(ligand_meta["ligand_pdbqt"]),
+                    "--opencl_binary_path",
+                    opencl_binary_path,
+                    "--center_x",
+                    f"{grid['center_x']:.3f}",
+                    "--center_y",
+                    f"{grid['center_y']:.3f}",
+                    "--center_z",
+                    f"{grid['center_z']:.3f}",
+                    "--size_x",
+                    f"{grid['size_x']:.3f}",
+                    "--size_y",
+                    f"{grid['size_y']:.3f}",
+                    "--size_z",
+                    f"{grid['size_z']:.3f}",
+                    "--thread",
+                    os.environ.get("DOCKUP_VINA_GPU_21_THREADS", "8000"),
+                    "--out",
+                    str(vina_out),
+                    "--log",
+                    str(vina_log),
+                ]
+                if str(args.vina_num_modes or "").strip():
+                    vina_cmd.extend(["--num_modes", str(args.vina_num_modes).strip()])
+                if str(args.vina_energy_range or "").strip():
+                    vina_cmd.extend(["--energy_range", str(args.vina_energy_range).strip()])
+                if str(args.vina_seed or "").strip():
+                    vina_cmd.extend(["--seed", str(args.vina_seed).strip()])
+                vina_completed = _run_command(vina_cmd, cwd=work_dir, capture_output=True)
+                ligand_modes = _parse_vina_modes(str(vina_completed.stdout or ""))
+                if ligand_modes:
+                    first_mode_affinities.append(float(ligand_modes[0]["affinity_kcal_mol"]))
+                for mode in ligand_modes:
+                    mode_row = dict(mode)
+                    mode_row["ligand_index"] = index
+                    all_modes.append(mode_row)
+            modes = all_modes
+            best_affinity = min(first_mode_affinities) if first_mode_affinities else None
+        else:
+            vina_out = work_dir / f"{pdb_id}_out_vina.pdbqt"
+            vina_output_paths.append(vina_out)
+            vina_cmd = [
+                str(vina_bin),
+                "--receptor",
+                str(receptor_pdbqt),
+                "--ligand",
+                str(prepared_ligands[0]["ligand_pdbqt"]),
+                str(prepared_ligands[1]["ligand_pdbqt"]),
+                "--config",
+                str(grid_out),
+                "--exhaustiveness",
+                str(args.vina_exhaustiveness or "32"),
+                "--out",
+                str(vina_out),
+            ]
+            if str(args.vina_num_modes or "").strip():
+                vina_cmd.extend(["--num_modes", str(args.vina_num_modes).strip()])
+            if str(args.vina_energy_range or "").strip():
+                vina_cmd.extend(["--energy_range", str(args.vina_energy_range).strip()])
+            if str(args.vina_cpu or "").strip():
+                vina_cmd.extend(["--cpu", str(args.vina_cpu).strip()])
+            if str(args.vina_seed or "").strip():
+                vina_cmd.extend(["--seed", str(args.vina_seed).strip()])
+            vina_completed = _run_command(vina_cmd, cwd=work_dir, capture_output=True)
+            vina_stdout = str(vina_completed.stdout or "")
+            modes = _parse_vina_modes(vina_stdout)
+            best_affinity = float(modes[0]["affinity_kcal_mol"]) if modes else None
 
-        blocks = _split_first_model(vina_out)
-        if len(blocks) < 2:
-            raise RuntimeError("Vina multi-ligand output did not contain two ligand blocks in the first model.")
+        if docking_engine == "vina_gpu_21":
+            blocks = []
+            for vina_output_path in vina_output_paths:
+                ligand_blocks = _split_first_model(vina_output_path)
+                if not ligand_blocks:
+                    raise RuntimeError(f"Vina-GPU output did not contain a ligand model: {vina_output_path}")
+                blocks.append(ligand_blocks[0])
+        else:
+            blocks = _split_first_model(vina_output_paths[0])
+            if len(blocks) < 2:
+                raise RuntimeError("Vina multi-ligand output did not contain two ligand blocks in the first model.")
         pose_paths: list[Path] = []
         for index, block in enumerate(blocks[:2], start=1):
             pose_path = work_dir / f"{pdb_id}_pose_{index}.pdb"
@@ -935,7 +1018,7 @@ def main() -> None:
             raise RuntimeError(f"PLIP did not produce report.xml under {plip_dir}")
 
         (out_dir / "plip").mkdir(parents=True, exist_ok=True)
-        for path in [receptor_pdbqt, vina_out, grid_out, rec_raw, complex_pdb]:
+        for path in [receptor_pdbqt, *vina_output_paths, *vina_log_paths, grid_out, rec_raw, complex_pdb]:
             shutil.copy2(path, out_dir / path.name)
         shutil.copy2(report_xml, out_dir / "plip" / "report.xml")
 

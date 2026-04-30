@@ -22,6 +22,7 @@ class BasicFlowArtifacts:
     ligand_name: str = ""
     ligand_names: list[str] = field(default_factory=list)
     generated_file_name: str = ""
+    generated_file_names: list[str] = field(default_factory=list)
     out_root: Path | None = None
 
 
@@ -222,9 +223,12 @@ def cleanup_basic_flow(api: ApiClient, artifacts: BasicFlowArtifacts) -> None:
             api.post("/api/ligands/delete", {"name": artifacts.ligand_name})
         except Exception:
             pass
-    if artifacts.generated_file_name:
+    generated_to_delete = list(artifacts.generated_file_names or [])
+    if artifacts.generated_file_name and artifacts.generated_file_name not in generated_to_delete:
+        generated_to_delete.append(artifacts.generated_file_name)
+    if generated_to_delete:
         try:
-            api.post("/ligand-3d/api/files/delete", {"file_names": [artifacts.generated_file_name]})
+            api.post("/ligand-3d/api/files/delete", {"file_names": generated_to_delete})
         except Exception:
             pass
     if artifacts.out_root and artifacts.out_root.exists():
@@ -250,6 +254,8 @@ def provision_single_docking_run(
     stamp: int,
     timeout_sec: int,
     interval_sec: float,
+    docking_config: dict[str, Any] | None = None,
+    receptor_id: str = "6CM4",
 ) -> BasicFlowArtifacts:
     artifacts = BasicFlowArtifacts()
 
@@ -263,11 +269,12 @@ def provision_single_docking_run(
     clear_loaded_receptors(api)
     api.post("/api/ligands/active/clear", {})
 
-    load_resp = api.assert_ok(api.post("/api/receptors/load", {"pdb_ids": "6CM4"}), where="POST /api/receptors/load")
+    receptor_id = receptor_id.strip().upper()
+    load_resp = api.assert_ok(api.post("/api/receptors/load", {"pdb_ids": receptor_id}), where="POST /api/receptors/load")
     summary = list(load_resp.get("summary") or [])
-    receptor_row = next((row for row in summary if str(row.get("pdb_id") or "").upper() == "6CM4"), None)
-    assert receptor_row is not None, f"6CM4 not found in receptor summary: {summary}"
-    receptor_id = str(receptor_row.get("pdb_id") or "6CM4")
+    receptor_row = next((row for row in summary if str(row.get("pdb_id") or "").upper() == receptor_id), None)
+    assert receptor_row is not None, f"{receptor_id} not found in receptor summary: {summary}"
+    receptor_id = str(receptor_row.get("pdb_id") or receptor_id)
     artifacts.receptor_id = receptor_id
 
     lig_rows_resp = api.assert_ok(
@@ -306,6 +313,7 @@ def provision_single_docking_run(
     converted_name = str(convert.get("name") or "").strip()
     assert converted_name, f"convert3d returned empty name: {convert}"
     artifacts.generated_file_name = converted_name
+    artifacts.generated_file_names = [converted_name]
 
     add = api.assert_ok(
         api.post("/ligand-3d/api/ligands/add", {"file_names": [converted_name]}),
@@ -343,7 +351,7 @@ def provision_single_docking_run(
                 "selection_map": {receptor_id: {"chain": native_chain, "ligand_resname": dock_ligand_name}},
                 "grid_data": {receptor_id: grid},
                 "mode": "Docking",
-                "docking_config": {},
+                "docking_config": docking_config or {},
             },
         ),
         where="POST /api/queue/build",
@@ -377,6 +385,7 @@ def provision_multi_ligand_run(
     stamp: int,
     timeout_sec: int,
     interval_sec: float,
+    docking_config: dict[str, Any] | None = None,
 ) -> BasicFlowArtifacts:
     artifacts = BasicFlowArtifacts()
     shared_root = Path(__file__).resolve().parents[3]
@@ -480,7 +489,157 @@ def provision_multi_ligand_run(
                     }
                 },
                 "mode": "Multi-Ligand",
-                "docking_config": {"docking_mode": "standard", "vina_exhaustiveness": 8, "vina_num_modes": 5},
+                "docking_config": {
+                    "docking_mode": "standard",
+                    "vina_exhaustiveness": 8,
+                    "vina_num_modes": 5,
+                    **(docking_config or {}),
+                },
+            },
+        ),
+        where="POST /api/queue/build",
+    )
+    added = int((queue.get("debug") or {}).get("new_jobs_added") or 0)
+    assert added == 1, f"Expected exactly 1 multi-ligand queue job, got {added}. debug={queue.get('debug')}"
+
+    started = api.assert_ok(
+        api.post("/api/run/start", {"is_test_mode": False}, timeout=60),
+        where="POST /api/run/start",
+    )
+    assert str(started.get("status") or "") in {"running", "done"}, f"Unexpected run/start response: {started}"
+
+    final_status = wait_run_finished(api, timeout_sec=timeout_sec, interval_sec=interval_sec)
+    assert str(final_status.get("status") or "") == "done", f"Run did not finish successfully: {final_status}"
+    assert int(final_status.get("returncode") or 0) == 0, f"Non-zero return code: {final_status}"
+    assert int(final_status.get("completed_runs") or 0) >= 1, f"No completed runs: {final_status}"
+
+    out_root = str(final_status.get("out_root") or "").strip()
+    assert out_root, f"Missing out_root in run status: {final_status}"
+    out_root_path = Path(out_root)
+    artifacts.out_root = out_root_path
+    assert out_root_path.exists(), f"out_root does not exist: {out_root_path}"
+    assert list(out_root_path.rglob("results.json")), f"No results.json under out_root: {out_root_path}"
+    return artifacts
+
+
+def provision_generated_multi_ligand_run(
+    api: ApiClient,
+    *,
+    stamp: int,
+    timeout_sec: int,
+    interval_sec: float,
+    docking_config: dict[str, Any] | None = None,
+    receptor_id: str = "6CM4",
+) -> BasicFlowArtifacts:
+    artifacts = BasicFlowArtifacts()
+
+    api.assert_ok(api.post("/api/mode", {"mode": "Multi-Ligand"}), where="POST /api/mode")
+    status = api.assert_ok(api.get("/api/run/status"), where="GET /api/run/status")
+    if str(status.get("status") or "idle") in {"running", "stopping"}:
+        api.post("/api/run/stop", {})
+        wait_run_finished(api, timeout_sec=120, interval_sec=max(1.0, interval_sec))
+
+    clear_queue(api)
+    clear_loaded_receptors(api)
+    api.post("/api/ligands/active/clear", {})
+
+    receptor_id = receptor_id.strip().upper()
+    load_resp = api.assert_ok(api.post("/api/receptors/load", {"pdb_ids": receptor_id}), where="POST /api/receptors/load")
+    summary = list(load_resp.get("summary") or [])
+    receptor_row = next((row for row in summary if str(row.get("pdb_id") or "").upper() == receptor_id), None)
+    assert receptor_row is not None, f"{receptor_id} not found in receptor summary: {summary}"
+    artifacts.receptor_id = receptor_id
+
+    lig_rows_resp = api.assert_ok(
+        api.get(f"/api/receptors/{receptor_id}/ligands"),
+        where="GET /api/receptors/{id}/ligands",
+    )
+    ligand_rows = list(lig_rows_resp.get("rows") or [])
+    native_ligand = choose_native_ligand_row(ligand_rows)
+    native_label = str(native_ligand.get("ligand") or "").strip()
+    native_parts = [p for p in native_label.split() if p]
+    assert len(native_parts) >= 2, f"Unexpected native ligand label: {native_label}"
+    native_resname = native_parts[0]
+    native_resno = native_parts[1]
+    native_chain = str(native_ligand.get("chain") or "all").strip() or "all"
+
+    detail = api.assert_ok(api.get(f"/api/receptors/{receptor_id}"), where="GET /api/receptors/{id}")
+    pdb_text = str(detail.get("pdb_text") or "").strip()
+    assert pdb_text, "Receptor detail returned empty pdb_text."
+    grid = compute_grid_around_native_ligand(
+        pdb_text,
+        native_resname,
+        native_resno,
+        native_chain,
+        cutoff=5.0,
+        fixed_size=24.0,
+    )
+
+    generated_names: list[str] = []
+    for index, (smiles, name) in enumerate((("C=C", "ethylene"), ("CCO", "ethanol")), start=1):
+        convert = api.assert_ok(
+            api.post(
+                "/ligand-3d/api/convert3d",
+                {"smiles": smiles, "name": name, "file_stem": f"e2e_mlig_{stamp}_{index}"},
+                timeout=180,
+            ),
+            where="POST /ligand-3d/api/convert3d",
+        )
+        converted_name = str(convert.get("name") or "").strip()
+        assert converted_name, f"convert3d returned empty name: {convert}"
+        generated_names.append(converted_name)
+    artifacts.generated_file_name = generated_names[0]
+    artifacts.generated_file_names = generated_names
+
+    add = api.assert_ok(
+        api.post("/ligand-3d/api/ligands/add", {"file_names": generated_names}),
+        where="POST /ligand-3d/api/ligands/add",
+    )
+    copied = [str(item or "").strip() for item in list(add.get("copied") or []) if str(item or "").strip()]
+    duplicates = [str(item or "").strip() for item in list(add.get("duplicates") or []) if str(item or "").strip()]
+    ligand_names = copied or duplicates
+    assert len(ligand_names) == 2, f"Expected two DockUP ligands after add: {add}"
+    artifacts.ligand_names = ligand_names
+    artifacts.ligand_name = " + ".join(ligand_names)
+
+    active = api.assert_ok(
+        api.post("/api/ligands/active/add", {"names": ligand_names}),
+        where="POST /api/ligands/active/add",
+    )
+    assert set(ligand_names).issubset(set(active.get("active_ligands") or [])), f"Ligands not active: {active}"
+
+    api.assert_ok(
+        api.post(
+            "/api/ligands/select",
+            {"pdb_id": receptor_id, "chain": native_chain, "ligands": ligand_names},
+        ),
+        where="POST /api/ligands/select",
+    )
+
+    out_root_name = f"e2e_vina_gpu_multi_{stamp}"
+    queue = api.assert_ok(
+        api.post(
+            "/api/queue/build",
+            {
+                "run_count": 1,
+                "padding": 0.0,
+                "out_root_name": out_root_name,
+                "out_root_path": "data/dock",
+                "selection_map": {
+                    receptor_id: {
+                        "chain": native_chain,
+                        "ligand_resname": artifacts.ligand_name,
+                        "ligand_resnames": ligand_names,
+                    }
+                },
+                "grid_data": {receptor_id: grid},
+                "mode": "Multi-Ligand",
+                "docking_config": {
+                    "docking_mode": "standard",
+                    "vina_exhaustiveness": 8,
+                    "vina_num_modes": 5,
+                    **(docking_config or {}),
+                },
             },
         ),
         where="POST /api/queue/build",

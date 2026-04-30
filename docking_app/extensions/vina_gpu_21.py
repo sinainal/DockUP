@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import threading
 import time
@@ -20,20 +21,18 @@ REPO_URL = "https://github.com/DeltaGroupNJUPT/Vina-GPU-2.1.git"
 BOOST_VERSION = "1.84.0"
 BOOST_DIRNAME = "boost_1_84_0"
 BOOST_TARBALL_URL = "https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.gz"
+OPENCL_HEADERS_TARBALL_URL = "https://github.com/KhronosGroup/OpenCL-Headers/archive/refs/heads/main.tar.gz"
 
 VENV_DIR = BASE / ".venv"
 EXTENSIONS_DIR = VENV_DIR / "dockup_extensions"
 ROOT_DIR = EXTENSIONS_DIR / EXTENSION_ID
+DEPS_DIR = ROOT_DIR / "deps"
+OPENCL_HEADERS_DIR = DEPS_DIR / "OpenCL-Headers"
 SRC_DIR = ROOT_DIR / "src" / "AutoDock-Vina-GPU-2.1"
 BINARY_PATH = SRC_DIR / "AutoDock-Vina-GPU-2-1"
 LAUNCHER_PATH = VENV_DIR / "bin" / "vina-gpu-2.1"
 STATE_PATH = ROOT_DIR / "state.json"
 LOG_PATH = ROOT_DIR / "install.log"
-
-LOCAL_VENDOR_CANDIDATES = (
-    BASE.parent / "gpu_tests" / "vendor" / "Vina-GPU-2.1" / "AutoDock-Vina-GPU-2.1",
-    BASE.parent / "gpu_tests" / "vina gpu 2.1" / "AutoDock-Vina-GPU-2.1",
-)
 
 _LOCK = threading.Lock()
 _JOB: dict[str, Any] = {
@@ -124,10 +123,20 @@ def _find_first_existing(paths: list[Path] | tuple[Path, ...]) -> Path | None:
     return None
 
 
+def _env_paths(name: str) -> tuple[Path, ...]:
+    raw = os.environ.get(name, "")
+    return tuple(Path(item).expanduser() for item in raw.split(os.pathsep) if item.strip())
+
+
+def _local_source_path() -> Path | None:
+    paths = _env_paths("DOCKUP_VINA_GPU_21_LOCAL_SOURCE")
+    return paths[0] if paths else None
+
+
 def _boost_source_candidates() -> tuple[Path, ...]:
     return (
+        *_env_paths("DOCKUP_VINA_GPU_21_BOOST_ROOT"),
         ROOT_DIR / "deps" / BOOST_DIRNAME,
-        BASE.parent / "gpu_tests" / BOOST_DIRNAME,
         BASE.parent / BOOST_DIRNAME,
         Path("/usr/local/src") / BOOST_DIRNAME,
         Path("/opt") / BOOST_DIRNAME,
@@ -167,14 +176,22 @@ def _detect_gpu() -> tuple[bool, str]:
 
 def _dependency_roots() -> tuple[Path, ...]:
     return (
+        *_env_paths("DOCKUP_VINA_GPU_21_DEP_ROOTS"),
         Path("/usr"),
         Path("/usr/local"),
-        BASE.parent / "gpu_tests" / "toolchain" / "root" / "usr",
     )
 
 
 def _include_roots() -> tuple[Path, ...]:
     return tuple(root / "include" for root in _dependency_roots())
+
+
+def _opencl_include_roots() -> tuple[Path, ...]:
+    return (
+        *_env_paths("DOCKUP_VINA_GPU_21_OPENCL_HEADERS"),
+        *_include_roots(),
+        OPENCL_HEADERS_DIR,
+    )
 
 
 def _lib_roots() -> tuple[Path, ...]:
@@ -189,24 +206,25 @@ def _requirement_snapshot() -> tuple[list[Requirement], dict[str, str]]:
     free_bytes = shutil.disk_usage(str(VENV_DIR if VENV_DIR.exists() else BASE)).free
     boost_include = _find_first_existing([root / "boost" for root in _include_roots()])
     boost_root = _find_first_existing([path for path in _boost_source_candidates() if _is_boost_root(path)])
-    cl_header = _find_first_existing([root / "CL" / "cl.h" for root in _include_roots()])
+    cl_header = _find_first_existing([root / "CL" / "cl.h" for root in _opencl_include_roots()])
     opencl_lib = _find_library(("libOpenCL.so", "libOpenCL.so.*"), _lib_roots())
     boost_program_options = _find_library(("libboost_program_options.so", "libboost_program_options.so.*", "libboost_program_options.a"), _lib_roots())
     boost_system = _find_library(("libboost_system.so", "libboost_system.so.*", "libboost_system.a"), _lib_roots())
-    source = _find_first_existing(LOCAL_VENDOR_CANDIDATES) if os.environ.get("DOCKUP_VINA_GPU_21_LOCAL_SOURCE") else None
+    source = _local_source_path()
+    source_ok = source is not None and source.exists()
 
     reqs = [
         Requirement("venv", "DockUP virtualenv", VENV_DIR.exists(), str(VENV_DIR) if VENV_DIR.exists() else "Missing .venv"),
         Requirement("gpu", "Detected GPU", gpu_ok, gpu_detail, required=False),
         Requirement("opencl_runtime", "OpenCL runtime", opencl_lib is not None, str(opencl_lib) if opencl_lib else "libOpenCL.so not found"),
-        Requirement("opencl_headers", "OpenCL headers", cl_header is not None, str(cl_header) if cl_header else "CL/cl.h not found"),
+        Requirement("opencl_headers", "OpenCL headers", True, str(cl_header) if cl_header else "Will download Khronos OpenCL headers into the extension cache"),
         Requirement("compiler", "C/C++ compiler", bool(_which("gcc") and _which("g++")), f"gcc={_which('gcc') or 'missing'}; g++={_which('g++') or 'missing'}"),
         Requirement("make", "make", bool(_which("make")), _which("make") or "make not found"),
         Requirement("boost_source", "Boost source/build root", _is_boost_root(boost_root) or bool(_which("curl") or _which("wget") or True), str(boost_root) if boost_root else f"Will download Boost {BOOST_VERSION} into the extension cache"),
         Requirement("boost_headers", "System Boost headers", boost_include is not None or _is_boost_root(boost_root), str(boost_include or boost_root) if (boost_include or boost_root) else "Will use extension-managed Boost", required=False),
         Requirement("boost_libs", "System Boost libraries", boost_program_options is not None and boost_system is not None or _is_boost_root(boost_root), f"program_options={boost_program_options or 'extension build'}; system={boost_system or 'extension build'}", required=False),
         Requirement("disk", "Free disk", free_bytes >= 2 * 1024**3, f"{_human_bytes(free_bytes)} available"),
-        Requirement("source", "Vina-GPU source", source is not None or bool(_which("git")), str(source) if source else "Will clone official repository" if _which("git") else "No local source and git missing"),
+        Requirement("source", "Vina-GPU source", source_ok or bool(_which("git")), str(source) if source_ok else "Will clone official repository" if _which("git") else "No local source and git missing"),
     ]
     hints = {
         "boost_include": str(boost_include.parent) if boost_include else "",
@@ -214,7 +232,7 @@ def _requirement_snapshot() -> tuple[list[Requirement], dict[str, str]]:
         "opencl_lib_dir": str(opencl_lib.parent) if opencl_lib else "",
         "boost_lib_dir": str(boost_program_options.parent) if boost_program_options else "",
         "boost_root": str(boost_root) if boost_root else "",
-        "local_source": str(source) if source else "",
+        "local_source": str(source) if source_ok else "",
     }
     return reqs, hints
 
@@ -323,8 +341,36 @@ def _ensure_boost_root() -> Path:
     return boost_root
 
 
+def _ensure_opencl_headers() -> Path:
+    existing = _find_first_existing([root / "CL" / "cl.h" for root in _opencl_include_roots()])
+    if existing:
+        include_root = existing.parent.parent
+        _append_log(f"Using OpenCL headers: {include_root}")
+        return include_root
+
+    DEPS_DIR.mkdir(parents=True, exist_ok=True)
+    tarball = DEPS_DIR / "opencl_headers.tar.gz"
+    if not tarball.exists():
+        _append_log(f"Downloading OpenCL headers ({OPENCL_HEADERS_TARBALL_URL})")
+        urllib.request.urlretrieve(OPENCL_HEADERS_TARBALL_URL, tarball)
+
+    with tempfile.TemporaryDirectory(prefix="dockup_opencl_headers_") as tmp_name:
+        tmp = Path(tmp_name)
+        with tarfile.open(tarball, "r:gz") as archive:
+            archive.extractall(tmp, filter="data")
+        source = next((path.parent.parent for path in tmp.rglob("CL/cl.h")), None)
+        if source is None:
+            raise RuntimeError("OpenCL headers archive did not contain CL/cl.h")
+        if OPENCL_HEADERS_DIR.exists():
+            shutil.rmtree(OPENCL_HEADERS_DIR)
+        shutil.copytree(source, OPENCL_HEADERS_DIR)
+
+    _append_log(f"Installed OpenCL headers: {OPENCL_HEADERS_DIR}")
+    return OPENCL_HEADERS_DIR
+
+
 def _prepare_opencl_root(tmp: Path, hints: dict[str, str]) -> Path:
-    include_root = Path(hints["opencl_include"])
+    include_root = Path(hints["opencl_include"]) if hints.get("opencl_include") else _ensure_opencl_headers()
     lib_dir = Path(hints["opencl_lib_dir"])
     opencl_root = tmp / "opencl_root"
     (opencl_root / "include").mkdir(parents=True, exist_ok=True)

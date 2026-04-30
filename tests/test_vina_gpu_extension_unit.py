@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
@@ -97,6 +98,38 @@ def test_extension_status_route_available_in_app() -> None:
     payload = response.json()
     assert payload["id"] == "vina_gpu_21"
     assert isinstance(payload.get("requirements"), list)
+
+
+def test_vina_gpu_extension_has_no_hardcoded_gpu_test_sandbox() -> None:
+    from docking_app.extensions import vina_gpu_21
+
+    source = inspect.getsource(vina_gpu_21)
+
+    assert "gpu_tests" not in source
+
+
+def test_vina_gpu_local_source_is_explicit_env_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from docking_app.extensions import vina_gpu_21
+
+    monkeypatch.delenv("DOCKUP_VINA_GPU_21_LOCAL_SOURCE", raising=False)
+    assert vina_gpu_21._local_source_path() is None
+
+    local_source = tmp_path / "AutoDock-Vina-GPU-2.1"
+    monkeypatch.setenv("DOCKUP_VINA_GPU_21_LOCAL_SOURCE", str(local_source))
+
+    assert vina_gpu_21._local_source_path() == local_source
+
+
+def test_vina_gpu_opencl_headers_can_be_extension_managed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from docking_app.extensions import vina_gpu_21
+
+    header_root = tmp_path / "headers"
+    (header_root / "CL").mkdir(parents=True)
+    (header_root / "CL" / "cl.h").write_text("/* test */\n", encoding="utf-8")
+    monkeypatch.setenv("DOCKUP_VINA_GPU_21_OPENCL_HEADERS", str(header_root))
+
+    assert header_root in vina_gpu_21._opencl_include_roots()
+    assert vina_gpu_21._ensure_opencl_headers() == header_root
 
 
 def test_extension_uninstall_route_resets_default_engine(monkeypatch: pytest.MonkeyPatch) -> None:
