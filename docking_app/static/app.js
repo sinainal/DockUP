@@ -254,6 +254,11 @@ function initElements() {
   els.dockupAgentThinkLabel = document.getElementById("dockupAgentThinkLabel");
   els.dockupAgentThinkMenu = document.getElementById("dockupAgentThinkMenu");
   els.dockupAgentThinkWrap = document.getElementById("dockupAgentThinkWrap");
+  els.dockupAgentContextMeter = document.getElementById("dockupAgentContextMeter");
+  els.dockupAgentContextDot = document.getElementById("dockupAgentContextDot");
+  els.dockupAgentContextLabel = document.getElementById("dockupAgentContextLabel");
+  els.dockupAgentContextPercent = document.getElementById("dockupAgentContextPercent");
+  els.dockupAgentContextTokens = document.getElementById("dockupAgentContextTokens");
   els.dockupModelLoadingPopup = document.getElementById("dockupModelLoadingPopup");
   els.dockupModelLoadingSize = document.getElementById("dockupModelLoadingSize");
   els.dockupModelLoadingTitle = document.getElementById("dockupModelLoadingTitle");
@@ -1349,6 +1354,7 @@ function renderDockupAgentShell() {
   }
   renderDockupAgentModelMenu();
   renderDockupAgentThinkingMenu();
+  renderDockupAgentContextMeter();
   updateDockupModelLoadingPopup();
 }
 
@@ -1417,11 +1423,43 @@ function formatDockupAgentMetrics(metrics = {}) {
   return parts.join(" · ");
 }
 
+function estimateDockupAgentTokens(text) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return 0;
+  return Math.ceil(normalized.length / 4);
+}
+
+function dockupAgentContextUsage() {
+  const windowTokens = Math.max(1, Number(ollamaState.settings?.num_ctx || ollamaState.numCtx || 4096));
+  const historyText = dockupAgentMessages
+    .slice(-8)
+    .map((msg) => `${msg.role || ""}: ${msg.content || ""}\n${msg.thinking || ""}`)
+    .join("\n");
+  const inputText = String(els.dockupAgentInput?.value || "");
+  const systemReserve = 320;
+  const usedTokens = Math.min(windowTokens, estimateDockupAgentTokens(historyText) + estimateDockupAgentTokens(inputText) + systemReserve);
+  const percent = Math.min(100, Math.round((usedTokens / windowTokens) * 100));
+  return { usedTokens, windowTokens, percent };
+}
+
+function renderDockupAgentContextMeter() {
+  if (!els.dockupAgentContextMeter) return;
+  const usage = dockupAgentContextUsage();
+  const usedLabel = usage.usedTokens.toLocaleString();
+  const windowLabel = usage.windowTokens.toLocaleString();
+  els.dockupAgentContextLabel.textContent = `${usage.percent}%`;
+  els.dockupAgentContextPercent.textContent = `${usage.percent}% full`;
+  els.dockupAgentContextTokens.textContent = `${usedLabel} / ${windowLabel} tokens used`;
+  els.dockupAgentContextMeter.classList.toggle("is-warm", usage.percent >= 70 && usage.percent < 90);
+  els.dockupAgentContextMeter.classList.toggle("is-hot", usage.percent >= 90);
+}
+
 function renderDockupAgentMessages() {
   if (!els.dockupAgentMessages) return;
   if (!dockupAgentMessages.length) {
     els.dockupAgentPanel?.classList.add("is-pristine");
     els.dockupAgentMessages.innerHTML = "";
+    renderDockupAgentContextMeter();
     return;
   }
   els.dockupAgentPanel?.classList.remove("is-pristine");
@@ -1438,10 +1476,12 @@ function renderDockupAgentMessages() {
         </details>
       ` : ""}
       <div class="assistant-message-text dockup-agent-message-text" ${msg.loading && !msg.content ? 'data-loading="true"' : ""}>${escapeHtml(msg.content)}</div>
+      ${msg.status ? `<div class="dockup-agent-message-status">${escapeHtml(msg.status)}</div>` : ""}
       ${msg.metrics ? `<div class="dockup-agent-message-meta">${escapeHtml(formatDockupAgentMetrics(msg.metrics))}</div>` : ""}
     </div>
   `).join("");
   els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
+  renderDockupAgentContextMeter();
 }
 
 function lastDockupAssistantMessageEl() {
@@ -1503,6 +1543,8 @@ function finalizeDockupAssistantDom(metrics) {
   if (thinkingLabel) thinkingLabel.textContent = "Thought";
   const answerEl = messageEl.querySelector(".dockup-agent-message-text");
   if (answerEl) answerEl.removeAttribute("data-loading");
+  const statusEl = messageEl.querySelector(".dockup-agent-message-status");
+  if (statusEl) statusEl.remove();
   const label = formatDockupAgentMetrics(metrics || {});
   if (label) {
     let meta = messageEl.querySelector(".dockup-agent-message-meta");
@@ -1513,6 +1555,29 @@ function finalizeDockupAssistantDom(metrics) {
     }
     meta.textContent = label;
   }
+  els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
+  renderDockupAgentContextMeter();
+}
+
+function setDockupAssistantStatus(text) {
+  const messageEl = lastDockupAssistantMessageEl();
+  if (!messageEl) return;
+  let statusEl = messageEl.querySelector(".dockup-agent-message-status");
+  if (!text) {
+    if (statusEl) statusEl.remove();
+    return;
+  }
+  if (!statusEl) {
+    statusEl = document.createElement("div");
+    statusEl.className = "dockup-agent-message-status";
+    const answerEl = messageEl.querySelector(".dockup-agent-message-text");
+    if (answerEl) {
+      messageEl.insertBefore(statusEl, answerEl.nextSibling);
+    } else {
+      messageEl.appendChild(statusEl);
+    }
+  }
+  statusEl.textContent = text;
   els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
 }
 
@@ -1560,6 +1625,33 @@ async function sendDockupAgentMessage() {
   });
   renderDockupAgentMessages();
   const startedAt = performance.now();
+  const controller = new AbortController();
+  const timers = [];
+  const clearStreamTimers = () => {
+    while (timers.length) clearTimeout(timers.pop());
+  };
+  const scheduleWaitingHints = () => {
+    clearStreamTimers();
+    timers.push(setTimeout(() => {
+      const current = dockupAgentMessages[dockupAgentMessages.length - 1] || {};
+      if (current.loading && !current.content && !current.thinking) {
+        updateLastDockupAgentMessage({ status: "Waiting for Ollama..." }, { render: false });
+        setDockupAssistantStatus("Waiting for Ollama...");
+      }
+    }, 3500));
+    timers.push(setTimeout(() => {
+      const current = dockupAgentMessages[dockupAgentMessages.length - 1] || {};
+      if (current.loading && !current.content && !current.thinking) {
+        updateLastDockupAgentMessage({ status: "Still waiting for the first token..." }, { render: false });
+        setDockupAssistantStatus("Still waiting for the first token...");
+      }
+    }, 15000));
+    timers.push(setTimeout(() => {
+      const current = dockupAgentMessages[dockupAgentMessages.length - 1] || {};
+      if (current.loading && !current.content && !current.thinking) controller.abort();
+    }, 180000));
+  };
+  scheduleWaitingHints();
   try {
     const history = dockupAgentMessages
       .slice(0, -1)
@@ -1567,6 +1659,7 @@ async function sendDockupAgentMessage() {
       .map((msg) => ({ role: msg.role, content: msg.content }));
     const response = await fetch("/api/extensions/ollama/chat/stream", {
       method: "POST",
+      signal: controller.signal,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         base_url: ollamaState.baseUrl,
@@ -1583,14 +1676,19 @@ async function sendDockupAgentMessage() {
       if (event.type === "start") {
         updateLastDockupAgentMessage({ thinkMode: event.think_mode || current.thinkMode }, { render: false });
       } else if (event.type === "thinking") {
+        clearStreamTimers();
+        setDockupAssistantStatus("");
         const nextThinking = `${current.thinking || ""}${event.delta || ""}`;
-        updateLastDockupAgentMessage({ thinking: nextThinking }, { render: false });
+        updateLastDockupAgentMessage({ thinking: nextThinking, status: "" }, { render: false });
         appendDockupThinkingDelta(event.delta || "", current.thinkMode);
       } else if (event.type === "answer") {
+        clearStreamTimers();
+        setDockupAssistantStatus("");
         const nextContent = `${current.content || ""}${event.delta || ""}`;
-        updateLastDockupAgentMessage({ content: nextContent }, { render: false });
+        updateLastDockupAgentMessage({ content: nextContent, status: "" }, { render: false });
         appendDockupAnswerDelta(event.delta || "");
       } else if (event.type === "done") {
+        clearStreamTimers();
         const fallbackSeconds = Math.max(0.001, (performance.now() - startedAt) / 1000);
         const metrics = {
           ...(event.metrics || {}),
@@ -1599,14 +1697,17 @@ async function sendDockupAgentMessage() {
         updateLastDockupAgentMessage({
           loading: false,
           streaming: false,
+          status: "",
           metrics,
         }, { render: false });
         finalizeDockupAssistantDom(metrics);
       } else if (event.type === "error") {
+        clearStreamTimers();
         updateLastDockupAgentMessage({
           content: event.error || "Ollama request failed.",
           loading: false,
           streaming: false,
+          status: "",
         });
       }
     });
@@ -1616,15 +1717,21 @@ async function sendDockupAgentMessage() {
       finalizeDockupAssistantDom(last.metrics || {});
     }
   } catch (err) {
+    clearStreamTimers();
+    const message = err.name === "AbortError"
+      ? "Ollama did not return a token in time. The model may be busy or stuck."
+      : (err.message || String(err));
     dockupAgentMessages[dockupAgentMessages.length - 1] = {
       role: "assistant",
-      content: err.message || String(err),
+      content: message,
       thinking: "",
       thinkMode: readOllamaThinkModeFromForm(),
       loading: false,
       streaming: false,
+      status: "",
     };
   } finally {
+    clearStreamTimers();
     if (els.dockupAgentSend) els.dockupAgentSend.disabled = false;
     renderDockupAgentMessages();
   }
@@ -6780,6 +6887,9 @@ function bindEvents() {
         event.preventDefault();
         sendDockupAgentMessage();
       }
+    });
+    els.dockupAgentInput.addEventListener("input", () => {
+      renderDockupAgentContextMeter();
     });
   }
   document.addEventListener("click", (event) => {

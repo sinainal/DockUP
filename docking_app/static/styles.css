@@ -290,6 +290,87 @@
   font-weight: 700;
 }
 
+.dockup-agent-panel .assistant-context-meter {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: #94a3b8;
+  font-size: 11.5px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: default;
+}
+
+.dockup-agent-panel .assistant-context-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  border: 1.5px solid currentColor;
+  opacity: .85;
+}
+
+.dockup-agent-panel .assistant-context-meter.is-warm {
+  color: #b7791f;
+}
+
+.dockup-agent-panel .assistant-context-meter.is-hot {
+  color: #dc2626;
+}
+
+.dockup-agent-panel .assistant-context-tip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 13px);
+  z-index: 70;
+  width: 172px;
+  transform: translateX(-50%) translateY(4px);
+  padding: 10px 11px;
+  border-radius: 10px;
+  background: rgba(17, 24, 39, .96);
+  color: rgba(255, 255, 255, .72);
+  box-shadow: 0 16px 30px rgba(15, 23, 42, .22);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .14s ease, transform .14s ease;
+  text-align: center;
+}
+
+.dockup-agent-panel .assistant-context-meter:hover .assistant-context-tip,
+.dockup-agent-panel .assistant-context-meter:focus-within .assistant-context-tip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.dockup-agent-panel .assistant-context-tip div {
+  color: rgba(255, 255, 255, .44);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.dockup-agent-panel .assistant-context-tip strong {
+  display: block;
+  margin-top: 6px;
+  color: rgba(255, 255, 255, .86);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.dockup-agent-panel .assistant-context-tip span,
+.dockup-agent-panel .assistant-context-tip small {
+  display: block;
+  margin-top: 5px;
+  color: rgba(255, 255, 255, .72);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.dockup-agent-panel .assistant-context-tip small {
+  color: rgba(255, 255, 255, .52);
+  line-height: 1.35;
+}
+
 .dockup-agent-panel .assistant-messages {
   flex: 1;
   overflow-y: auto;
@@ -442,6 +523,14 @@
   margin-top: 8px;
   color: #94a3b8;
   font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.dockup-agent-message-status {
+  margin-top: 7px;
+  color: #94a3b8;
+  font-size: 11.5px;
   font-weight: 700;
   letter-spacing: 0;
 }

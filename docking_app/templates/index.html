@@ -13,7 +13,7 @@
   <link rel="icon" type="image/png" href="/static/image.png?v=2">
   <link rel="shortcut icon" type="image/png" href="/static/image.png?v=2">
   <link rel="apple-touch-icon" href="/static/image.png?v=2">
-    <link rel="stylesheet" href="/static/styles.css?v=50">
+    <link rel="stylesheet" href="/static/styles.css?v=51">
   <link rel="stylesheet" href="/static/grid_selection_search.css?v=1">
   <link rel="stylesheet" href="/static/docking_flex_selection.css?v=1">
   <link rel="stylesheet" href="/static/pocket_finder.css?v=1">
@@ -844,6 +844,17 @@
                   <div class="assistant-toolbar-menu-empty">Think mode</div>
                 </div>
               </div>
+              <span class="assistant-toolbar-divider" aria-hidden="true"></span>
+              <div id="dockupAgentContextMeter" class="assistant-context-meter" aria-label="Context window usage">
+                <span id="dockupAgentContextDot" class="assistant-context-dot" aria-hidden="true"></span>
+                <span id="dockupAgentContextLabel">0%</span>
+                <div id="dockupAgentContextTip" class="assistant-context-tip" role="tooltip">
+                  <div>Context window</div>
+                  <strong id="dockupAgentContextPercent">0% full</strong>
+                  <span id="dockupAgentContextTokens">0 / 0 tokens used</span>
+                  <small>Approximate chat context</small>
+                </div>
+              </div>
             </div>
           </div>
           <button id="dockupAgentSend" class="btn-send btn-send-minimal" type="button" aria-label="Send">
@@ -1583,7 +1594,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=59"></script>
+  <script src="/static/app.js?v=60"></script>
   <script src="/static/grid_selection_search.js?v=1"></script>
   <script src="/static/docking_flex_selection.js?v=1"></script>
   <script src="/static/pocket_finder.js?v=1"></script>
