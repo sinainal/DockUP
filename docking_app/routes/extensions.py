@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from ..extensions import vina_gpu_21
+from ..extensions import ollama_agent, vina_gpu_21
 from ..helpers import normalize_docking_config
 from ..state import STATE, save_state_cache
 
@@ -47,3 +47,18 @@ def vina_use_default() -> JSONResponse:
     STATE["docking_config"] = cfg
     save_state_cache()
     return JSONResponse({"ok": True, "docking_config": cfg})
+
+
+@router.get("/ollama/status")
+def ollama_status() -> JSONResponse:
+    return JSONResponse(ollama_agent.status())
+
+
+@router.post("/ollama/connect")
+def ollama_connect(payload: dict[str, object]) -> JSONResponse:
+    return JSONResponse(ollama_agent.connect(payload))
+
+
+@router.post("/ollama/chat")
+def ollama_chat(payload: dict[str, object]) -> JSONResponse:
+    return JSONResponse(ollama_agent.ask(payload))

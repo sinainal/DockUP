@@ -13,7 +13,7 @@
   <link rel="icon" type="image/png" href="/static/image.png?v=2">
   <link rel="shortcut icon" type="image/png" href="/static/image.png?v=2">
   <link rel="apple-touch-icon" href="/static/image.png?v=2">
-  <link rel="stylesheet" href="/static/styles.css?v=46">
+    <link rel="stylesheet" href="/static/styles.css?v=49">
   <link rel="stylesheet" href="/static/grid_selection_search.css?v=1">
   <link rel="stylesheet" href="/static/docking_flex_selection.css?v=1">
   <link rel="stylesheet" href="/static/pocket_finder.css?v=1">
@@ -698,8 +698,153 @@
         </div>
         <div class="extension-log" id="vinaGpuInstallLog">Extension log will appear here.</div>
       </div>
+      <div class="extension-card ollama-extension-card">
+        <div class="extension-card-head">
+          <div>
+            <div class="extension-kicker">Local AI</div>
+            <div class="extension-title">Ollama Agent</div>
+            <div class="helper">Connect a local Ollama model for a state-aware DockUP assistant. Tool calls are disabled in this first release.</div>
+          </div>
+          <div class="extension-status-pill" id="ollamaStatusPill">Not connected</div>
+        </div>
+        <div class="ollama-connect-row">
+          <label class="field">
+            <span class="field-label">Ollama URL</span>
+            <input id="ollamaBaseUrl" type="text" value="http://localhost:11434" autocomplete="off">
+          </label>
+          <label class="field">
+            <span class="field-label">Context</span>
+            <select id="ollamaNumCtx">
+              <option value="1024">1,024</option>
+              <option value="2048">2,048</option>
+              <option value="4096" selected>4,096</option>
+              <option value="8192">8,192</option>
+              <option value="16384">16,384</option>
+            </select>
+          </label>
+          <button class="primary" id="connectOllamaBtn" type="button">Connect</button>
+        </div>
+        <div class="ollama-settings-grid">
+          <label class="field">
+            <span class="field-label">Batch</span>
+            <select id="ollamaNumBatch">
+              <option value="64">64</option>
+              <option value="128" selected>128</option>
+              <option value="256">256</option>
+              <option value="512">512</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Keep alive</span>
+            <select id="ollamaKeepAlive">
+              <option value="-1" selected>Until DockUP closes</option>
+              <option value="300">5 min</option>
+              <option value="900">15 min</option>
+              <option value="1800">30 min</option>
+              <option value="3600">1 hour</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">GPU layers</span>
+            <select id="ollamaNumGpu">
+              <option value="-1" selected>Auto</option>
+              <option value="40">40</option>
+              <option value="48">48</option>
+              <option value="56">56</option>
+              <option value="64">64</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Warmup tokens</span>
+            <select id="ollamaWarmupTokens">
+              <option value="1" selected>1</option>
+              <option value="2">2</option>
+              <option value="4">4</option>
+              <option value="8">8</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Temperature</span>
+            <input id="ollamaTemperature" type="number" min="0" max="2" step="0.05" value="0.2">
+          </label>
+          <label class="field">
+            <span class="field-label">Top P</span>
+            <input id="ollamaTopP" type="number" min="0.05" max="1" step="0.05" value="0.9">
+          </label>
+          <label class="field">
+            <span class="field-label">Repeat penalty</span>
+            <input id="ollamaRepeatPenalty" type="number" min="0.8" max="1.4" step="0.01" value="1.05">
+          </label>
+          <label class="ollama-toggle-field">
+            <input id="ollamaUseMmap" type="checkbox" checked>
+            <span>Use mmap</span>
+          </label>
+        </div>
+        <div class="ollama-model-summary" id="ollamaModelSummary">Connect to list local models.</div>
+        <div class="ollama-model-grid" id="ollamaModelGrid"></div>
+        <div class="extension-log compact" id="ollamaExtensionLog">Ollama connection log will appear here.</div>
+      </div>
     </div>
   </div>
+
+  <button id="dockupAgentLauncher" class="assistant-launcher dockup-agent-launcher" type="button" aria-label="Open DockUP AI" hidden>
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+    </svg>
+  </button>
+  <div id="dockupAgentOverlay" class="assistant-overlay dockup-agent-overlay" hidden></div>
+  <section id="dockupAgentPanel" class="assistant-panel dockup-agent-panel is-pristine" hidden role="dialog" aria-modal="true" aria-label="DockUP Local AI">
+    <div id="dockupAgentMessages" class="assistant-messages dockup-agent-messages"></div>
+    <div id="dockupModelLoadingPopup" class="native-model-loading-popup dockup-model-loading-popup" hidden aria-live="polite" aria-busy="true">
+      <div class="native-model-loading-head">
+        <div class="native-model-loading-chip">Loading model</div>
+        <div id="dockupModelLoadingSize" class="native-model-loading-size">0 MB</div>
+      </div>
+      <div id="dockupModelLoadingTitle" class="native-model-loading-title">Loading model...</div>
+      <div class="native-model-loading-bar" aria-hidden="true">
+        <span id="dockupModelLoadingBarFill" class="native-model-loading-bar-fill"></span>
+      </div>
+      <div id="dockupModelLoadingMeta" class="native-model-loading-meta">Preparing the local model...</div>
+    </div>
+    <div class="assistant-composer dockup-agent-composer">
+      <div class="assistant-composer-shell">
+        <textarea id="dockupAgentInput" rows="1" placeholder="DockUP AI'ya sor..."></textarea>
+        <div class="assistant-composer-footer">
+          <div class="assistant-composer-tools">
+            <div class="assistant-toolbar-group">
+              <div class="assistant-mode-switch assistant-mode-switch-plain" role="presentation">
+                <button class="assistant-mode-btn is-active" type="button" tabindex="-1">Local</button>
+              </div>
+              <span class="assistant-toolbar-divider" aria-hidden="true"></span>
+              <div class="assistant-model-picker" id="dockupAgentModelWrap">
+                <button id="dockupAgentModelBtn" class="assistant-toolbar-btn assistant-model-btn" type="button"
+                  aria-haspopup="menu" aria-expanded="false">
+                  <span id="dockupAgentModelLabel">Ollama</span>
+                  <svg class="assistant-toolbar-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+                    <polyline points="6 9 12 15 18 9"/>
+                  </svg>
+                </button>
+                <div id="dockupAgentModelMenu" class="assistant-toolbar-menu assistant-model-menu" hidden>
+                  <div class="assistant-toolbar-menu-empty">Connect Ollama from Extensions.</div>
+                </div>
+              </div>
+              <span class="assistant-toolbar-divider" aria-hidden="true"></span>
+              <button id="dockupAgentStateBtn" class="assistant-toolbar-btn" type="button" disabled>State only</button>
+            </div>
+          </div>
+          <button id="dockupAgentSend" class="btn-send btn-send-minimal" type="button" aria-label="Send">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <div id="dockingConfigModal" class="report-modal" role="dialog" aria-modal="true" aria-labelledby="dockingConfigModalTitle">
     <div class="report-modal-card docking-config-modal-card">
@@ -1426,7 +1571,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=55"></script>
+  <script src="/static/app.js?v=58"></script>
   <script src="/static/grid_selection_search.js?v=1"></script>
   <script src="/static/docking_flex_selection.js?v=1"></script>
   <script src="/static/pocket_finder.js?v=1"></script>

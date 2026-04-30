@@ -115,6 +115,29 @@ let latestReceptorSummaryRows = [];
 let dockingFlexTargetReceptorId = "";
 let lastAutoDockingRootKey = "";
 let extensionsPoll = null;
+let ollamaStatusPoll = null;
+let ollamaState = {
+  connected: false,
+  baseUrl: "http://localhost:11434",
+  model: "",
+  numCtx: 4096,
+  settings: {
+    num_ctx: 4096,
+    num_batch: 128,
+    keep_alive: -1,
+    num_gpu: -1,
+    use_mmap: true,
+    temperature: 0.2,
+    top_p: 0.9,
+    repeat_penalty: 1.05,
+    warmup_tokens: 1,
+  },
+  models: [],
+  version: "",
+  error: "",
+  job: {},
+};
+let dockupAgentMessages = [];
 
 const EXCLUDED_RESN = new Set([
   "HOH", "DOD", "WAT", "NA", "CL", "K", "MG", "CA", "ZN", "FE", "CU", "MN", "CO", "NI",
@@ -204,6 +227,37 @@ function initElements() {
   els.useCpuVinaDefaultBtn = document.getElementById("useCpuVinaDefaultBtn");
   els.uninstallVinaGpuBtn = document.getElementById("uninstallVinaGpuBtn");
   els.vinaGpuInstallLog = document.getElementById("vinaGpuInstallLog");
+  els.ollamaStatusPill = document.getElementById("ollamaStatusPill");
+  els.ollamaBaseUrl = document.getElementById("ollamaBaseUrl");
+  els.ollamaNumCtx = document.getElementById("ollamaNumCtx");
+  els.ollamaNumBatch = document.getElementById("ollamaNumBatch");
+  els.ollamaKeepAlive = document.getElementById("ollamaKeepAlive");
+  els.ollamaNumGpu = document.getElementById("ollamaNumGpu");
+  els.ollamaWarmupTokens = document.getElementById("ollamaWarmupTokens");
+  els.ollamaTemperature = document.getElementById("ollamaTemperature");
+  els.ollamaTopP = document.getElementById("ollamaTopP");
+  els.ollamaRepeatPenalty = document.getElementById("ollamaRepeatPenalty");
+  els.ollamaUseMmap = document.getElementById("ollamaUseMmap");
+  els.connectOllamaBtn = document.getElementById("connectOllamaBtn");
+  els.ollamaModelSummary = document.getElementById("ollamaModelSummary");
+  els.ollamaModelGrid = document.getElementById("ollamaModelGrid");
+  els.ollamaExtensionLog = document.getElementById("ollamaExtensionLog");
+  els.dockupAgentLauncher = document.getElementById("dockupAgentLauncher");
+  els.dockupAgentOverlay = document.getElementById("dockupAgentOverlay");
+  els.dockupAgentPanel = document.getElementById("dockupAgentPanel");
+  els.closeDockupAgent = document.getElementById("closeDockupAgent");
+  els.dockupAgentModelBtn = document.getElementById("dockupAgentModelBtn");
+  els.dockupAgentModelLabel = document.getElementById("dockupAgentModelLabel");
+  els.dockupAgentModelMenu = document.getElementById("dockupAgentModelMenu");
+  els.dockupAgentModelWrap = document.getElementById("dockupAgentModelWrap");
+  els.dockupModelLoadingPopup = document.getElementById("dockupModelLoadingPopup");
+  els.dockupModelLoadingSize = document.getElementById("dockupModelLoadingSize");
+  els.dockupModelLoadingTitle = document.getElementById("dockupModelLoadingTitle");
+  els.dockupModelLoadingMeta = document.getElementById("dockupModelLoadingMeta");
+  els.dockupModelLoadingBarFill = document.getElementById("dockupModelLoadingBarFill");
+  els.dockupAgentMessages = document.getElementById("dockupAgentMessages");
+  els.dockupAgentInput = document.getElementById("dockupAgentInput");
+  els.dockupAgentSend = document.getElementById("dockupAgentSend");
   els.modeToggle = document.getElementById("modeToggle");
   els.ligandSection = document.getElementById("ligandSection");
   els.ligandUpload = document.getElementById("ligandUpload");
@@ -1042,10 +1096,308 @@ async function refreshVinaGpuExtension() {
   return data;
 }
 
+function compactModelName(name) {
+  return String(name || "").replace(":latest", "");
+}
+
+function ollamaModelSizeLabel(modelName) {
+  const match = (ollamaState.models || []).find((item) => String(item.name || "") === String(modelName || ""));
+  return match?.size ? formatBytes(match.size) : "";
+}
+
+function normalizeOllamaSettings(settings = {}) {
+  return {
+    num_ctx: Number(settings.num_ctx || settings.numCtx || 4096),
+    num_batch: Number(settings.num_batch || settings.numBatch || 128),
+    keep_alive: Number(settings.keep_alive ?? settings.keepAlive ?? -1),
+    num_gpu: Number(settings.num_gpu ?? settings.numGpu ?? -1),
+    use_mmap: settings.use_mmap !== false,
+    temperature: Number(settings.temperature ?? 0.2),
+    top_p: Number(settings.top_p ?? settings.topP ?? 0.9),
+    repeat_penalty: Number(settings.repeat_penalty ?? settings.repeatPenalty ?? 1.05),
+    warmup_tokens: Number(settings.warmup_tokens || settings.warmupTokens || 1),
+  };
+}
+
+function readOllamaSettingsFromForm() {
+  return normalizeOllamaSettings({
+    num_ctx: els.ollamaNumCtx?.value || ollamaState.settings?.num_ctx,
+    num_batch: els.ollamaNumBatch?.value || ollamaState.settings?.num_batch,
+    keep_alive: els.ollamaKeepAlive?.value ?? ollamaState.settings?.keep_alive,
+    num_gpu: els.ollamaNumGpu?.value ?? ollamaState.settings?.num_gpu,
+    use_mmap: els.ollamaUseMmap ? els.ollamaUseMmap.checked : ollamaState.settings?.use_mmap,
+    temperature: els.ollamaTemperature?.value || ollamaState.settings?.temperature,
+    top_p: els.ollamaTopP?.value || ollamaState.settings?.top_p,
+    repeat_penalty: els.ollamaRepeatPenalty?.value || ollamaState.settings?.repeat_penalty,
+    warmup_tokens: els.ollamaWarmupTokens?.value || ollamaState.settings?.warmup_tokens,
+  });
+}
+
+function applyOllamaSettingsToForm(settings) {
+  const next = normalizeOllamaSettings(settings);
+  if (els.ollamaNumCtx) els.ollamaNumCtx.value = String(next.num_ctx);
+  if (els.ollamaNumBatch) els.ollamaNumBatch.value = String(next.num_batch);
+  if (els.ollamaKeepAlive) els.ollamaKeepAlive.value = String(next.keep_alive);
+  if (els.ollamaNumGpu) els.ollamaNumGpu.value = String(next.num_gpu);
+  if (els.ollamaWarmupTokens) els.ollamaWarmupTokens.value = String(next.warmup_tokens);
+  if (els.ollamaTemperature) els.ollamaTemperature.value = String(next.temperature);
+  if (els.ollamaTopP) els.ollamaTopP.value = String(next.top_p);
+  if (els.ollamaRepeatPenalty) els.ollamaRepeatPenalty.value = String(next.repeat_penalty);
+  if (els.ollamaUseMmap) els.ollamaUseMmap.checked = Boolean(next.use_mmap);
+}
+
+function ollamaKeepAliveLabel(value) {
+  const numeric = Number(value);
+  if (numeric < 0) return "until DockUP closes";
+  if (numeric >= 3600) return `${Math.round(numeric / 3600)} hour`;
+  return `${Math.round(numeric / 60)} min`;
+}
+
+function renderOllamaStatus(data) {
+  if (!data) return;
+  const settings = normalizeOllamaSettings(data.settings || { num_ctx: data.num_ctx });
+  ollamaState = {
+    connected: Boolean(data.connected),
+    baseUrl: data.base_url || "http://localhost:11434",
+    model: data.model || "",
+    numCtx: Number(settings.num_ctx || 4096),
+    settings,
+    models: Array.isArray(data.models) ? data.models : [],
+    version: data.version || "",
+    error: data.error || "",
+    job: data.job || {},
+  };
+  if (els.ollamaBaseUrl) els.ollamaBaseUrl.value = ollamaState.baseUrl;
+  applyOllamaSettingsToForm(settings);
+  const job = ollamaState.job || {};
+  const loading = Boolean(job.running);
+  if (els.ollamaStatusPill) {
+    els.ollamaStatusPill.textContent = loading
+      ? "Loading model"
+      : ollamaState.connected
+        ? "Connected"
+        : "Not connected";
+    els.ollamaStatusPill.className = `extension-status-pill ${ollamaState.connected ? "is-ready" : "is-missing"}`;
+  }
+  if (els.ollamaModelSummary) {
+    const count = ollamaState.models.length;
+    const version = ollamaState.version ? `Ollama ${ollamaState.version}` : "Ollama";
+    els.ollamaModelSummary.textContent = ollamaState.connected
+      ? `${version} reachable. ${count} local model${count === 1 ? "" : "s"} detected.`
+      : `Could not reach ${ollamaState.baseUrl}.`;
+  }
+  if (els.ollamaExtensionLog) {
+    const lines = [];
+    lines.push(ollamaState.connected ? `Connected to ${ollamaState.baseUrl}` : `Disconnected: ${ollamaState.error || "No response"}`);
+    if (ollamaState.model) lines.push(`Selected model: ${ollamaState.model}`);
+    lines.push(`Context: ${Number(settings.num_ctx || 4096).toLocaleString()} tokens`);
+    lines.push(`Batch: ${settings.num_batch} | GPU layers: ${settings.num_gpu < 0 ? "auto" : settings.num_gpu} | Keep alive: ${ollamaKeepAliveLabel(settings.keep_alive)}`);
+    lines.push(`Sampling: temp ${settings.temperature}, top_p ${settings.top_p}, repeat ${settings.repeat_penalty}`);
+    if (loading) lines.push(job.message || "Loading local model");
+    if (job.error) lines.push(`Warmup error: ${job.error}`);
+    els.ollamaExtensionLog.textContent = lines.join("\n");
+  }
+  renderOllamaModels();
+  renderDockupAgentShell();
+  updateDockupModelLoadingPopup();
+  if (!loading && ollamaStatusPoll) {
+    clearInterval(ollamaStatusPoll);
+    ollamaStatusPoll = null;
+  }
+}
+
+function renderOllamaModels() {
+  if (!els.ollamaModelGrid) return;
+  els.ollamaModelGrid.innerHTML = "";
+  if (!ollamaState.models.length) {
+    const empty = document.createElement("div");
+    empty.className = "ollama-model-empty";
+    empty.textContent = ollamaState.connected ? "No local Ollama models found." : "Connect to Ollama to list models.";
+    els.ollamaModelGrid.appendChild(empty);
+    return;
+  }
+  ollamaState.models.forEach((model) => {
+    const name = String(model.name || "");
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = `ollama-model-card ${name === ollamaState.model ? "is-selected" : ""}`;
+    card.dataset.model = name;
+    const sizeLabel = model.size ? formatBytes(model.size) : "local";
+    card.innerHTML = `
+      <span class="ollama-model-card-title">${escapeHtml(compactModelName(name))}</span>
+      <span class="ollama-model-card-meta">${escapeHtml(sizeLabel)}</span>
+    `;
+    els.ollamaModelGrid.appendChild(card);
+  });
+  renderDockupAgentModelMenu();
+}
+
+function renderDockupAgentModelMenu() {
+  if (!els.dockupAgentModelMenu) return;
+  if (!ollamaState.connected || !ollamaState.models.length) {
+    els.dockupAgentModelMenu.innerHTML = `<div class="assistant-toolbar-menu-empty">Connect Ollama from Extensions.</div>`;
+    return;
+  }
+  els.dockupAgentModelMenu.innerHTML = ollamaState.models.map((model) => {
+    const name = String(model.name || "");
+    const active = name === ollamaState.model ? " is-active" : "";
+    const size = model.size ? ` <span class="assistant-model-size">${escapeHtml(formatBytes(model.size))}</span>` : "";
+    return `<button class="assistant-toolbar-menu-item assistant-model-item${active}" type="button" data-model="${escapeHtml(name)}">${escapeHtml(compactModelName(name))}${size}</button>`;
+  }).join("");
+}
+
+async function refreshOllamaStatus() {
+  const data = await fetchJSON("/api/extensions/ollama/status");
+  renderOllamaStatus(data);
+  return data;
+}
+
+function startOllamaStatusPolling() {
+  if (ollamaStatusPoll) clearInterval(ollamaStatusPoll);
+  ollamaStatusPoll = setInterval(() => {
+    refreshOllamaStatus().catch((err) => {
+      if (els.ollamaExtensionLog) els.ollamaExtensionLog.textContent = err.message || String(err);
+    });
+  }, 1200);
+}
+
+async function connectOllama({ model = "", openAgent = true } = {}) {
+  const baseUrl = String(els.ollamaBaseUrl?.value || ollamaState.baseUrl || "http://localhost:11434").trim();
+  const settings = readOllamaSettingsFromForm();
+  if (els.connectOllamaBtn) els.connectOllamaBtn.disabled = true;
+  try {
+    const data = await fetchJSON("/api/extensions/ollama/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base_url: baseUrl, model: model || ollamaState.model || "", settings, warmup: true }),
+    });
+    renderOllamaStatus(data);
+    if (data?.job?.running) startOllamaStatusPolling();
+    if (data.connected && openAgent) setDockupAgentOpen(true);
+  } finally {
+    if (els.connectOllamaBtn) els.connectOllamaBtn.disabled = false;
+  }
+}
+
+function renderDockupAgentShell() {
+  const visible = Boolean(ollamaState.connected);
+  if (els.dockupAgentLauncher) {
+    els.dockupAgentLauncher.hidden = !visible;
+    els.dockupAgentLauncher.classList.toggle("is-active", els.dockupAgentPanel?.classList.contains("is-open"));
+    els.dockupAgentLauncher.classList.toggle("is-loading", Boolean(ollamaState.job?.running));
+  }
+  if (els.dockupAgentModelLabel) {
+    els.dockupAgentModelLabel.textContent = visible ? compactModelName(ollamaState.model || "Ollama") : "Ollama";
+  }
+  renderDockupAgentModelMenu();
+  updateDockupModelLoadingPopup();
+}
+
+function updateDockupModelLoadingPopup() {
+  const popup = els.dockupModelLoadingPopup;
+  if (!popup) return;
+  const job = ollamaState.job || {};
+  const loading = Boolean(job.running) && Boolean(job.model || ollamaState.model);
+  popup.hidden = !loading;
+  popup.classList.toggle("is-open", loading);
+  if (!loading) {
+    if (els.dockupModelLoadingSize) els.dockupModelLoadingSize.textContent = "";
+    if (els.dockupModelLoadingTitle) els.dockupModelLoadingTitle.textContent = "";
+    if (els.dockupModelLoadingMeta) els.dockupModelLoadingMeta.textContent = "";
+    if (els.dockupModelLoadingBarFill) els.dockupModelLoadingBarFill.style.width = "0%";
+    if (els.dockupAgentInput) els.dockupAgentInput.disabled = false;
+    if (els.dockupAgentSend) els.dockupAgentSend.disabled = false;
+    return;
+  }
+  const model = String(job.model || ollamaState.model || "");
+  if (els.dockupModelLoadingSize) els.dockupModelLoadingSize.textContent = ollamaModelSizeLabel(model) || "Loading";
+  if (els.dockupModelLoadingTitle) els.dockupModelLoadingTitle.textContent = `Loading ${compactModelName(model)}...`;
+  if (els.dockupModelLoadingMeta) {
+    const settings = normalizeOllamaSettings(job.settings || ollamaState.settings || {});
+    const ctx = Number(settings.num_ctx || job.num_ctx || ollamaState.numCtx || 4096).toLocaleString();
+    els.dockupModelLoadingMeta.textContent = job.error ? `Warmup error: ${job.error}` : `Starting Ollama with ${ctx} context, batch ${settings.num_batch}, GPU ${settings.num_gpu < 0 ? "auto" : settings.num_gpu}.`;
+  }
+  if (els.dockupModelLoadingBarFill) els.dockupModelLoadingBarFill.style.width = "100%";
+  if (els.dockupAgentInput) els.dockupAgentInput.disabled = true;
+  if (els.dockupAgentSend) els.dockupAgentSend.disabled = true;
+}
+
+function setDockupAgentOpen(next) {
+  if (!els.dockupAgentPanel || !els.dockupAgentOverlay) return;
+  els.dockupAgentPanel.hidden = !next;
+  els.dockupAgentOverlay.hidden = !next;
+  els.dockupAgentPanel.classList.toggle("is-open", Boolean(next));
+  els.dockupAgentOverlay.classList.toggle("is-open", Boolean(next));
+  els.dockupAgentLauncher?.classList.toggle("is-active", Boolean(next));
+  if (next) {
+    renderDockupAgentMessages();
+    updateDockupModelLoadingPopup();
+    setTimeout(() => els.dockupAgentInput?.focus(), 80);
+  }
+}
+
+function renderDockupAgentMessages() {
+  if (!els.dockupAgentMessages) return;
+  if (!dockupAgentMessages.length) {
+    els.dockupAgentPanel?.classList.add("is-pristine");
+    els.dockupAgentMessages.innerHTML = "";
+    return;
+  }
+  els.dockupAgentPanel?.classList.remove("is-pristine");
+  els.dockupAgentMessages.innerHTML = dockupAgentMessages.map((msg) => `
+    <div class="assistant-message dockup-agent-message ${escapeHtml(msg.role)}">
+      <div class="assistant-message-role dockup-agent-message-role">${msg.role === "user" ? "You" : "DockUP AI"}</div>
+      <div class="assistant-message-text dockup-agent-message-text" ${msg.loading ? 'data-loading="true"' : ""}>${escapeHtml(msg.content)}</div>
+    </div>
+  `).join("");
+  els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
+}
+
+async function sendDockupAgentMessage() {
+  const text = String(els.dockupAgentInput?.value || "").trim();
+  if (!text || !ollamaState.connected || !ollamaState.model) return;
+  if (els.dockupAgentInput) els.dockupAgentInput.value = "";
+  if (els.dockupAgentSend) els.dockupAgentSend.disabled = true;
+  dockupAgentMessages.push({ role: "user", content: text });
+  dockupAgentMessages.push({ role: "assistant", content: "", loading: true });
+  renderDockupAgentMessages();
+  try {
+    const history = dockupAgentMessages
+      .slice(0, -1)
+      .filter((msg) => msg.role === "user" || msg.role === "assistant")
+      .map((msg) => ({ role: msg.role, content: msg.content }));
+    const data = await fetchJSON("/api/extensions/ollama/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        base_url: ollamaState.baseUrl,
+        model: ollamaState.model,
+        settings: ollamaState.settings || readOllamaSettingsFromForm(),
+        message: text,
+        history,
+      }),
+    });
+    dockupAgentMessages[dockupAgentMessages.length - 1] = {
+      role: "assistant",
+      content: data.ok ? (data.answer || "No answer returned.") : (data.error || "Ollama request failed."),
+      loading: false,
+    };
+  } catch (err) {
+    dockupAgentMessages[dockupAgentMessages.length - 1] = {
+      role: "assistant",
+      content: err.message || String(err),
+      loading: false,
+    };
+  } finally {
+    if (els.dockupAgentSend) els.dockupAgentSend.disabled = false;
+    renderDockupAgentMessages();
+  }
+}
+
 function startExtensionsPolling() {
   if (extensionsPoll) clearInterval(extensionsPoll);
   extensionsPoll = setInterval(() => {
-    refreshVinaGpuExtension().catch((err) => {
+    Promise.allSettled([refreshVinaGpuExtension(), refreshOllamaStatus()]).catch((err) => {
       if (els.vinaGpuInstallLog) els.vinaGpuInstallLog.textContent = err.message || String(err);
     });
   }, 1200);
@@ -1055,8 +1407,8 @@ async function openExtensionsModal() {
   if (!els.extensionsModal) return;
   els.extensionsModal.classList.add("active");
   try {
-    const data = await refreshVinaGpuExtension();
-    if (data?.job?.running) startExtensionsPolling();
+    const [vinaData, ollamaData] = await Promise.all([refreshVinaGpuExtension(), refreshOllamaStatus()]);
+    if (vinaData?.job?.running || ollamaData?.job?.running) startExtensionsPolling();
   } catch (err) {
     if (els.vinaGpuInstallLog) els.vinaGpuInstallLog.textContent = err.message || String(err);
   }
@@ -6124,6 +6476,64 @@ function bindEvents() {
       renderDockingConfigSummary();
     });
   }
+  if (els.connectOllamaBtn) {
+    els.connectOllamaBtn.addEventListener("click", async () => {
+      await connectOllama({ openAgent: true });
+    });
+  }
+  if (els.ollamaModelGrid) {
+    els.ollamaModelGrid.addEventListener("click", async (event) => {
+      const card = event.target.closest(".ollama-model-card");
+      if (!card) return;
+      await connectOllama({ model: card.dataset.model || "", openAgent: true });
+    });
+  }
+  if (els.dockupAgentLauncher) {
+    els.dockupAgentLauncher.addEventListener("click", () => {
+      setDockupAgentOpen(!els.dockupAgentPanel?.classList.contains("is-open"));
+    });
+  }
+  if (els.dockupAgentModelBtn) {
+    els.dockupAgentModelBtn.addEventListener("click", () => {
+      const next = Boolean(els.dockupAgentModelMenu?.hidden);
+      if (els.dockupAgentModelMenu) els.dockupAgentModelMenu.hidden = !next;
+      els.dockupAgentModelBtn.setAttribute("aria-expanded", next ? "true" : "false");
+    });
+  }
+  if (els.dockupAgentModelMenu) {
+    els.dockupAgentModelMenu.addEventListener("click", async (event) => {
+      const item = event.target.closest(".assistant-model-item");
+      if (!item) return;
+      if (els.dockupAgentModelMenu) els.dockupAgentModelMenu.hidden = true;
+      if (els.dockupAgentModelBtn) els.dockupAgentModelBtn.setAttribute("aria-expanded", "false");
+      await connectOllama({ model: item.dataset.model || "", openAgent: true });
+    });
+  }
+  if (els.closeDockupAgent) {
+    els.closeDockupAgent.addEventListener("click", () => setDockupAgentOpen(false));
+  }
+  if (els.dockupAgentOverlay) {
+    els.dockupAgentOverlay.addEventListener("click", () => setDockupAgentOpen(false));
+  }
+  if (els.dockupAgentSend) {
+    els.dockupAgentSend.addEventListener("click", () => {
+      sendDockupAgentMessage();
+    });
+  }
+  if (els.dockupAgentInput) {
+    els.dockupAgentInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendDockupAgentMessage();
+      }
+    });
+  }
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest("#dockupAgentModelWrap")) {
+      if (els.dockupAgentModelMenu) els.dockupAgentModelMenu.hidden = true;
+      if (els.dockupAgentModelBtn) els.dockupAgentModelBtn.setAttribute("aria-expanded", "false");
+    }
+  });
 
   // Mode toggle
   if (els.modeToggle) {
@@ -7169,6 +7579,14 @@ async function init() {
   } catch (e) {
     if (els.recentDockingsMeta) {
       els.recentDockingsMeta.textContent = `Failed to load recent dockings: ${e.message || e}`;
+    }
+  }
+  try {
+    const ollamaData = await refreshOllamaStatus();
+    if (ollamaData?.job?.running) startOllamaStatusPolling();
+  } catch (e) {
+    if (els.ollamaExtensionLog) {
+      els.ollamaExtensionLog.textContent = e.message || String(e);
     }
   }
   scheduleUIStateSave();
