@@ -490,6 +490,35 @@ def _tokens_per_second(eval_count: Any, eval_duration: Any) -> float | None:
     return round(float(eval_count) / (float(eval_duration) / 1_000_000_000), 2)
 
 
+def _split_think_markup(text: str, *, in_think: bool) -> tuple[list[tuple[str, str]], bool]:
+    rows: list[tuple[str, str]] = []
+    cursor = 0
+    source = str(text or "")
+    lowered = source.lower()
+    while cursor < len(source):
+        if in_think:
+            end = lowered.find("</think>", cursor)
+            if end < 0:
+                if source[cursor:]:
+                    rows.append(("thinking", source[cursor:]))
+                return rows, True
+            if end > cursor:
+                rows.append(("thinking", source[cursor:end]))
+            cursor = end + len("</think>")
+            in_think = False
+        else:
+            start = lowered.find("<think>", cursor)
+            if start < 0:
+                if source[cursor:]:
+                    rows.append(("answer", source[cursor:]))
+                return rows, False
+            if start > cursor:
+                rows.append(("answer", source[cursor:start]))
+            cursor = start + len("<think>")
+            in_think = True
+    return rows, in_think
+
+
 def stream_ask(payload: dict[str, Any]):
     request = _build_chat_request(payload)
     model = request["model"]
@@ -507,6 +536,7 @@ def stream_ask(payload: dict[str, Any]):
         return
 
     yield event({"type": "start", "model": model, "think_mode": request["think_mode"]})
+    in_think_markup = False
     try:
         for data in stream_chat(
             base_url=request["base_url"],
@@ -523,7 +553,10 @@ def stream_ask(payload: dict[str, Any]):
             if thinking_delta:
                 yield event({"type": "thinking", "delta": thinking_delta})
             if content_delta:
-                yield event({"type": "answer", "delta": content_delta})
+                split_rows, in_think_markup = _split_think_markup(content_delta, in_think=in_think_markup)
+                for row_type, delta in split_rows:
+                    if delta:
+                        yield event({"type": row_type, "delta": delta})
             if data.get("done"):
                 metrics = {
                     "total_seconds": _duration_seconds(data.get("total_duration")),

@@ -117,3 +117,35 @@ def test_ollama_chat_stream_emits_thinking_answer_and_metrics(monkeypatch, tmp_p
     assert '"type":"answer","delta":" ready."' in body
     assert '"total_seconds":2.0' in body
     assert '"tokens_per_second":20.0' in body
+
+
+def test_ollama_chat_stream_routes_think_markup_to_thinking(monkeypatch, tmp_path) -> None:
+    from docking_app.extensions import ollama_agent
+
+    monkeypatch.setattr(ollama_agent, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(ollama_agent, "ROOT_DIR", tmp_path)
+    (tmp_path / "state.json").write_text(
+        '{"base_url":"http://localhost:11434","model":"qwen36-merged:latest","connected":true,"last_error":""}',
+        encoding="utf-8",
+    )
+
+    def fake_stream_chat(**_kwargs):
+        yield {"message": {"content": "<think>hidden"}}
+        yield {"message": {"content": " trace</think>visible"}}
+        yield {"done": True, "eval_count": 1, "eval_duration": 1_000_000_000}
+
+    monkeypatch.setattr(ollama_agent, "stream_chat", fake_stream_chat)
+
+    with TestClient(create_app()).stream(
+        "POST",
+        "/api/extensions/ollama/chat/stream",
+        json={"message": "state?", "think_mode": "no_think"},
+    ) as response:
+        body = response.read().decode("utf-8")
+
+    assert response.status_code == 200
+    assert '"type":"thinking","delta":"hidden"' in body
+    assert '"type":"thinking","delta":" trace"' in body
+    assert '"type":"answer","delta":"visible"' in body
+    assert "<think>" not in body
+    assert "</think>" not in body
