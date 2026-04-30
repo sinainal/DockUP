@@ -79,3 +79,41 @@ def test_ollama_chat_includes_state_context(monkeypatch, tmp_path) -> None:
     assert captured["kwargs"]["options"]["temperature"] == 0.1
     assert payload["think_mode"] == "no_think"
     assert payload["thinking"] == "We should inspect the current run state."
+
+
+def test_ollama_chat_stream_emits_thinking_answer_and_metrics(monkeypatch, tmp_path) -> None:
+    from docking_app.extensions import ollama_agent
+
+    monkeypatch.setattr(ollama_agent, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(ollama_agent, "ROOT_DIR", tmp_path)
+    (tmp_path / "state.json").write_text(
+        '{"base_url":"http://localhost:11434","model":"qwen36-merged:latest","connected":true,"last_error":""}',
+        encoding="utf-8",
+    )
+
+    def fake_stream_chat(**_kwargs):
+        yield {"message": {"thinking": "Check state."}}
+        yield {"message": {"content": "DockUP"}}
+        yield {
+            "message": {"content": " ready."},
+            "done": True,
+            "total_duration": 2_000_000_000,
+            "eval_duration": 1_000_000_000,
+            "eval_count": 20,
+        }
+
+    monkeypatch.setattr(ollama_agent, "stream_chat", fake_stream_chat)
+
+    with TestClient(create_app()).stream(
+        "POST",
+        "/api/extensions/ollama/chat/stream",
+        json={"message": "state?", "think_mode": "think"},
+    ) as response:
+        body = response.read().decode("utf-8")
+
+    assert response.status_code == 200
+    assert '"type":"thinking","delta":"Check state."' in body
+    assert '"type":"answer","delta":"DockUP"' in body
+    assert '"type":"answer","delta":" ready."' in body
+    assert '"total_seconds":2.0' in body
+    assert '"tokens_per_second":20.0' in body

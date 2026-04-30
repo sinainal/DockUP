@@ -1402,6 +1402,21 @@ function closeDockupAgentMenus() {
   if (els.dockupAgentThinkBtn) els.dockupAgentThinkBtn.setAttribute("aria-expanded", "false");
 }
 
+function formatAgentMetricNumber(value, digits = 1) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "";
+  return numeric.toFixed(digits).replace(/\.0$/, "");
+}
+
+function formatDockupAgentMetrics(metrics = {}) {
+  const seconds = formatAgentMetricNumber(metrics.total_seconds, 1);
+  const tokensPerSecond = formatAgentMetricNumber(metrics.tokens_per_second, 1);
+  const parts = [];
+  if (seconds) parts.push(`${seconds}s`);
+  if (tokensPerSecond) parts.push(`${tokensPerSecond} tok/s`);
+  return parts.join(" · ");
+}
+
 function renderDockupAgentMessages() {
   if (!els.dockupAgentMessages) return;
   if (!dockupAgentMessages.length) {
@@ -1411,21 +1426,50 @@ function renderDockupAgentMessages() {
   }
   els.dockupAgentPanel?.classList.remove("is-pristine");
   els.dockupAgentMessages.innerHTML = dockupAgentMessages.map((msg) => `
-    <div class="assistant-message dockup-agent-message ${escapeHtml(msg.role)}">
+    <div class="assistant-message dockup-agent-message ${escapeHtml(msg.role)} ${msg.streaming ? "is-streaming" : ""}">
       <div class="assistant-message-role dockup-agent-message-role">${msg.role === "user" ? "You" : "DockUP AI"}</div>
       ${msg.thinking && msg.role === "assistant" ? `
         <details class="dockup-thinking-block" open>
           <summary class="dockup-thinking-summary">
-            <span>Thinking</span>
+            <span>${msg.streaming && !msg.content ? "Thinking..." : "Thinking"}</span>
             <span class="dockup-thinking-badge">${escapeHtml(thinkModeLabel(msg.thinkMode || ollamaState.thinkMode || "auto"))}</span>
           </summary>
           <div class="dockup-thinking-text">${escapeHtml(msg.thinking)}</div>
         </details>
       ` : ""}
-      <div class="assistant-message-text dockup-agent-message-text" ${msg.loading ? 'data-loading="true"' : ""}>${escapeHtml(msg.content)}</div>
+      <div class="assistant-message-text dockup-agent-message-text" ${msg.loading && !msg.content ? 'data-loading="true"' : ""}>${escapeHtml(msg.content)}</div>
+      ${msg.metrics ? `<div class="dockup-agent-message-meta">${escapeHtml(formatDockupAgentMetrics(msg.metrics))}</div>` : ""}
     </div>
   `).join("");
   els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
+}
+
+async function readDockupAgentStream(response, onEvent) {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Streaming is not supported by this browser.");
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      onEvent(JSON.parse(trimmed));
+    }
+  }
+  const tail = buffer.trim();
+  if (tail) onEvent(JSON.parse(tail));
+}
+
+function updateLastDockupAgentMessage(patch) {
+  const index = dockupAgentMessages.length - 1;
+  if (index < 0) return;
+  dockupAgentMessages[index] = { ...dockupAgentMessages[index], ...patch };
+  renderDockupAgentMessages();
 }
 
 async function sendDockupAgentMessage() {
@@ -1434,14 +1478,22 @@ async function sendDockupAgentMessage() {
   if (els.dockupAgentInput) els.dockupAgentInput.value = "";
   if (els.dockupAgentSend) els.dockupAgentSend.disabled = true;
   dockupAgentMessages.push({ role: "user", content: text });
-  dockupAgentMessages.push({ role: "assistant", content: "", thinking: "", thinkMode: readOllamaThinkModeFromForm(), loading: true });
+  dockupAgentMessages.push({
+    role: "assistant",
+    content: "",
+    thinking: "",
+    thinkMode: readOllamaThinkModeFromForm(),
+    loading: true,
+    streaming: true,
+  });
   renderDockupAgentMessages();
+  const startedAt = performance.now();
   try {
     const history = dockupAgentMessages
       .slice(0, -1)
       .filter((msg) => msg.role === "user" || msg.role === "assistant")
       .map((msg) => ({ role: msg.role, content: msg.content }));
-    const data = await fetchJSON("/api/extensions/ollama/chat", {
+    const response = await fetch("/api/extensions/ollama/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1453,13 +1505,37 @@ async function sendDockupAgentMessage() {
         history,
       }),
     });
-    dockupAgentMessages[dockupAgentMessages.length - 1] = {
-      role: "assistant",
-      content: data.ok ? (data.answer || "No answer returned.") : (data.error || "Ollama request failed."),
-      thinking: data.ok ? (data.thinking || "") : "",
-      thinkMode: data.ok ? (data.think_mode || readOllamaThinkModeFromForm()) : readOllamaThinkModeFromForm(),
-      loading: false,
-    };
+    if (!response.ok) throw new Error(await response.text() || `Request failed: ${response.status}`);
+    await readDockupAgentStream(response, (event) => {
+      const current = dockupAgentMessages[dockupAgentMessages.length - 1] || {};
+      if (event.type === "start") {
+        updateLastDockupAgentMessage({ thinkMode: event.think_mode || current.thinkMode });
+      } else if (event.type === "thinking") {
+        updateLastDockupAgentMessage({ thinking: `${current.thinking || ""}${event.delta || ""}` });
+      } else if (event.type === "answer") {
+        updateLastDockupAgentMessage({ content: `${current.content || ""}${event.delta || ""}` });
+      } else if (event.type === "done") {
+        const fallbackSeconds = Math.max(0.001, (performance.now() - startedAt) / 1000);
+        updateLastDockupAgentMessage({
+          loading: false,
+          streaming: false,
+          metrics: {
+            ...(event.metrics || {}),
+            total_seconds: event.metrics?.total_seconds || fallbackSeconds,
+          },
+        });
+      } else if (event.type === "error") {
+        updateLastDockupAgentMessage({
+          content: event.error || "Ollama request failed.",
+          loading: false,
+          streaming: false,
+        });
+      }
+    });
+    const last = dockupAgentMessages[dockupAgentMessages.length - 1];
+    if (last?.loading) {
+      updateLastDockupAgentMessage({ loading: false, streaming: false });
+    }
   } catch (err) {
     dockupAgentMessages[dockupAgentMessages.length - 1] = {
       role: "assistant",
@@ -1467,6 +1543,7 @@ async function sendDockupAgentMessage() {
       thinking: "",
       thinkMode: readOllamaThinkModeFromForm(),
       loading: false,
+      streaming: false,
     };
   } finally {
     if (els.dockupAgentSend) els.dockupAgentSend.disabled = false;

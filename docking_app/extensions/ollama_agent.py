@@ -9,7 +9,7 @@ import subprocess
 from typing import Any
 from urllib.parse import urlparse
 
-from ..agent.ollama_client import chat, normalize_base_url, probe_ollama
+from ..agent.ollama_client import chat, normalize_base_url, probe_ollama, stream_chat
 from ..agent.state_context import docking_state_context, state_system_prompt
 from ..config import BASE
 
@@ -414,7 +414,7 @@ def connect(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def ask(payload: dict[str, Any]) -> dict[str, Any]:
+def _build_chat_request(payload: dict[str, Any]) -> dict[str, Any]:
     saved = _read_state()
     base_url = normalize_base_url(payload.get("base_url") or saved.get("base_url"), DEFAULT_BASE_URL)
     model = str(payload.get("model") or saved.get("model") or "").strip()
@@ -422,11 +422,6 @@ def ask(payload: dict[str, Any]) -> dict[str, Any]:
     think_mode = _normalize_think_mode(payload.get("think_mode"), saved.get("think_mode", DEFAULT_THINK_MODE))
     message = str(payload.get("message") or "").strip()
     history = payload.get("history") if isinstance(payload.get("history"), list) else []
-    if not model:
-        return {"ok": False, "error": "Select an Ollama model first.", "state_context": docking_state_context()}
-    if not message:
-        return {"ok": False, "error": "Message is empty.", "state_context": docking_state_context()}
-
     state_context = docking_state_context()
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": state_system_prompt()},
@@ -440,15 +435,35 @@ def ask(payload: dict[str, Any]) -> dict[str, Any]:
         if role in {"user", "assistant"} and content:
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": message})
+    return {
+        "base_url": base_url,
+        "model": model,
+        "settings": settings,
+        "think_mode": think_mode,
+        "message": message,
+        "messages": messages,
+        "state_context": state_context,
+    }
+
+
+def ask(payload: dict[str, Any]) -> dict[str, Any]:
+    request = _build_chat_request(payload)
+    model = request["model"]
+    message = request["message"]
+    state_context = request["state_context"]
+    if not model:
+        return {"ok": False, "error": "Select an Ollama model first.", "state_context": state_context}
+    if not message:
+        return {"ok": False, "error": "Message is empty.", "state_context": state_context}
 
     try:
         data = chat(
-            base_url=base_url,
+            base_url=request["base_url"],
             model=model,
-            messages=messages,
-            keep_alive=settings["keep_alive"],
-            think=_think_flag(think_mode),
-            options=_ollama_options(settings),
+            messages=request["messages"],
+            keep_alive=request["settings"]["keep_alive"],
+            think=_think_flag(request["think_mode"]),
+            options=_ollama_options(request["settings"]),
             timeout_seconds=240.0,
         )
     except Exception as exc:
@@ -458,4 +473,66 @@ def ask(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(data.get("message"), dict):
         answer = str(data["message"].get("content") or "").strip()
         thinking = str(data["message"].get("thinking") or "").strip()
-    return {"ok": True, "answer": answer, "thinking": thinking, "model": model, "think_mode": think_mode, "state_context": state_context, "raw": data}
+    return {"ok": True, "answer": answer, "thinking": thinking, "model": model, "think_mode": request["think_mode"], "state_context": state_context, "raw": data}
+
+
+def _duration_seconds(value: Any) -> float | None:
+    if not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return round(float(value) / 1_000_000_000, 3)
+
+
+def _tokens_per_second(eval_count: Any, eval_duration: Any) -> float | None:
+    if not isinstance(eval_count, (int, float)) or not isinstance(eval_duration, (int, float)):
+        return None
+    if eval_count <= 0 or eval_duration <= 0:
+        return None
+    return round(float(eval_count) / (float(eval_duration) / 1_000_000_000), 2)
+
+
+def stream_ask(payload: dict[str, Any]):
+    request = _build_chat_request(payload)
+    model = request["model"]
+    message = request["message"]
+    state_context = request["state_context"]
+
+    def event(row: dict[str, Any]) -> str:
+        return json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+    if not model:
+        yield event({"type": "error", "error": "Select an Ollama model first.", "state_context": state_context})
+        return
+    if not message:
+        yield event({"type": "error", "error": "Message is empty.", "state_context": state_context})
+        return
+
+    yield event({"type": "start", "model": model, "think_mode": request["think_mode"]})
+    try:
+        for data in stream_chat(
+            base_url=request["base_url"],
+            model=model,
+            messages=request["messages"],
+            keep_alive=request["settings"]["keep_alive"],
+            think=_think_flag(request["think_mode"]),
+            options=_ollama_options(request["settings"]),
+            timeout_seconds=240.0,
+        ):
+            message_row = data.get("message") if isinstance(data.get("message"), dict) else {}
+            thinking_delta = str(message_row.get("thinking") or "")
+            content_delta = str(message_row.get("content") or "")
+            if thinking_delta:
+                yield event({"type": "thinking", "delta": thinking_delta})
+            if content_delta:
+                yield event({"type": "answer", "delta": content_delta})
+            if data.get("done"):
+                metrics = {
+                    "total_seconds": _duration_seconds(data.get("total_duration")),
+                    "load_seconds": _duration_seconds(data.get("load_duration")),
+                    "prompt_tokens": data.get("prompt_eval_count"),
+                    "answer_tokens": data.get("eval_count"),
+                    "tokens_per_second": _tokens_per_second(data.get("eval_count"), data.get("eval_duration")),
+                }
+                yield event({"type": "done", "metrics": metrics, "raw": data})
+                return
+    except Exception as exc:
+        yield event({"type": "error", "error": f"{type(exc).__name__}: {exc}", "state_context": state_context})

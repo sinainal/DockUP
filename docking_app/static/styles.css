@@ -415,6 +415,31 @@
   text-rendering: optimizeLegibility;
 }
 
+.dockup-agent-panel .assistant-message.is-streaming .assistant-message-text:not(:empty)::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 1.05em;
+  margin-left: 2px;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, .55);
+  vertical-align: -2px;
+  animation: dockup-stream-caret .9s ease-in-out infinite;
+}
+
+@keyframes dockup-stream-caret {
+  0%, 100% { opacity: .28; }
+  50% { opacity: .9; }
+}
+
+.dockup-agent-message-meta {
+  margin-top: 8px;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
 .dockup-agent-panel .assistant-message.assistant .assistant-message-text:empty::after,
 .dockup-agent-panel .assistant-message.assistant .assistant-message-text[data-loading="true"]::after {
   content: "";

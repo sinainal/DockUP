@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import re
 from typing import Any
 
@@ -117,3 +118,44 @@ def chat(
         message["content"] = clean_ollama_text(str(message.get("content") or ""))
         data["message"] = message
     return data
+
+
+def stream_chat(
+    *,
+    base_url: str,
+    model: str,
+    messages: list[dict[str, Any]],
+    keep_alive: str | int | float | None = "10m",
+    think: bool | str | None = None,
+    options: dict[str, Any] | None = None,
+    timeout_seconds: float = 240.0,
+):
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+    }
+    if options:
+        payload["options"] = options
+    if think is not None:
+        payload["think"] = think
+    if keep_alive is not None:
+        payload["keep_alive"] = keep_alive
+
+    timeout = httpx.Timeout(timeout_seconds, connect=5.0)
+    with httpx.Client(base_url=normalize_base_url(base_url), timeout=timeout, follow_redirects=True) as client:
+        with client.stream("POST", "/api/chat", json=payload) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                data = json.loads(line.decode("utf-8") if isinstance(line, bytes) else line)
+                message = data.get("message")
+                if isinstance(message, dict):
+                    message = dict(message)
+                    if "content" in message:
+                        message["content"] = str(message.get("content") or "")
+                    if "thinking" in message:
+                        message["thinking"] = str(message.get("thinking") or "")
+                    data["message"] = message
+                yield data

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..extensions import ollama_agent, vina_gpu_21
 from ..helpers import normalize_docking_config
@@ -62,3 +62,12 @@ def ollama_connect(payload: dict[str, object]) -> JSONResponse:
 @router.post("/ollama/chat")
 def ollama_chat(payload: dict[str, object]) -> JSONResponse:
     return JSONResponse(ollama_agent.ask(payload))
+
+
+@router.post("/ollama/chat/stream")
+def ollama_chat_stream(payload: dict[str, object]) -> StreamingResponse:
+    return StreamingResponse(
+        ollama_agent.stream_ask(payload),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
