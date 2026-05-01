@@ -149,6 +149,10 @@ let geminiState = {
 };
 let dockupAgentMessages = [];
 let dockupAgentProvider = "ollama";
+let dockupAgentLiveAssistantMessageEl = null;
+let dockupAgentLiveThinkingTextEl = null;
+let dockupAgentLiveAnswerTextEl = null;
+let dockupAgentScrollFrame = 0;
 
 const EXCLUDED_RESN = new Set([
   "HOH", "DOD", "WAT", "NA", "CL", "K", "MG", "CA", "ZN", "FE", "CU", "MN", "CO", "NI",
@@ -1668,11 +1672,45 @@ function renderDockupAgentContextMeter() {
   els.dockupAgentContextMeter.classList.toggle("is-hot", usage.percent >= 90);
 }
 
+function scheduleDockupAgentScroll() {
+  if (!els.dockupAgentMessages) return;
+  if (dockupAgentScrollFrame) return;
+  dockupAgentScrollFrame = window.requestAnimationFrame(() => {
+    dockupAgentScrollFrame = 0;
+    if (!els.dockupAgentMessages) return;
+    els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
+  });
+}
+
+function getOrCreateDockupTextNode(element) {
+  if (!element) return null;
+  let node = element.firstChild;
+  if (!node || node.nodeType !== Node.TEXT_NODE) {
+    element.textContent = "";
+    node = document.createTextNode("");
+    element.appendChild(node);
+  }
+  return node;
+}
+
+function bindDockupAgentLiveMessageRefs() {
+  dockupAgentLiveAssistantMessageEl = lastDockupAssistantMessageEl();
+  dockupAgentLiveThinkingTextEl = dockupAgentLiveAssistantMessageEl
+    ? dockupAgentLiveAssistantMessageEl.querySelector(".dockup-thinking-text")
+    : null;
+  dockupAgentLiveAnswerTextEl = dockupAgentLiveAssistantMessageEl
+    ? dockupAgentLiveAssistantMessageEl.querySelector(".dockup-agent-message-text")
+    : null;
+}
+
 function renderDockupAgentMessages() {
   if (!els.dockupAgentMessages) return;
   if (!dockupAgentMessages.length) {
     els.dockupAgentPanel?.classList.add("is-pristine");
     els.dockupAgentMessages.innerHTML = "";
+    dockupAgentLiveAssistantMessageEl = null;
+    dockupAgentLiveThinkingTextEl = null;
+    dockupAgentLiveAnswerTextEl = null;
     renderDockupAgentContextMeter();
     return;
   }
@@ -1694,19 +1732,33 @@ function renderDockupAgentMessages() {
       ${msg.metrics ? `<div class="dockup-agent-message-meta">${escapeHtml(formatDockupAgentMetrics(msg.metrics))}</div>` : ""}
     </div>
   `).join("");
-  els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
+  bindDockupAgentLiveMessageRefs();
+  scheduleDockupAgentScroll();
   renderDockupAgentContextMeter();
 }
 
 function lastDockupAssistantMessageEl() {
+  if (dockupAgentLiveAssistantMessageEl && document.contains(dockupAgentLiveAssistantMessageEl)) {
+    return dockupAgentLiveAssistantMessageEl;
+  }
   if (!els.dockupAgentMessages) return null;
   const rows = els.dockupAgentMessages.querySelectorAll(".dockup-agent-message.assistant");
-  return rows.length ? rows[rows.length - 1] : null;
+  dockupAgentLiveAssistantMessageEl = rows.length ? rows[rows.length - 1] : null;
+  if (!dockupAgentLiveAssistantMessageEl) {
+    dockupAgentLiveThinkingTextEl = null;
+    dockupAgentLiveAnswerTextEl = null;
+  }
+  return dockupAgentLiveAssistantMessageEl;
 }
 
 function ensureDockupThinkingBlock(messageEl, mode) {
   let block = messageEl?.querySelector(".dockup-thinking-block");
-  if (block) return block.querySelector(".dockup-thinking-text");
+  if (block) {
+    const textEl = block.querySelector(".dockup-thinking-text");
+    dockupAgentLiveAssistantMessageEl = messageEl || dockupAgentLiveAssistantMessageEl;
+    dockupAgentLiveThinkingTextEl = textEl;
+    return textEl;
+  }
   block = document.createElement("details");
   block.className = "dockup-thinking-block";
   block.open = true;
@@ -1728,25 +1780,39 @@ function ensureDockupThinkingBlock(messageEl, mode) {
   block.append(summary, text);
   const answerEl = messageEl.querySelector(".dockup-agent-message-text");
   messageEl.insertBefore(block, answerEl);
+  dockupAgentLiveAssistantMessageEl = messageEl;
+  dockupAgentLiveThinkingTextEl = text;
+  dockupAgentLiveAnswerTextEl = answerEl;
   return text;
 }
 
 function appendDockupThinkingDelta(delta, mode) {
   const messageEl = lastDockupAssistantMessageEl();
   if (!messageEl || !delta) return;
-  const thinkingEl = ensureDockupThinkingBlock(messageEl, mode);
-  thinkingEl.textContent += delta;
-  els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
+  let thinkingEl = dockupAgentLiveThinkingTextEl;
+  if (!thinkingEl || !messageEl.contains(thinkingEl)) {
+    thinkingEl = ensureDockupThinkingBlock(messageEl, mode);
+  }
+  const textNode = getOrCreateDockupTextNode(thinkingEl);
+  if (!textNode) return;
+  textNode.appendData(delta);
+  scheduleDockupAgentScroll();
 }
 
 function appendDockupAnswerDelta(delta) {
   const messageEl = lastDockupAssistantMessageEl();
   if (!messageEl || !delta) return;
-  const answerEl = messageEl.querySelector(".dockup-agent-message-text");
+  let answerEl = dockupAgentLiveAnswerTextEl;
+  if (!answerEl || !messageEl.contains(answerEl)) {
+    answerEl = messageEl.querySelector(".dockup-agent-message-text");
+    dockupAgentLiveAnswerTextEl = answerEl;
+  }
   if (!answerEl) return;
   answerEl.removeAttribute("data-loading");
-  answerEl.textContent += delta;
-  els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
+  const textNode = getOrCreateDockupTextNode(answerEl);
+  if (!textNode) return;
+  textNode.appendData(delta);
+  scheduleDockupAgentScroll();
 }
 
 function finalizeDockupAssistantDom(metrics) {
@@ -1769,7 +1835,7 @@ function finalizeDockupAssistantDom(metrics) {
     }
     meta.textContent = label;
   }
-  els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
+  scheduleDockupAgentScroll();
   renderDockupAgentContextMeter();
 }
 
@@ -1792,7 +1858,7 @@ function setDockupAssistantStatus(text) {
     }
   }
   statusEl.textContent = text;
-  els.dockupAgentMessages.scrollTop = els.dockupAgentMessages.scrollHeight;
+  scheduleDockupAgentScroll();
 }
 
 async function readDockupAgentStream(response, onEvent) {
