@@ -120,6 +120,25 @@ def chat(
     return data
 
 
+def unload_model(
+    *,
+    base_url: str,
+    model: str,
+    timeout_seconds: float = 60.0,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [],
+        "stream": False,
+        "keep_alive": 0,
+    }
+    timeout = httpx.Timeout(timeout_seconds, connect=5.0)
+    with httpx.Client(base_url=normalize_base_url(base_url), timeout=timeout, follow_redirects=True) as client:
+        response = client.post("/api/chat", json=payload)
+        response.raise_for_status()
+        return response.json() or {}
+
+
 def stream_chat(
     *,
     base_url: str,

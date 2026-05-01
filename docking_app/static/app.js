@@ -1283,6 +1283,8 @@ function renderOllamaStatus(data) {
     lines.push(`Sampling: temp ${settings.temperature}, top_p ${settings.top_p}, repeat ${settings.repeat_penalty}`);
     if (loading) lines.push(job.message || "Loading local model");
     if (job.error) lines.push(`Warmup error: ${job.error}`);
+    if (data.offloaded_model) lines.push(`Offloaded model: ${data.offloaded_model}`);
+    if (data.offload_error) lines.push(`Offload error: ${data.offload_error}`);
     els.ollamaExtensionLog.textContent = lines.join("\n");
   }
   renderOllamaModels();
@@ -1547,6 +1549,22 @@ async function connectOllama({ model = "", openAgent = true } = {}) {
   } finally {
     if (els.connectOllamaBtn) els.connectOllamaBtn.disabled = false;
   }
+}
+
+async function offloadOllamaModel({ baseUrl = ollamaState.baseUrl, model = ollamaState.model } = {}) {
+  const targetBaseUrl = String(baseUrl || ollamaState.baseUrl || "http://localhost:11434").trim();
+  const targetModel = String(model || ollamaState.model || "").trim();
+  if (!targetBaseUrl || !targetModel) return null;
+  const data = await fetchJSON("/api/extensions/ollama/offload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      base_url: targetBaseUrl,
+      model: targetModel,
+    }),
+  });
+  renderOllamaStatus(data);
+  return data;
 }
 
 function renderDockupAgentShell() {
@@ -7182,6 +7200,11 @@ function bindEvents() {
         dockupAgentProvider = "gemini";
         geminiState.model = item.dataset.model || geminiState.defaultModel;
         renderDockupAgentShell();
+        if (ollamaState.connected && ollamaState.model) {
+          offloadOllamaModel().catch((err) => {
+            if (els.ollamaExtensionLog) els.ollamaExtensionLog.textContent = err.message || String(err);
+          });
+        }
         saveGeminiSettings({ model: geminiState.model }).catch((err) => {
           if (els.geminiExtensionLog) els.geminiExtensionLog.textContent = err.message || String(err);
         });

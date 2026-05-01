@@ -9,7 +9,7 @@ import subprocess
 from typing import Any
 from urllib.parse import urlparse
 
-from ..agent.ollama_client import chat, normalize_base_url, probe_ollama, stream_chat
+from ..agent.ollama_client import chat, normalize_base_url, probe_ollama, stream_chat, unload_model
 from ..agent.state_context import docking_state_context, state_system_prompt
 from ..config import BASE
 
@@ -346,6 +346,20 @@ def _stop_model(base_url: str, model: str) -> str:
     return ""
 
 
+def _offload_model(base_url: str, model: str) -> str:
+    model_name = str(model or "").strip()
+    if not model_name or not _is_local_base_url(base_url):
+        return ""
+    try:
+        unload_model(base_url=base_url, model=model_name, timeout_seconds=60.0)
+        return ""
+    except Exception as exc:
+        stop_error = _stop_model(base_url, model_name)
+        if stop_error:
+            return f"{type(exc).__name__}: {exc}; {stop_error}"
+        return ""
+
+
 def _warmup_worker(base_url: str, model: str, settings: dict[str, Any], think_mode: str, token: int) -> None:
     with _LOCK:
         _WARMUP_JOB.update(
@@ -451,6 +465,32 @@ def connect(payload: dict[str, Any]) -> dict[str, Any]:
     result = _snapshot(base_url, model, state.get("selected_models"))
     if stop_error:
         result["stop_error"] = stop_error
+    return result
+
+
+def offload(payload: dict[str, Any]) -> dict[str, Any]:
+    global _WARMUP_TOKEN
+    saved = _read_state()
+    base_url = normalize_base_url(payload.get("base_url") or saved.get("base_url"), DEFAULT_BASE_URL)
+    model_name = str(payload.get("model") or saved.get("model") or "").strip()
+    offload_error = ""
+    if model_name and _is_local_base_url(base_url):
+        with _LOCK:
+          _WARMUP_TOKEN += 1
+        offload_error = _offload_model(base_url, model_name)
+        with _LOCK:
+            _WARMUP_JOB.update(
+                {
+                    "running": False,
+                    "message": "Model offloaded" if not offload_error else "Model offload failed",
+                    "model": model_name,
+                    "error": offload_error,
+                    "finished_at": time.time(),
+                }
+            )
+    result = _snapshot(base_url, model_name or None, saved.get("selected_models") if isinstance(saved.get("selected_models"), list) else None)
+    result["offloaded_model"] = model_name if model_name and not offload_error else ""
+    result["offload_error"] = offload_error
     return result
 
 

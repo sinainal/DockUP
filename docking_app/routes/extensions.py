@@ -64,6 +64,11 @@ def ollama_models(payload: dict[str, object]) -> JSONResponse:
     return JSONResponse(ollama_agent.update_selected_models(payload))
 
 
+@router.post("/ollama/offload")
+def ollama_offload(payload: dict[str, object]) -> JSONResponse:
+    return JSONResponse(ollama_agent.offload(payload))
+
+
 @router.post("/ollama/chat")
 def ollama_chat(payload: dict[str, object]) -> JSONResponse:
     return JSONResponse(ollama_agent.ask(payload))
