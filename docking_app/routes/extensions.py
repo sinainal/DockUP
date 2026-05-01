@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from ..extensions import ollama_agent, vina_gpu_21
+from ..extensions import gemini_agent, ollama_agent, vina_gpu_21
 from ..helpers import normalize_docking_config
 from ..state import STATE, save_state_cache
 
@@ -59,6 +59,11 @@ def ollama_connect(payload: dict[str, object]) -> JSONResponse:
     return JSONResponse(ollama_agent.connect(payload))
 
 
+@router.post("/ollama/models")
+def ollama_models(payload: dict[str, object]) -> JSONResponse:
+    return JSONResponse(ollama_agent.update_selected_models(payload))
+
+
 @router.post("/ollama/chat")
 def ollama_chat(payload: dict[str, object]) -> JSONResponse:
     return JSONResponse(ollama_agent.ask(payload))
@@ -68,6 +73,30 @@ def ollama_chat(payload: dict[str, object]) -> JSONResponse:
 def ollama_chat_stream(payload: dict[str, object]) -> StreamingResponse:
     return StreamingResponse(
         ollama_agent.stream_ask(payload),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/gemini/status")
+def gemini_status() -> JSONResponse:
+    return JSONResponse(gemini_agent.status())
+
+
+@router.post("/gemini/save")
+def gemini_save(payload: dict[str, object]) -> JSONResponse:
+    return JSONResponse(gemini_agent.save(payload))
+
+
+@router.post("/gemini/models")
+def gemini_models(payload: dict[str, object]) -> JSONResponse:
+    return JSONResponse(gemini_agent.save(payload))
+
+
+@router.post("/gemini/chat/stream")
+def gemini_chat_stream(payload: dict[str, object]) -> StreamingResponse:
+    return StreamingResponse(
+        gemini_agent.stream_ask(payload),
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

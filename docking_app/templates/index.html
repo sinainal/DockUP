@@ -13,7 +13,7 @@
   <link rel="icon" type="image/png" href="/static/image.png?v=2">
   <link rel="shortcut icon" type="image/png" href="/static/image.png?v=2">
   <link rel="apple-touch-icon" href="/static/image.png?v=2">
-    <link rel="stylesheet" href="/static/styles.css?v=51">
+    <link rel="stylesheet" href="/static/styles.css?v=56">
   <link rel="stylesheet" href="/static/grid_selection_search.css?v=1">
   <link rel="stylesheet" href="/static/docking_flex_selection.css?v=1">
   <link rel="stylesheet" href="/static/pocket_finder.css?v=1">
@@ -703,7 +703,7 @@
           <div>
             <div class="extension-kicker">Local AI</div>
             <div class="extension-title">Ollama Agent</div>
-            <div class="helper">Connect a local Ollama model for a state-aware DockUP assistant. Tool calls are disabled in this first release.</div>
+            <div class="helper">Use this card to choose which local models appear in the assistant. The active model is picked from the AI panel.</div>
           </div>
           <div class="extension-status-pill" id="ollamaStatusPill">Not connected</div>
         </div>
@@ -714,12 +714,14 @@
           </label>
           <label class="field">
             <span class="field-label">Context</span>
-            <select id="ollamaNumCtx">
-              <option value="1024">1,024</option>
-              <option value="2048">2,048</option>
-              <option value="4096" selected>4,096</option>
-              <option value="8192">8,192</option>
-              <option value="16384">16,384</option>
+            <select id="ollamaNumCtx" aria-label="Context tokens">
+              <option value="2048">2k</option>
+              <option value="4096" selected>4k</option>
+              <option value="8192">8k</option>
+              <option value="16384">16k</option>
+              <option value="32768">32k</option>
+              <option value="65536">64k</option>
+              <option value="131072">128k</option>
             </select>
           </label>
           <button class="primary" id="connectOllamaBtn" type="button">Connect</button>
@@ -784,6 +786,26 @@
         <div class="ollama-model-grid" id="ollamaModelGrid"></div>
         <div class="extension-log compact" id="ollamaExtensionLog">Ollama connection log will appear here.</div>
       </div>
+      <div class="extension-card gemini-extension-card">
+        <div class="extension-card-head">
+          <div>
+            <div class="extension-kicker">Cloud AI</div>
+            <div class="extension-title">Gemini</div>
+            <div class="helper">Save a Gemini API key and choose which supported models should appear in the DockUP assistant.</div>
+          </div>
+          <div class="extension-status-pill" id="geminiStatusPill">Key not saved</div>
+        </div>
+        <div class="ollama-connect-row gemini-key-row">
+          <label class="field">
+            <span class="field-label">Gemini API key</span>
+            <input id="geminiApiKey" type="password" placeholder="AIza..." autocomplete="off">
+          </label>
+          <button class="primary" id="saveGeminiBtn" type="button">Save key</button>
+        </div>
+        <div class="ollama-model-summary" id="geminiModelSummary">Select which Gemini models should appear in the assistant model menu.</div>
+        <div class="ollama-model-grid gemini-model-grid" id="geminiModelGrid"></div>
+        <div class="extension-log compact" id="geminiExtensionLog">Gemini configuration will appear here.</div>
+      </div>
     </div>
   </div>
 
@@ -814,7 +836,7 @@
           <div class="assistant-composer-tools">
             <div class="assistant-toolbar-group">
               <div class="assistant-mode-switch assistant-mode-switch-plain" role="presentation">
-                <button class="assistant-mode-btn is-active" type="button" tabindex="-1">Local</button>
+                <button class="assistant-mode-btn is-active" id="dockupAgentProviderLabel" type="button" tabindex="-1">Local</button>
               </div>
               <span class="assistant-toolbar-divider" aria-hidden="true"></span>
               <div class="assistant-model-picker" id="dockupAgentModelWrap">
@@ -845,11 +867,9 @@
                 </div>
               </div>
               <span class="assistant-toolbar-divider" aria-hidden="true"></span>
-              <div id="dockupAgentContextMeter" class="assistant-context-meter" aria-label="Context window usage">
-                <span id="dockupAgentContextDot" class="assistant-context-dot" aria-hidden="true"></span>
-                <span id="dockupAgentContextLabel">0%</span>
+              <div id="dockupAgentContextMeter" class="assistant-context-meter" aria-label="Context window usage" tabindex="0">
+                <span id="dockupAgentContextDot" class="assistant-context-ring" aria-hidden="true"></span>
                 <div id="dockupAgentContextTip" class="assistant-context-tip" role="tooltip">
-                  <div>Context window</div>
                   <strong id="dockupAgentContextPercent">0% full</strong>
                   <span id="dockupAgentContextTokens">0 / 0 tokens used</span>
                   <small>Approximate chat context</small>
@@ -1594,7 +1614,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=60"></script>
+  <script src="/static/app.js?v=65"></script>
   <script src="/static/grid_selection_search.js?v=1"></script>
   <script src="/static/docking_flex_selection.js?v=1"></script>
   <script src="/static/pocket_finder.js?v=1"></script>

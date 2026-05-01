@@ -16,12 +16,14 @@ from ..config import BASE
 EXTENSION_ID = "ollama_agent"
 DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_NUM_CTX = 4096
+NUM_CTX_MIN = 1024
+NUM_CTX_MAX = 131072
 DEFAULT_NUM_BATCH = 128
 DEFAULT_KEEP_ALIVE = -1
 DEFAULT_NUM_GPU = -1
 DEFAULT_WARMUP_TOKENS = 1
 DEFAULT_THINK_MODE = "auto"
-NUM_CTX_CHOICES = (1024, 2048, 4096, 8192, 16384)
+NUM_CTX_CHOICES = (1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072)
 NUM_BATCH_CHOICES = (64, 128, 256, 512)
 KEEP_ALIVE_CHOICES = (-1, 300, 900, 1800, 3600)
 NUM_GPU_CHOICES = (-1, 40, 48, 56, 64)
@@ -50,9 +52,28 @@ def _normalize_num_ctx(value: Any, default: int = DEFAULT_NUM_CTX) -> int:
         parsed = int(value)
     except (TypeError, ValueError):
         return default
-    if parsed in NUM_CTX_CHOICES:
+    if NUM_CTX_MIN <= parsed <= NUM_CTX_MAX:
         return parsed
     return default
+
+
+def _normalize_selected_models(raw: Any, model_names: list[str], fallback: str = "") -> list[str]:
+    selected_source = raw if isinstance(raw, list) else []
+    selected: list[str] = []
+    seen: set[str] = set()
+    allowed = set(model_names)
+    for value in selected_source:
+        name = str(value or "").strip()
+        if not name or name in seen or name not in allowed:
+            continue
+        selected.append(name)
+        seen.add(name)
+    if not selected:
+        if fallback and fallback in allowed:
+            return [fallback]
+        if model_names:
+            return [model_names[0]]
+    return selected
 
 
 def _normalize_choice(value: Any, choices: tuple[int, ...], default: int) -> int:
@@ -173,6 +194,7 @@ def _read_state() -> dict[str, Any]:
             "model": "",
             "settings": _default_settings(),
             "think_mode": DEFAULT_THINK_MODE,
+            "selected_models": [],
             "connected": False,
             "last_error": "",
         }
@@ -184,6 +206,7 @@ def _read_state() -> dict[str, Any]:
             "model": "",
             "settings": _default_settings(),
             "think_mode": DEFAULT_THINK_MODE,
+            "selected_models": [],
             "connected": False,
             "last_error": "",
         }
@@ -193,6 +216,7 @@ def _read_state() -> dict[str, Any]:
         "model": str(data.get("model") or "").strip(),
         "settings": _normalize_settings(settings_source),
         "think_mode": _normalize_think_mode(data.get("think_mode"), DEFAULT_THINK_MODE),
+        "selected_models": [str(item or "").strip() for item in (data.get("selected_models") or []) if str(item or "").strip()],
         "connected": bool(data.get("connected")),
         "last_error": str(data.get("last_error") or "").strip(),
     }
@@ -229,20 +253,27 @@ def _preferred_model(models: list[dict[str, Any]], current: str = "") -> str:
     return sorted(names, key=lambda name: (-_model_score(name), name.lower()))[0]
 
 
-def _snapshot(base_url: str | None = None, model: str | None = None) -> dict[str, Any]:
+def _snapshot(base_url: str | None = None, model: str | None = None, selected_models: list[str] | None = None) -> dict[str, Any]:
     saved = _read_state()
     target_base_url = normalize_base_url(base_url or saved.get("base_url"), DEFAULT_BASE_URL)
     connected, version, model_rows, error = probe_ollama(target_base_url)
     models = [item.as_dict() for item in model_rows]
+    model_names = [str(item.get("name") or "").strip() for item in models if str(item.get("name") or "").strip()]
     selected = str(model if model is not None else saved.get("model") or "").strip()
     selected = _preferred_model(models, selected)
     settings = _normalize_settings(saved.get("settings"))
     think_mode = _normalize_think_mode(saved.get("think_mode"), DEFAULT_THINK_MODE)
+    visible_models = _normalize_selected_models(
+        selected_models if selected_models is not None else saved.get("selected_models"),
+        model_names,
+        selected,
+    )
     state = {
         "base_url": target_base_url,
         "model": selected,
         "settings": settings,
         "think_mode": think_mode,
+        "selected_models": visible_models,
         "connected": connected,
         "last_error": "" if connected else (error or saved.get("last_error") or ""),
     }
@@ -258,8 +289,11 @@ def _snapshot(base_url: str | None = None, model: str | None = None) -> dict[str
         "num_ctx": settings["num_ctx"],
         "settings": settings,
         "think_mode": think_mode,
+        "selected_models": visible_models,
         "think_mode_choices": list(THINK_MODE_CHOICES),
         "num_ctx_choices": list(NUM_CTX_CHOICES),
+        "num_ctx_min": NUM_CTX_MIN,
+        "num_ctx_max": NUM_CTX_MAX,
         "num_batch_choices": list(NUM_BATCH_CHOICES),
         "keep_alive_choices": list(KEEP_ALIVE_CHOICES),
         "num_gpu_choices": list(NUM_GPU_CHOICES),
@@ -364,7 +398,8 @@ def connect(payload: dict[str, Any]) -> dict[str, Any]:
     previous = _read_state()
     requested_settings = _settings_from_payload(payload, previous.get("settings"))
     requested_think_mode = _normalize_think_mode(payload.get("think_mode"), previous.get("think_mode", DEFAULT_THINK_MODE))
-    snapshot = _snapshot(base_url, requested_model)
+    requested_selected_models = payload.get("selected_models")
+    snapshot = _snapshot(base_url, requested_model, requested_selected_models if isinstance(requested_selected_models, list) else None)
     model = str(snapshot.get("model") or requested_model).strip()
     previous_model = str(previous.get("model") or "").strip()
     stop_error = ""
@@ -386,6 +421,11 @@ def connect(payload: dict[str, Any]) -> dict[str, Any]:
         "model": model,
         "settings": requested_settings,
         "think_mode": requested_think_mode,
+        "selected_models": _normalize_selected_models(
+            requested_selected_models if isinstance(requested_selected_models, list) else previous.get("selected_models"),
+            [str(item.get("name") or "").strip() for item in snapshot.get("models", []) if str(item.get("name") or "").strip()],
+            model,
+        ),
         "connected": bool(snapshot.get("connected")),
         "last_error": str(snapshot.get("error") or ""),
     }
@@ -408,10 +448,29 @@ def connect(payload: dict[str, Any]) -> dict[str, Any]:
                 daemon=True,
             )
             thread.start()
-    result = _snapshot(base_url, model)
+    result = _snapshot(base_url, model, state.get("selected_models"))
     if stop_error:
         result["stop_error"] = stop_error
     return result
+
+
+def update_selected_models(payload: dict[str, Any]) -> dict[str, Any]:
+    saved = _read_state()
+    model_rows = probe_ollama(normalize_base_url(payload.get("base_url") or saved.get("base_url"), DEFAULT_BASE_URL))[2]
+    model_names = [item.name for item in model_rows]
+    current_model = str(payload.get("model") or saved.get("model") or "").strip()
+    selected = _normalize_selected_models(payload.get("selected_models"), model_names, current_model)
+    state = {
+        "base_url": normalize_base_url(payload.get("base_url") or saved.get("base_url"), DEFAULT_BASE_URL),
+        "model": _preferred_model([item.as_dict() for item in model_rows], current_model),
+        "settings": _normalize_settings(payload.get("settings") if isinstance(payload.get("settings"), dict) else saved.get("settings")),
+        "think_mode": _normalize_think_mode(payload.get("think_mode"), saved.get("think_mode", DEFAULT_THINK_MODE)),
+        "selected_models": selected,
+        "connected": bool(payload.get("connected", saved.get("connected"))),
+        "last_error": str(payload.get("last_error") or saved.get("last_error") or ""),
+    }
+    _write_state(state)
+    return _snapshot(state["base_url"], state["model"], selected)
 
 
 def _build_chat_request(payload: dict[str, Any]) -> dict[str, Any]:
