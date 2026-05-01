@@ -95,6 +95,8 @@ let nativeLigComp = null;
 let interactionResiduesByType = {};
 let interactionResidueInfo = {};
 let interactionReps = {};
+let interactionHoverText = "Hover: -";
+let interactionHoverFrame = 0;
 let hoverHandlerBound = false;
 let atomClickHandlerBound = false;
 let resultPoseByPdb = new Map();
@@ -105,6 +107,7 @@ let currentResultData = null;
 let currentResultSites = [];
 let currentResultSelectedSiteId = "";
 let viewerPoseSyncBound = false;
+let viewerPoseSyncFrame = 0;
 let applyingProgrammaticResultPose = false;
 let refreshViewerRequestId = 0;
 let resultDetailRequestId = 0;
@@ -1285,6 +1288,8 @@ function renderOllamaStatus(data) {
     if (job.error) lines.push(`Warmup error: ${job.error}`);
     if (data.offloaded_model) lines.push(`Offloaded model: ${data.offloaded_model}`);
     if (data.offload_error) lines.push(`Offload error: ${data.offload_error}`);
+    if (data.server_error) lines.push(`Server start error: ${data.server_error}`);
+    if (data.shutdown_error) lines.push(`Server shutdown error: ${data.shutdown_error}`);
     els.ollamaExtensionLog.textContent = lines.join("\n");
   }
   renderOllamaModels();
@@ -1526,41 +1531,44 @@ async function connectOllama({ model = "", openAgent = true } = {}) {
   const baseUrl = String(els.ollamaBaseUrl?.value || ollamaState.baseUrl || "http://localhost:11434").trim();
   const settings = readOllamaSettingsFromForm();
   const thinkMode = readOllamaThinkModeFromForm();
+  const explicitModel = String(model || "").trim();
   if (els.connectOllamaBtn) els.connectOllamaBtn.disabled = true;
   try {
     dockupAgentProvider = "ollama";
     const selectedModels = new Set(readSelectedOllamaModelsFromUI());
-    if (model) selectedModels.add(model);
+    if (explicitModel) selectedModels.add(explicitModel);
     const data = await fetchJSON("/api/extensions/ollama/connect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         base_url: baseUrl,
-        model: model || ollamaState.model || "",
+        model: explicitModel || ollamaState.model || "",
         settings,
         think_mode: thinkMode,
         selected_models: [...selectedModels],
-        warmup: true,
+        warmup: Boolean(explicitModel),
+        load_model: Boolean(explicitModel),
       }),
     });
     renderOllamaStatus(data);
     if (data?.job?.running) startOllamaStatusPolling();
-    if (data.connected && openAgent) setDockupAgentOpen(true);
+    if (data.connected && openAgent && explicitModel) setDockupAgentOpen(true);
   } finally {
     if (els.connectOllamaBtn) els.connectOllamaBtn.disabled = false;
   }
 }
 
-async function offloadOllamaModel({ baseUrl = ollamaState.baseUrl, model = ollamaState.model } = {}) {
+async function offloadOllamaModel({ baseUrl = ollamaState.baseUrl, model = ollamaState.model, shutdownServer = false } = {}) {
   const targetBaseUrl = String(baseUrl || ollamaState.baseUrl || "http://localhost:11434").trim();
   const targetModel = String(model || ollamaState.model || "").trim();
-  if (!targetBaseUrl || !targetModel) return null;
-  const data = await fetchJSON("/api/extensions/ollama/offload", {
+  if (!targetBaseUrl || (!targetModel && !shutdownServer)) return null;
+  const data = await fetchJSON(shutdownServer ? "/api/extensions/ollama/shutdown" : "/api/extensions/ollama/offload", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       base_url: targetBaseUrl,
       model: targetModel,
+      offload: true,
     }),
   });
   renderOllamaStatus(data);
@@ -3171,6 +3179,17 @@ function setViewportMessage(message) {
   }
 }
 
+function setInteractionHoverText(text) {
+  const nextText = String(text || "Hover: -");
+  if (nextText === interactionHoverText) return;
+  interactionHoverText = nextText;
+  if (interactionHoverFrame) return;
+  interactionHoverFrame = window.requestAnimationFrame(() => {
+    interactionHoverFrame = 0;
+    if (els.interactionHover) els.interactionHover.textContent = interactionHoverText;
+  });
+}
+
 function initViewer() {
   if (stage) return true;
   if (typeof window.NGL === "undefined" || !window.NGL.Stage) {
@@ -3198,11 +3217,11 @@ function initViewer() {
         const info = interactionResidueInfo[key];
         if (info && info.types && info.types.length) {
           const labels = info.types.map((t) => INTERACTION_KIND_LABELS[t] || t);
-          els.interactionHover.textContent = `Hover: ${atom.resname}${atom.resno} ${chain} · ${labels.join(", ")}`;
+          setInteractionHoverText(`Hover: ${atom.resname}${atom.resno} ${chain} · ${labels.join(", ")}`);
           return;
         }
       }
-      els.interactionHover.textContent = "Hover: -";
+      setInteractionHoverText("Hover: -");
     });
     hoverHandlerBound = true;
   }
@@ -3255,10 +3274,15 @@ function initViewer() {
       if (appState.mode !== "Results") return;
       if (applyingProgrammaticResultPose) return;
       if (!currentResultPdbKey) return;
-      const pose = captureCurrentVectorPose();
-      if (pose) {
-        resultPoseByPdb.set(currentResultPdbKey, pose);
-      }
+      if (viewerPoseSyncFrame) return;
+      viewerPoseSyncFrame = window.requestAnimationFrame(() => {
+        viewerPoseSyncFrame = 0;
+        if (appState.mode !== "Results" || applyingProgrammaticResultPose || !currentResultPdbKey) return;
+        const pose = captureCurrentVectorPose();
+        if (pose) {
+          resultPoseByPdb.set(currentResultPdbKey, pose);
+        }
+      });
     });
     viewerPoseSyncBound = true;
   }
@@ -3365,7 +3389,7 @@ function updateRepresentations() {
   if (showResultsOnlyExtras && els.showInteractions?.checked) {
     renderInteractionHighlights();
   } else if (els.interactionHover) {
-    els.interactionHover.textContent = "Hover: -";
+    setInteractionHoverText("Hover: -");
   }
 
   // Native ligand component (from original receptor PDB)

@@ -55,7 +55,7 @@
   inset: -4px;
   border-radius: 50%;
   border: 2px solid rgba(59, 130, 246, .25);
-  animation: launcher-pulse 3s ease-in-out infinite;
+  opacity: .7;
 }
 
 @keyframes launcher-pulse {
@@ -700,19 +700,17 @@
 
 .dockup-model-loading-popup.native-model-loading-popup {
   position: fixed;
-  top: 18px;
+  top: 20px;
   left: 50%;
   right: auto;
   z-index: 1325;
-  width: min(340px, calc(100% - 32px));
+  width: min(360px, calc(100% - 32px));
   transform: translateX(-50%);
-  padding: 14px 14px 13px;
+  padding: 14px 16px;
   border: 1px solid rgba(203, 213, 225, .92);
   border-radius: 18px;
   background: linear-gradient(180deg, rgba(255, 255, 255, .98), rgba(246, 248, 252, .96));
   box-shadow: 0 20px 46px rgba(15, 23, 42, .18);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
   pointer-events: none;
 }
 
@@ -2391,7 +2389,8 @@ input[type="number"]::-webkit-outer-spin-button {
   position: relative;
   overflow: hidden;
   box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.08);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  contain: paint;
+  transition: border-color 0.18s ease;
 }
 
 .viewer-canvas:hover {
@@ -2407,8 +2406,6 @@ input[type="number"]::-webkit-outer-spin-button {
   z-index: 100;
   padding: 10px 20px;
   background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   border: 1px solid rgba(37, 99, 235, 0.2);
   border-radius: 12px;
   color: #1e40af;

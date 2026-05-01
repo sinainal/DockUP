@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import atexit
+
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -7,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 
 from . import state
 from .config import BASE, DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR, STATIC_DIR, TEMPLATES_DIR
+from .extensions import ollama_agent
 from .ligand_3d.app import app as ligand3d_app
 from .routes import configure_templates, router
 from .services import _existing_files, _load_receptor_meta, _start_run
@@ -30,10 +33,20 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.mount("/ligand-3d", ligand3d_app)
     app.include_router(router)
+
+    @app.on_event("shutdown")
+    def _shutdown_extensions() -> None:
+        try:
+            ollama_agent.shutdown({})
+        except Exception:
+            pass
+
     return app
 
 
 app = create_app()
+
+atexit.register(lambda: ollama_agent.shutdown({}))
 
 
 def __getattr__(name: str):

@@ -139,6 +139,25 @@ def unload_model(
         return response.json() or {}
 
 
+def running_models(base_url: str, *, timeout_seconds: float = 5.0) -> list[str]:
+    timeout = httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 3.0))
+    with httpx.Client(base_url=normalize_base_url(base_url), timeout=timeout, follow_redirects=True) as client:
+        response = client.get("/api/ps")
+        response.raise_for_status()
+        data = response.json() or {}
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in data.get("models") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("model") or "").strip()
+        if not name or name in seen:
+            continue
+        names.append(name)
+        seen.add(name)
+    return names
+
+
 def stream_chat(
     *,
     base_url: str,

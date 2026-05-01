@@ -6,10 +6,12 @@ import shutil
 import threading
 import time
 import subprocess
+import signal
 from typing import Any
+from pathlib import Path
 from urllib.parse import urlparse
 
-from ..agent.ollama_client import chat, normalize_base_url, probe_ollama, stream_chat, unload_model
+from ..agent.ollama_client import chat, normalize_base_url, probe_ollama, running_models, stream_chat, unload_model
 from ..agent.state_context import docking_state_context, state_system_prompt
 from ..config import BASE
 
@@ -35,6 +37,9 @@ ROOT_DIR = BASE / ".venv" / "dockup_extensions" / EXTENSION_ID
 STATE_PATH = ROOT_DIR / "state.json"
 
 _LOCK = threading.Lock()
+_SERVER_LOCK = threading.Lock()
+_SERVER_PROC: subprocess.Popen[str] | None = None
+_SERVER_BASE_URL = ""
 _WARMUP_JOB: dict[str, Any] = {
     "running": False,
     "message": "",
@@ -196,6 +201,7 @@ def _read_state() -> dict[str, Any]:
             "think_mode": DEFAULT_THINK_MODE,
             "selected_models": [],
             "connected": False,
+            "auto_start": False,
             "last_error": "",
         }
     try:
@@ -208,6 +214,7 @@ def _read_state() -> dict[str, Any]:
             "think_mode": DEFAULT_THINK_MODE,
             "selected_models": [],
             "connected": False,
+            "auto_start": False,
             "last_error": "",
         }
     settings_source = data.get("settings") if isinstance(data.get("settings"), dict) else data
@@ -218,6 +225,7 @@ def _read_state() -> dict[str, Any]:
         "think_mode": _normalize_think_mode(data.get("think_mode"), DEFAULT_THINK_MODE),
         "selected_models": [str(item or "").strip() for item in (data.get("selected_models") or []) if str(item or "").strip()],
         "connected": bool(data.get("connected")),
+        "auto_start": _normalize_bool(data.get("auto_start"), bool(data.get("connected"))),
         "last_error": str(data.get("last_error") or "").strip(),
     }
 
@@ -253,9 +261,18 @@ def _preferred_model(models: list[dict[str, Any]], current: str = "") -> str:
     return sorted(names, key=lambda name: (-_model_score(name), name.lower()))[0]
 
 
-def _snapshot(base_url: str | None = None, model: str | None = None, selected_models: list[str] | None = None) -> dict[str, Any]:
+def _snapshot(
+    base_url: str | None = None,
+    model: str | None = None,
+    selected_models: list[str] | None = None,
+    *,
+    ensure_server: bool = False,
+) -> dict[str, Any]:
     saved = _read_state()
     target_base_url = normalize_base_url(base_url or saved.get("base_url"), DEFAULT_BASE_URL)
+    server_error = ""
+    if ensure_server:
+        server_error = _ensure_local_server(target_base_url)
     connected, version, model_rows, error = probe_ollama(target_base_url)
     models = [item.as_dict() for item in model_rows]
     model_names = [str(item.get("name") or "").strip() for item in models if str(item.get("name") or "").strip()]
@@ -275,7 +292,8 @@ def _snapshot(base_url: str | None = None, model: str | None = None, selected_mo
         "think_mode": think_mode,
         "selected_models": visible_models,
         "connected": connected,
-        "last_error": "" if connected else (error or saved.get("last_error") or ""),
+        "auto_start": bool(saved.get("auto_start")),
+        "last_error": "" if connected and not server_error else (server_error or error or saved.get("last_error") or ""),
     }
     _write_state(state)
     with _LOCK:
@@ -299,14 +317,15 @@ def _snapshot(base_url: str | None = None, model: str | None = None, selected_mo
         "num_gpu_choices": list(NUM_GPU_CHOICES),
         "warmup_token_choices": list(WARMUP_TOKEN_CHOICES),
         "models": models,
-        "error": error,
+        "error": server_error or error,
         "job": job,
         "state_context": docking_state_context(),
     }
 
 
 def status() -> dict[str, Any]:
-    return _snapshot()
+    saved = _read_state()
+    return _snapshot(ensure_server=bool(saved.get("auto_start")))
 
 
 def _is_local_base_url(base_url: str) -> bool:
@@ -360,6 +379,288 @@ def _offload_model(base_url: str, model: str) -> str:
         return ""
 
 
+def _running_model_names(base_url: str) -> list[str]:
+    if not _is_local_base_url(base_url):
+        return []
+    try:
+        return running_models(base_url, timeout_seconds=5.0)
+    except Exception:
+        return []
+
+
+def _offload_running_models(base_url: str, preferred_model: str = "") -> str:
+    model_names: list[str] = []
+    seen: set[str] = set()
+    for name in [preferred_model, *_running_model_names(base_url)]:
+        model_name = str(name or "").strip()
+        if not model_name or model_name in seen:
+            continue
+        model_names.append(model_name)
+        seen.add(model_name)
+    errors = []
+    for model_name in model_names:
+        error = _offload_model(base_url, model_name)
+        if error:
+            errors.append(f"{model_name}: {error}")
+    return "; ".join(errors)
+
+
+def _local_ollama_serve_pids() -> list[int]:
+    try:
+        completed = subprocess.run(
+            ["ps", "-eo", "pid=,comm=,args="],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return []
+    if completed.returncode != 0:
+        return []
+    current_pid = os.getpid()
+    pids: list[int] = []
+    for line in completed.stdout.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        command = parts[1]
+        args = parts[2]
+        if pid == current_pid:
+            continue
+        if command != "ollama":
+            continue
+        if "ollama serve" not in args:
+            continue
+        pids.append(pid)
+    return sorted(set(pids))
+
+
+def _terminate_process_group(pid: int, *, sig: signal.Signals) -> None:
+    try:
+        os.killpg(os.getpgid(pid), sig)
+    except Exception:
+        try:
+            os.kill(pid, sig)
+        except Exception:
+            pass
+
+
+def _wait_until_reachable(base_url: str, timeout_seconds: float = 12.0) -> bool:
+    deadline = time.time() + max(1.0, float(timeout_seconds))
+    while time.time() < deadline:
+        connected, _, _, _ = probe_ollama(base_url, timeout_seconds=2.0)
+        if connected:
+            return True
+        time.sleep(0.35)
+    connected, _, _, _ = probe_ollama(base_url, timeout_seconds=2.0)
+    return connected
+
+
+def _path_has_model_manifests(path: Path) -> bool:
+    manifests = path / "manifests"
+    if not manifests.is_dir():
+        return False
+    try:
+        return any(item.is_file() for item in manifests.rglob("*"))
+    except Exception:
+        return False
+
+
+def _candidate_ollama_model_dirs() -> list[Path]:
+    candidates: list[Path] = []
+    env_value = os.environ.get("OLLAMA_MODELS")
+    if env_value:
+        candidates.append(Path(env_value).expanduser())
+    candidates.extend(
+        [
+            Path.home() / ".ollama" / "models",
+            Path("/usr/share/ollama/.ollama/models"),
+            Path("/var/lib/ollama/.ollama/models"),
+        ]
+    )
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        unique.append(candidate)
+        seen.add(key)
+    return unique
+
+
+def _ollama_models_dir_for_env() -> str:
+    existing: list[Path] = []
+    for candidate in _candidate_ollama_model_dirs():
+        try:
+            if candidate.is_dir():
+                existing.append(candidate)
+                if _path_has_model_manifests(candidate):
+                    return str(candidate)
+        except Exception:
+            continue
+    return str(existing[0]) if existing else ""
+
+
+def _wait_until_unreachable(base_url: str, timeout_seconds: float = 8.0) -> bool:
+    deadline = time.time() + max(1.0, float(timeout_seconds))
+    while time.time() < deadline:
+        connected, _, _, _ = probe_ollama(base_url, timeout_seconds=1.0)
+        if not connected:
+            return True
+        time.sleep(0.25)
+    connected, _, _, _ = probe_ollama(base_url, timeout_seconds=1.0)
+    return not connected
+
+
+def _ensure_local_server(base_url: str, timeout_seconds: float = 12.0) -> str:
+    normalized_base_url = normalize_base_url(base_url, DEFAULT_BASE_URL)
+    if not _is_local_base_url(normalized_base_url):
+        return ""
+    connected, _, _, _ = probe_ollama(normalized_base_url, timeout_seconds=3.0)
+    if connected:
+        return ""
+
+    executable = shutil.which("ollama")
+    if not executable:
+        return "ollama executable not found; local server could not be started"
+
+    with _SERVER_LOCK:
+        global _SERVER_PROC, _SERVER_BASE_URL
+        if _SERVER_PROC and _SERVER_PROC.poll() is None and _SERVER_BASE_URL == normalized_base_url:
+            return ""
+
+        env = os.environ.copy()
+        env["OLLAMA_HOST"] = _ollama_host_for_env(normalized_base_url)
+        models_dir = _ollama_models_dir_for_env()
+        if models_dir:
+            env["OLLAMA_MODELS"] = models_dir
+        try:
+            proc = subprocess.Popen(
+                [executable, "serve"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+                start_new_session=True,
+            )
+        except Exception as exc:
+            return f"{type(exc).__name__}: {exc}"
+
+        _SERVER_PROC = proc
+        _SERVER_BASE_URL = normalized_base_url
+
+    deadline = time.time() + max(3.0, float(timeout_seconds))
+    while time.time() < deadline:
+        connected, _, _, _ = probe_ollama(normalized_base_url, timeout_seconds=2.0)
+        if connected:
+            return ""
+        with _SERVER_LOCK:
+            proc = _SERVER_PROC
+        if proc is not None and proc.poll() is not None:
+            code = proc.returncode
+            with _SERVER_LOCK:
+                if _SERVER_PROC is proc:
+                    _SERVER_PROC = None
+                    _SERVER_BASE_URL = ""
+            return f"ollama serve exited with code {code}"
+        time.sleep(0.5)
+
+    with _SERVER_LOCK:
+        proc = _SERVER_PROC
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except Exception:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+            if _SERVER_PROC is proc:
+                _SERVER_PROC = None
+                _SERVER_BASE_URL = ""
+    return "ollama serve did not become ready in time"
+
+
+def _shutdown_local_server(base_url: str | None = None) -> str:
+    target_base_url = normalize_base_url(base_url or _read_state().get("base_url"), DEFAULT_BASE_URL)
+    if not _is_local_base_url(target_base_url):
+        return ""
+    errors: list[str] = []
+    with _SERVER_LOCK:
+        global _SERVER_PROC, _SERVER_BASE_URL
+        proc = _SERVER_PROC
+        managed_proc = proc if proc and proc.poll() is None and _SERVER_BASE_URL == target_base_url else None
+
+    if managed_proc:
+        _terminate_process_group(managed_proc.pid, sig=signal.SIGTERM)
+        try:
+            managed_proc.wait(timeout=8)
+        except Exception:
+            _terminate_process_group(managed_proc.pid, sig=signal.SIGKILL)
+            try:
+                managed_proc.wait(timeout=3)
+            except Exception as exc:
+                errors.append(f"managed ollama serve did not exit: {type(exc).__name__}: {exc}")
+
+    with _SERVER_LOCK:
+        if _SERVER_PROC is managed_proc:
+            _SERVER_PROC = None
+            _SERVER_BASE_URL = ""
+
+    if not managed_proc:
+        return "; ".join(errors)
+
+    if not _wait_until_unreachable(target_base_url, timeout_seconds=2.0):
+        errors.append("local ollama serve is still reachable after DockUP-managed shutdown")
+
+    return "; ".join(errors)
+
+
+def _cleanup_managed_ollama(base_url: str | None = None, *, offload: bool = True) -> dict[str, str]:
+    saved = _read_state()
+    target_base_url = normalize_base_url(base_url or saved.get("base_url"), DEFAULT_BASE_URL)
+    target_model = str(saved.get("model") or "").strip()
+    offload_error = ""
+    shutdown_error = ""
+    if offload:
+        offload_error = _offload_running_models(target_base_url, target_model)
+    shutdown_error = _shutdown_local_server(target_base_url)
+    with _LOCK:
+        global _WARMUP_TOKEN
+        _WARMUP_TOKEN += 1
+        _WARMUP_JOB.update(
+            {
+                "running": False,
+                "message": "Model offloaded and server stopped" if not (offload_error or shutdown_error) else "Cleanup finished with errors",
+                "model": target_model,
+                "error": "; ".join(filter(None, [offload_error, shutdown_error])),
+                "finished_at": time.time(),
+            }
+        )
+    return {
+        "offload_error": offload_error,
+        "shutdown_error": shutdown_error,
+    }
+
+
 def _warmup_worker(base_url: str, model: str, settings: dict[str, Any], think_mode: str, token: int) -> None:
     with _LOCK:
         _WARMUP_JOB.update(
@@ -408,23 +709,27 @@ def connect(payload: dict[str, Any]) -> dict[str, Any]:
     global _WARMUP_TOKEN
     base_url = normalize_base_url(payload.get("base_url"), DEFAULT_BASE_URL)
     requested_model = str(payload.get("model") or "").strip()
-    warmup = bool(payload.get("warmup", True))
+    warmup = _normalize_bool(payload.get("warmup", True), True)
+    load_model = _normalize_bool(payload.get("load_model"), bool(requested_model))
     previous = _read_state()
     requested_settings = _settings_from_payload(payload, previous.get("settings"))
     requested_think_mode = _normalize_think_mode(payload.get("think_mode"), previous.get("think_mode", DEFAULT_THINK_MODE))
     requested_selected_models = payload.get("selected_models")
+    server_error = ""
+    if base_url:
+        server_error = _ensure_local_server(base_url)
     snapshot = _snapshot(base_url, requested_model, requested_selected_models if isinstance(requested_selected_models, list) else None)
     model = str(snapshot.get("model") or requested_model).strip()
     previous_model = str(previous.get("model") or "").strip()
     stop_error = ""
     if model and previous_model and previous_model != model:
-        stop_error = _stop_model(base_url, previous_model)
+        stop_error = _offload_model(base_url, previous_model)
         with _LOCK:
             _WARMUP_TOKEN += 1
             _WARMUP_JOB.update(
                 {
                     "running": False,
-                    "message": "Previous model stopped",
+                    "message": "Previous model offloaded",
                     "model": previous_model,
                     "error": stop_error,
                     "finished_at": time.time(),
@@ -441,10 +746,11 @@ def connect(payload: dict[str, Any]) -> dict[str, Any]:
             model,
         ),
         "connected": bool(snapshot.get("connected")),
-        "last_error": str(snapshot.get("error") or ""),
+        "auto_start": True,
+        "last_error": str(server_error or snapshot.get("error") or ""),
     }
     _write_state(state)
-    if state["connected"] and model and warmup:
+    if state["connected"] and model and warmup and load_model:
         with _LOCK:
             running_same = (
                 bool(_WARMUP_JOB.get("running"))
@@ -463,6 +769,8 @@ def connect(payload: dict[str, Any]) -> dict[str, Any]:
             )
             thread.start()
     result = _snapshot(base_url, model, state.get("selected_models"))
+    if server_error:
+        result["server_error"] = server_error
     if stop_error:
         result["stop_error"] = stop_error
     return result
@@ -476,7 +784,7 @@ def offload(payload: dict[str, Any]) -> dict[str, Any]:
     offload_error = ""
     if model_name and _is_local_base_url(base_url):
         with _LOCK:
-          _WARMUP_TOKEN += 1
+            _WARMUP_TOKEN += 1
         offload_error = _offload_model(base_url, model_name)
         with _LOCK:
             _WARMUP_JOB.update(
@@ -494,19 +802,35 @@ def offload(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def shutdown(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = payload or {}
+    saved = _read_state()
+    base_url = normalize_base_url(payload.get("base_url") or saved.get("base_url"), DEFAULT_BASE_URL)
+    cleanup = _cleanup_managed_ollama(base_url, offload=_normalize_bool(payload.get("offload", True), True))
+    result = _snapshot(base_url, None, saved.get("selected_models") if isinstance(saved.get("selected_models"), list) else None)
+    result["offloaded_model"] = str(saved.get("model") or "").strip() if not (cleanup.get("offload_error") or cleanup.get("shutdown_error")) else ""
+    result["offload_error"] = cleanup.get("offload_error", "")
+    result["shutdown_error"] = cleanup.get("shutdown_error", "")
+    return result
+
+
 def update_selected_models(payload: dict[str, Any]) -> dict[str, Any]:
     saved = _read_state()
-    model_rows = probe_ollama(normalize_base_url(payload.get("base_url") or saved.get("base_url"), DEFAULT_BASE_URL))[2]
+    base_url = normalize_base_url(payload.get("base_url") or saved.get("base_url"), DEFAULT_BASE_URL)
+    if saved.get("auto_start"):
+        _ensure_local_server(base_url)
+    model_rows = probe_ollama(base_url)[2]
     model_names = [item.name for item in model_rows]
     current_model = str(payload.get("model") or saved.get("model") or "").strip()
     selected = _normalize_selected_models(payload.get("selected_models"), model_names, current_model)
     state = {
-        "base_url": normalize_base_url(payload.get("base_url") or saved.get("base_url"), DEFAULT_BASE_URL),
+        "base_url": base_url,
         "model": _preferred_model([item.as_dict() for item in model_rows], current_model),
         "settings": _normalize_settings(payload.get("settings") if isinstance(payload.get("settings"), dict) else saved.get("settings")),
         "think_mode": _normalize_think_mode(payload.get("think_mode"), saved.get("think_mode", DEFAULT_THINK_MODE)),
         "selected_models": selected,
         "connected": bool(payload.get("connected", saved.get("connected"))),
+        "auto_start": bool(saved.get("auto_start")),
         "last_error": str(payload.get("last_error") or saved.get("last_error") or ""),
     }
     _write_state(state)

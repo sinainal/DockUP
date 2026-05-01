@@ -69,6 +69,11 @@ def ollama_offload(payload: dict[str, object]) -> JSONResponse:
     return JSONResponse(ollama_agent.offload(payload))
 
 
+@router.post("/ollama/shutdown")
+def ollama_shutdown(payload: dict[str, object]) -> JSONResponse:
+    return JSONResponse(ollama_agent.shutdown(payload))
+
+
 @router.post("/ollama/chat")
 def ollama_chat(payload: dict[str, object]) -> JSONResponse:
     return JSONResponse(ollama_agent.ask(payload))
