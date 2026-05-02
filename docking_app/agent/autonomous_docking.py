@@ -961,10 +961,32 @@ def run_queue(test_mode: bool = True) -> dict[str, Any]:
     from ..routes.core import RunStartPayload, run_start
 
     try:
-        response = run_start(RunStartPayload(is_test_mode=False, batch_id=int(batch_id) if batch_id else None))
+        selected_batch_id: int | None = None
+        if batch_id:
+            try:
+                selected_batch_id = int(batch_id)
+            except (TypeError, ValueError):
+                selected_batch_id = None
+        response = run_start(RunStartPayload(is_test_mode=False, batch_id=selected_batch_id))
+        response_payload = json.loads(response.body.decode("utf-8"))
+        if int(getattr(response, "status_code", 200) or 200) >= 400:
+            return {
+                "ok": False,
+                "error": str(response_payload.get("error") or response_payload.get("detail") or "run_start failed"),
+                "response": response_payload,
+                "batch_id": batch_id,
+                "queue_jobs": job_count,
+                "job_count": job_count,
+                "run_count": run_count,
+                "planned_total_runs": len(planned),
+                "total_runs": len(planned),
+                "out_root": out_root,
+            }
         return {
             "ok": True,
-            "response": json.loads(response.body.decode("utf-8")),
+            "test_mode": False,
+            "started": True,
+            "response": response_payload,
             "batch_id": batch_id,
             "queue_jobs": job_count,
             "job_count": job_count,
@@ -975,6 +997,8 @@ def run_queue(test_mode: bool = True) -> dict[str, Any]:
         }
     except HTTPException as exc:
         return {"ok": False, "error": str(exc.detail)}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
 def _state_receptor_ids() -> list[str]:
@@ -1548,13 +1572,23 @@ def build_or_run_queue(action: str = "build_test") -> dict[str, Any]:
         return {"ok": False, "summary": "Batch validation failed.", "validation": validation, "allowed_next_tools": ["select_workspace", "set_gridbox", "set_docking_config"]}
     queue_result = build_queue(replace_queue=True)
     run_result: dict[str, Any] = {}
-    if action_norm in {"build_test", "test", "run_test"}:
+    if action_norm in {"build_test", "test", "run_test", "test_run", "dry_run", "log", "plan"}:
         run_result = run_queue(test_mode=True)
-    elif action_norm in {"run_full", "full"}:
+    elif action_norm in {"run_full", "full", "run", "start", "start_run", "real", "real_run", "start_full", "full_run", "production"}:
         run_result = run_queue(test_mode=False)
+    elif action_norm not in {"build_only", "build"}:
+        return {
+            "ok": False,
+            "summary": f"Unknown queue action: {action_norm}",
+            "error": f"Unknown queue action: {action_norm}",
+            "allowed_next_tools": ["build_or_run_queue", "read_tool_details"],
+        }
     return {
         "ok": bool(queue_result.get("ok")) and (not run_result or bool(run_result.get("ok"))),
-        "summary": f"Queue action {action_norm}: {queue_result.get('new_jobs', 0)} job(s), batch {queue_result.get('batch_id') or '-'}",
+        "summary": (
+            f"Queue action {action_norm}: {queue_result.get('new_jobs', 0)} job(s), batch {queue_result.get('batch_id') or '-'}"
+            + (f"; run error: {run_result.get('error')}" if run_result and not run_result.get("ok", True) else "")
+        ),
         "queue": {
             "batch_id": queue_result.get("batch_id"),
             "new_jobs": queue_result.get("new_jobs"),
@@ -1563,8 +1597,10 @@ def build_or_run_queue(action: str = "build_test") -> dict[str, Any]:
             "total_runs": queue_result.get("total_runs"),
         },
         "run": {
-            "started": bool(run_result),
+            "started": bool(run_result and run_result.get("ok", True) and (run_result.get("started", True))),
             "test_mode": run_result.get("test_mode") if run_result else None,
+            "ok": run_result.get("ok") if run_result else None,
+            "error": run_result.get("error") if run_result else "",
             "planned_total_runs": run_result.get("planned_total_runs") if run_result else None,
             "out_root": run_result.get("out_root") if run_result else "",
         },
@@ -1621,7 +1657,7 @@ def read_tool_details(topic: str = "workflow") -> dict[str, Any]:
             "If the user says 3 receptors x 2 ligands = 6 dockings, keep run_count=1 and expect job_count=6."
         ),
         "queue_actions": (
-            "build_or_run_queue(action) accepts build_only, build_test, or run_full. "
+            "build_or_run_queue(action) accepts build_only/build, build_test/test/dry_run, or run_full/full/run/start/real_run. "
             "build_only validates and creates queue rows. build_test materializes/plans the batch without starting a heavy docking process. "
             "run_full starts the real DockUP queue runner."
         ),
@@ -1761,7 +1797,7 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "description": "build_only, build_test, or run_full."},
+                    "action": {"type": "string", "description": "build_only/build, build_test/test/dry_run, or run_full/full/run/start/real_run."},
                 },
             },
         },

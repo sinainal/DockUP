@@ -75,7 +75,7 @@
 
 .assistant-overlay.dockup-agent-overlay.is-open {
   opacity: 1;
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .assistant-panel.dockup-agent-panel {

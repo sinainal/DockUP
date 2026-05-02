@@ -1923,9 +1923,9 @@ function appendDockupAssistantProgress(entry, { render = true } = {}) {
 async function refreshDockupAgentWorkflowState(stage = "", result = {}) {
   const normalized = String(stage || "").trim();
   try {
-    if (normalized === "set_gridbox") mergeAgentGridData(result);
+    const gridChangedBeforeState = normalized === "set_gridbox" ? mergeAgentGridData(result) : false;
     await loadState();
-    if (normalized === "set_gridbox") mergeAgentGridData(result);
+    const gridChangedAfterState = normalized === "set_gridbox" ? mergeAgentGridData(result) : false;
     if ([
       "fetch_assets",
       "inspect_assets",
@@ -1947,6 +1947,13 @@ async function refreshDockupAgentWorkflowState(stage = "", result = {}) {
       } else {
         clearSelectedLigandPanel();
       }
+    }
+    if (normalized === "set_gridbox" && (gridChangedBeforeState || gridChangedAfterState)) {
+      setGridboxSliders();
+      showGridControlsPanel();
+      if (els.showGrid) els.showGrid.checked = true;
+      applyGridbox();
+      await refreshReceptorSummary();
     }
     if (normalized === "show_residues") {
       const selection = result?.viewer_selection && typeof result.viewer_selection === "object"
@@ -2753,13 +2760,17 @@ function hydrateGridDataFromQueue(queueRows = appState.queueData || []) {
 }
 
 function mergeAgentGridData(result = {}) {
+  let applied = false;
   const source = result?.grid_data && typeof result.grid_data === "object" ? result.grid_data : {};
   const fromBoxes = result?.gridboxes && typeof result.gridboxes === "object" ? result.gridboxes : {};
   Object.entries(source).forEach(([pdbId, grid]) => {
     const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
     if (!normalizedPdbId || !grid || typeof grid !== "object") return;
     const normalizedGrid = normalizeQueueGrid(grid);
-    if (normalizedGrid) gridDataPerReceptor[normalizedPdbId] = normalizedGrid;
+    if (normalizedGrid) {
+      gridDataPerReceptor[normalizedPdbId] = normalizedGrid;
+      applied = true;
+    }
   });
   Object.entries(fromBoxes).forEach(([pdbId, box]) => {
     const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
@@ -2774,15 +2785,20 @@ function mergeAgentGridData(result = {}) {
       sy: Number(size[1]),
       sz: Number(size[2]),
     });
-    if (normalizedGrid) gridDataPerReceptor[normalizedPdbId] = normalizedGrid;
+    if (normalizedGrid) {
+      gridDataPerReceptor[normalizedPdbId] = normalizedGrid;
+      applied = true;
+    }
   });
   const selected = String(appState.selectedReceptor || "").trim().toUpperCase();
   if (selected && gridDataPerReceptor[selected]) {
     gridboxData = { ...gridDataPerReceptor[selected] };
     setGridboxSliders();
     showGridControlsPanel();
-    drawGridbox();
+    if (els.showGrid) els.showGrid.checked = true;
+    applyGridbox();
   }
+  return applied;
 }
 
 function getFlexResiduesForReceptor(pdbId = appState.selectedReceptor) {
@@ -3380,6 +3396,13 @@ async function loadState() {
         const normalizedGrid = normalizeQueueGrid(grid);
         if (normalizedPdbId && normalizedGrid) gridDataPerReceptor[normalizedPdbId] = normalizedGrid;
       });
+    }
+    const selectedGrid = gridDataPerReceptor[String(appState.selectedReceptor || "").trim().toUpperCase()];
+    if (selectedGrid) {
+      gridboxData = { ...selectedGrid };
+      setGridboxSliders();
+      showGridControlsPanel();
+      if (els.showGrid) els.showGrid.checked = true;
     }
     hydrateGridDataFromQueue(appState.queueData);
 
@@ -5629,6 +5652,7 @@ function updateGridboxData() {
 }
 
 function applyGridbox() {
+  if (typeof stage === "undefined" || !stage) return;
   // Remove old gridbox
   if (gridComp) {
     stage.removeComponent(gridComp);
@@ -7617,7 +7641,7 @@ function bindEvents() {
     });
   }
   if (els.dockupAgentOverlay) {
-    els.dockupAgentOverlay.addEventListener("click", () => setDockupAgentOpen(false));
+    els.dockupAgentOverlay.addEventListener("click", (event) => event.stopPropagation());
   }
   if (els.dockupAgentSend) {
     els.dockupAgentSend.addEventListener("click", () => {
