@@ -447,10 +447,11 @@
 
 .dockup-thinking-block {
   margin: 0 0 8px;
-  border: 0;
-  border-left: 2px solid rgba(148, 163, 184, .35);
-  background: transparent;
-  overflow: visible;
+  border: 1px solid rgba(203, 213, 225, .8);
+  border-left: 3px solid rgba(59, 130, 246, .55);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, .92) 0%, rgba(255, 255, 255, .94) 100%);
+  overflow: hidden;
 }
 
 .dockup-thinking-block summary {
@@ -465,7 +466,7 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 0 0 0 10px;
+  padding: 8px 10px 7px;
   cursor: pointer;
   color: #64748b;
   font-size: 12px;
@@ -504,12 +505,23 @@
 }
 
 .dockup-thinking-text {
-  padding: 6px 0 0 10px;
+  padding: 0 10px 8px;
   color: #64748b;
   font-size: 12.5px;
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.dockup-thinking-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 8px 8px 10px;
+}
+
+.dockup-thinking-flow .dockup-thinking-text {
+  padding: 0;
 }
 
 .dockup-agent-panel .assistant-message-role {
@@ -562,10 +574,188 @@
 
 .dockup-agent-message-status {
   margin-top: 7px;
-  color: #94a3b8;
-  font-size: 11.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.dockup-agent-message-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.dockup-agent-message-status-text {
+  min-width: 0;
+}
+
+.dockup-agent-progress-log {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.dockup-thinking-tools {
+  margin: 0;
+  padding: 0 8px 8px 10px;
+}
+
+.dockup-agent-progress-item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  background: #ffffff;
+  border: 1px solid #dbe3ee;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .035);
+}
+
+.dockup-agent-progress-item.is-tool {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  border-color: #c7d7ee;
+}
+
+.dockup-agent-progress-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.dockup-agent-progress-item.is-asset {
+  background: #ffffff;
+  border-color: #d9dee7;
+}
+
+.dockup-agent-progress-item.is-setup {
+  background: #ffffff;
+  border-color: #d9dee7;
+}
+
+.dockup-agent-progress-item.is-config {
+  background: #ffffff;
+  border-color: #d9dee7;
+}
+
+.dockup-agent-progress-item.is-validation {
+  background: #ffffff;
+  border-color: #d9dee7;
+}
+
+.dockup-agent-progress-item.is-queue {
+  background: #ffffff;
+  border-color: #d9dee7;
+}
+
+.dockup-agent-progress-item.is-run {
+  background: #ffffff;
+  border-color: #d9dee7;
+}
+
+.dockup-agent-progress-chip {
+  display: none;
+}
+
+.dockup-agent-progress-item.is-tool .dockup-agent-progress-chip {
+  display: none;
+}
+
+.dockup-agent-progress-item.is-asset .dockup-agent-progress-chip {
+  display: none;
+}
+
+.dockup-agent-progress-item.is-config .dockup-agent-progress-chip {
+  display: none;
+}
+
+.dockup-agent-progress-item.is-validation .dockup-agent-progress-chip {
+  display: none;
+}
+
+.dockup-agent-progress-item.is-queue .dockup-agent-progress-chip {
+  display: none;
+}
+
+.dockup-agent-progress-item.is-run .dockup-agent-progress-chip {
+  display: none;
+}
+
+.dockup-agent-progress-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dockup-agent-progress-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dockup-agent-progress-title {
+  flex: 0 0 auto;
+  color: #1e293b;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.dockup-agent-progress-tool {
+  color: #64748b;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0;
+}
+
+.dockup-agent-progress-code {
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
+  color: #0f172a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+}
+
+.dockup-agent-progress-text {
+  color: #243044;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .dockup-agent-panel .assistant-message.assistant .assistant-message-text:empty::after,
@@ -1118,22 +1308,20 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 8px 14px;
-  border-radius: 11px;
-  border: 1px solid #c7d2e4;
-  background: linear-gradient(180deg, #f4f7fb 0%, #e9eef6 100%);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #ffffff;
   color: #0f172a;
   font-weight: 600;
-  font-size: 13px;
-  letter-spacing: 0.01em;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  line-height: 1.25;
   transition: all 0.2s ease;
 }
 
 .docking-settings-btn:hover {
-  border-color: #94a3b8;
-  background: linear-gradient(180deg, #eef3f9 0%, #dde5f1 100%);
-  transform: translateY(-1px);
+  border-color: #cbd5e1;
+  background: var(--bg-soft);
 }
 
 .toggle-group {

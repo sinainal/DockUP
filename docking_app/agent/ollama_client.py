@@ -87,6 +87,7 @@ def chat(
     base_url: str,
     model: str,
     messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
     keep_alive: str | int | float | None = "10m",
     think: bool | str | None = None,
     options: dict[str, Any] | None = None,
@@ -97,6 +98,8 @@ def chat(
         "messages": messages,
         "stream": False,
     }
+    if tools:
+        payload["tools"] = tools
     if options:
         payload["options"] = options
     if think is not None:
@@ -163,6 +166,7 @@ def stream_chat(
     base_url: str,
     model: str,
     messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
     keep_alive: str | int | float | None = "10m",
     think: bool | str | None = None,
     options: dict[str, Any] | None = None,
@@ -175,6 +179,8 @@ def stream_chat(
     }
     if options:
         payload["options"] = options
+    if tools:
+        payload["tools"] = tools
     if think is not None:
         payload["think"] = think
     if keep_alive is not None:

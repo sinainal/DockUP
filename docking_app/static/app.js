@@ -131,7 +131,7 @@ let ollamaState = {
     keep_alive: -1,
     num_gpu: -1,
     use_mmap: true,
-    temperature: 0.2,
+    temperature: 0.8,
     top_p: 0.9,
     repeat_penalty: 1.05,
     warmup_tokens: 1,
@@ -1722,11 +1722,243 @@ function getOrCreateDockupTextNode(element) {
 function bindDockupAgentLiveMessageRefs() {
   dockupAgentLiveAssistantMessageEl = lastDockupAssistantMessageEl();
   dockupAgentLiveThinkingTextEl = dockupAgentLiveAssistantMessageEl
-    ? dockupAgentLiveAssistantMessageEl.querySelector(".dockup-thinking-text")
+    ? Array.from(dockupAgentLiveAssistantMessageEl.querySelectorAll(".dockup-thinking-text")).pop() || null
     : null;
   dockupAgentLiveAnswerTextEl = dockupAgentLiveAssistantMessageEl
     ? dockupAgentLiveAssistantMessageEl.querySelector(".dockup-agent-message-text")
     : null;
+}
+
+function dockupAgentProgressLabel(entry) {
+  const stage = String(entry?.stage || entry?.tool || entry?.kind || "").trim();
+  const labels = {
+    get_dockup_state: "State",
+    fetch_assets: "Assets",
+    inspect_assets: "Inspect",
+    show_in_viewer: "Viewer",
+    show_residues: "Residues",
+    select_workspace: "Workspace",
+    set_gridbox: "Gridbox",
+    set_docking_config: "Config",
+    build_or_run_queue: "Queue",
+    delete_ligands: "Delete Ligands",
+    delete_receptors: "Delete Receptors",
+    delete_queue_batches: "Delete Batches",
+    read_tool_details: "Details",
+  };
+  if ((entry?.kind || "") === "tool_call") return labels[stage] || "Tool Call";
+  return labels[stage] || "Result";
+}
+
+function formatDockupFunctionCall(name, args = {}) {
+  const toolName = String(name || "tool").trim() || "tool";
+  const pairs = Object.entries(args || {})
+    .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "")
+    .map(([key, value]) => {
+      if (typeof value === "number" || typeof value === "boolean") return `${key}=${value}`;
+      return `${key}="${String(value).replace(/"/g, '\\"')}"`;
+    });
+  return `${toolName}(${pairs.join(", ")})`;
+}
+
+function dockupAgentProgressStageLabel(entry) {
+  if ((entry?.kind || "") === "tool_call") return "";
+  const stage = String(entry?.stage || entry?.kind || "").trim();
+  const labels = {
+    get_dockup_state: "State",
+    fetch_assets: "Fetch",
+    inspect_assets: "Inspect",
+    show_in_viewer: "Viewer",
+    show_residues: "Residues",
+    select_workspace: "Select",
+    set_gridbox: "Gridbox",
+    set_docking_config: "Config",
+    build_or_run_queue: "Queue",
+    delete_ligands: "Delete Ligands",
+    delete_receptors: "Delete Receptors",
+    delete_queue_batches: "Delete Batches",
+    read_tool_details: "Details",
+  };
+  if (stage in labels) return labels[stage];
+  if (!stage) return "Status";
+  return stage.replace(/_/g, " ");
+}
+
+function dockupAgentToolIcon(entry) {
+  const stage = String(entry?.stage || entry?.tool || "").trim();
+  const icons = {
+    get_dockup_state: "◎",
+    fetch_assets: "↓",
+    inspect_assets: "⌕",
+    show_in_viewer: "◉",
+    show_residues: "⋯",
+    select_workspace: "⌖",
+    set_gridbox: "□",
+    set_docking_config: "⚙",
+    build_or_run_queue: "▶",
+    delete_ligands: "×",
+    delete_receptors: "×",
+    delete_queue_batches: "×",
+    read_tool_details: "i",
+  };
+  if ((entry?.kind || "") !== "tool_call") return "✓";
+  return icons[stage] || "ƒ";
+}
+
+function dockupAgentProgressTone(entry) {
+  if ((entry?.kind || "") === "tool_call") return "tool";
+  const stage = String(entry?.stage || "").trim();
+  if (stage) return "status";
+  return "status";
+}
+
+function dockupAgentProgressText(entry) {
+  return String(entry?.text || entry?.delta || entry?.message || "").trim();
+}
+
+function dockupAgentProgressLine(entry) {
+  if ((entry?.kind || "") === "tool_call") {
+    return formatDockupFunctionCall(entry.tool, entry.arguments || {});
+  }
+  return dockupAgentProgressText(entry);
+}
+
+function dockupAgentProgressEntryHtml(entry) {
+  const label = dockupAgentProgressLabel(entry);
+  const tone = dockupAgentProgressTone(entry);
+  const line = dockupAgentProgressLine(entry);
+  return `
+    <div class="dockup-agent-progress-item is-${escapeHtml(tone)}">
+      <span class="dockup-agent-progress-icon" aria-hidden="true">${escapeHtml(dockupAgentToolIcon(entry))}</span>
+      <div class="dockup-agent-progress-line">
+        <span class="dockup-agent-progress-title">${escapeHtml(label)}</span>
+        ${line ? `<code class="dockup-agent-progress-code">${escapeHtml(line)}</code>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function dockupThinkingFlowItems(msg) {
+  if (Array.isArray(msg?.thinkingFlow) && msg.thinkingFlow.length) {
+    return msg.thinkingFlow;
+  }
+  const flow = [];
+  if (msg?.thinking) flow.push({ kind: "thinking", text: String(msg.thinking || "") });
+  if (Array.isArray(msg?.progress)) {
+    msg.progress.forEach((entry) => flow.push({ kind: "progress", entry }));
+  }
+  return flow;
+}
+
+function dockupThinkingFlowHtml(msg) {
+  const flow = dockupThinkingFlowItems(msg);
+  return `
+    <div class="dockup-thinking-flow">
+      ${flow.map((item) => {
+        if ((item?.kind || "") === "progress") {
+          return dockupAgentProgressEntryHtml(item.entry || {});
+        }
+        return `<div class="dockup-thinking-text">${escapeHtml(item?.text || "")}</div>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+function appendDockupThinkingFlowText(flow, delta) {
+  const next = Array.isArray(flow) ? flow.slice() : [];
+  if (!delta) return next;
+  const last = next[next.length - 1];
+  if (last && last.kind === "thinking") {
+    next[next.length - 1] = { ...last, text: `${last.text || ""}${delta}` };
+  } else {
+    next.push({ kind: "thinking", text: String(delta || "") });
+  }
+  return next;
+}
+
+function appendDockupProgressDom(entry) {
+  const messageEl = lastDockupAssistantMessageEl();
+  if (!messageEl) return false;
+  const thinkingEl = ensureDockupThinkingBlock(messageEl, entry?.thinkMode || ollamaState.thinkMode || "auto");
+  const flow = thinkingEl?.parentElement?.classList.contains("dockup-thinking-flow")
+    ? thinkingEl.parentElement
+    : messageEl.querySelector(".dockup-thinking-flow");
+  if (!flow) return false;
+  const template = document.createElement("template");
+  template.innerHTML = dockupAgentProgressEntryHtml(entry).trim();
+  const node = template.content.firstElementChild;
+  if (!node) return false;
+  flow.appendChild(node);
+  dockupAgentLiveThinkingTextEl = null;
+  scheduleDockupAgentScroll();
+  renderDockupAgentContextMeter();
+  return true;
+}
+
+function appendDockupAssistantProgress(entry, { render = true } = {}) {
+  const index = dockupAgentMessages.length - 1;
+  if (index < 0) return;
+  const current = dockupAgentMessages[index] || {};
+  const nextEvents = Array.isArray(current.progress) ? current.progress.slice() : [];
+  const nextEntry = {
+    kind: String(entry?.kind || entry?.type || "status").trim() || "status",
+    stage: String(entry?.stage || "").trim(),
+    tool: String(entry?.tool || "").trim(),
+    text: dockupAgentProgressText(entry),
+    arguments: entry?.arguments && typeof entry.arguments === "object" ? entry.arguments : null,
+  };
+  nextEvents.push(nextEntry);
+  const baseFlow = Array.isArray(current.thinkingFlow) && current.thinkingFlow.length
+    ? current.thinkingFlow.slice()
+    : (current.thinking ? [{ kind: "thinking", text: current.thinking }] : []);
+  dockupAgentMessages[index] = {
+    ...current,
+    status: nextEntry.text,
+    progress: nextEvents,
+    thinkingFlow: [...baseFlow, { kind: "progress", entry: nextEntry }],
+  };
+  if (render && !appendDockupProgressDom(nextEntry)) renderDockupAgentMessages();
+}
+
+async function refreshDockupAgentWorkflowState(stage = "", result = {}) {
+  const normalized = String(stage || "").trim();
+  try {
+    if (normalized === "set_gridbox") mergeAgentGridData(result);
+    await loadState();
+    if (normalized === "set_gridbox") mergeAgentGridData(result);
+    if ([
+      "fetch_assets",
+      "inspect_assets",
+      "select_workspace",
+      "show_in_viewer",
+      "show_residues",
+      "set_gridbox",
+      "delete_ligands",
+      "delete_receptors",
+    ].includes(normalized)) {
+      await refreshReceptorSummary();
+    }
+    if (["fetch_assets", "delete_ligands"].includes(normalized)) {
+      await refreshLigands();
+    }
+    if (["show_in_viewer", "show_residues", "select_workspace", "set_gridbox", "delete_receptors"].includes(normalized)) {
+      if (appState.selectedReceptor) {
+        await refreshViewer();
+      } else {
+        clearSelectedLigandPanel();
+      }
+    }
+    if (normalized === "show_residues") {
+      const selection = result?.viewer_selection && typeof result.viewer_selection === "object"
+        ? result.viewer_selection
+        : null;
+      if (selection && window.DockUPGridSelectionSearchBridge?.setResidueSelection) {
+        window.DockUPGridSelectionSearchBridge.setResidueSelection(selection, { refreshUI: true, reason: "agent" });
+      }
+    }
+  } catch (err) {
+    console.warn("DockUP agent live refresh failed:", err);
+  }
 }
 
 function renderDockupAgentMessages() {
@@ -1744,17 +1976,22 @@ function renderDockupAgentMessages() {
   els.dockupAgentMessages.innerHTML = dockupAgentMessages.map((msg) => `
     <div class="assistant-message dockup-agent-message ${escapeHtml(msg.role)} ${msg.streaming ? "is-streaming" : ""}">
       <div class="assistant-message-role dockup-agent-message-role">${msg.role === "user" ? "You" : "DockUP AI"}</div>
-      ${msg.thinking && msg.role === "assistant" ? `
+      ${dockupThinkingFlowItems(msg).length && msg.role === "assistant" ? `
         <details class="dockup-thinking-block" open>
           <summary class="dockup-thinking-summary">
             <span>${msg.streaming && !msg.content ? "Thinking..." : "Thought"}</span>
             <span class="dockup-thinking-badge">${escapeHtml(thinkModeLabel(msg.thinkMode || ollamaState.thinkMode || "auto"))}</span>
           </summary>
-          <div class="dockup-thinking-text">${escapeHtml(msg.thinking)}</div>
+          ${dockupThinkingFlowHtml(msg)}
         </details>
       ` : ""}
       <div class="assistant-message-text dockup-agent-message-text" ${msg.loading && !msg.content ? 'data-loading="true"' : ""}>${escapeHtml(msg.content)}</div>
-      ${msg.status ? `<div class="dockup-agent-message-status">${escapeHtml(msg.status)}</div>` : ""}
+      ${msg.status ? `
+        <div class="dockup-agent-message-status">
+          <span class="dockup-agent-message-status-badge">Live</span>
+          <span class="dockup-agent-message-status-text">${escapeHtml(msg.status)}</span>
+        </div>
+      ` : ""}
       ${msg.metrics ? `<div class="dockup-agent-message-meta">${escapeHtml(formatDockupAgentMetrics(msg.metrics))}</div>` : ""}
     </div>
   `).join("");
@@ -1780,7 +2017,24 @@ function lastDockupAssistantMessageEl() {
 function ensureDockupThinkingBlock(messageEl, mode) {
   let block = messageEl?.querySelector(".dockup-thinking-block");
   if (block) {
-    const textEl = block.querySelector(".dockup-thinking-text");
+    let flow = block.querySelector(".dockup-thinking-flow");
+    if (!flow) {
+      flow = document.createElement("div");
+      flow.className = "dockup-thinking-flow";
+      const existingText = block.querySelector(".dockup-thinking-text");
+      if (existingText) {
+        flow.appendChild(existingText);
+      }
+      block.appendChild(flow);
+    }
+    let textEl = dockupAgentLiveThinkingTextEl && block.contains(dockupAgentLiveThinkingTextEl)
+      ? dockupAgentLiveThinkingTextEl
+      : null;
+    if (!textEl) {
+      textEl = document.createElement("div");
+      textEl.className = "dockup-thinking-text";
+      flow.appendChild(textEl);
+    }
     dockupAgentLiveAssistantMessageEl = messageEl || dockupAgentLiveAssistantMessageEl;
     dockupAgentLiveThinkingTextEl = textEl;
     return textEl;
@@ -1801,9 +2055,12 @@ function ensureDockupThinkingBlock(messageEl, mode) {
 
   const text = document.createElement("div");
   text.className = "dockup-thinking-text";
+  const flow = document.createElement("div");
+  flow.className = "dockup-thinking-flow";
+  flow.appendChild(text);
 
   summary.append(label, badge);
-  block.append(summary, text);
+  block.append(summary, flow);
   const answerEl = messageEl.querySelector(".dockup-agent-message-text");
   messageEl.insertBefore(block, answerEl);
   dockupAgentLiveAssistantMessageEl = messageEl;
@@ -1868,6 +2125,13 @@ function finalizeDockupAssistantDom(metrics) {
 function setDockupAssistantStatus(text) {
   const messageEl = lastDockupAssistantMessageEl();
   if (!messageEl) return;
+  const index = dockupAgentMessages.length - 1;
+  if (index >= 0) {
+    dockupAgentMessages[index] = {
+      ...dockupAgentMessages[index],
+      status: String(text || "").trim(),
+    };
+  }
   let statusEl = messageEl.querySelector(".dockup-agent-message-status");
   if (!text) {
     if (statusEl) statusEl.remove();
@@ -1883,7 +2147,7 @@ function setDockupAssistantStatus(text) {
       messageEl.appendChild(statusEl);
     }
   }
-  statusEl.textContent = text;
+  statusEl.innerHTML = `<span class="dockup-agent-message-status-badge">Live</span><span class="dockup-agent-message-status-text">${escapeHtml(text)}</span>`;
   scheduleDockupAgentScroll();
 }
 
@@ -1930,6 +2194,8 @@ async function sendDockupAgentMessage() {
     thinkMode: readOllamaThinkModeFromForm(),
     loading: true,
     streaming: true,
+    progress: [],
+    thinkingFlow: [],
   });
   renderDockupAgentMessages();
   const startedAt = performance.now();
@@ -1988,14 +2254,39 @@ async function sendDockupAgentMessage() {
         clearStreamTimers();
         setDockupAssistantStatus("");
         const nextThinking = `${current.thinking || ""}${event.delta || ""}`;
-        updateLastDockupAgentMessage({ thinking: nextThinking, status: "" }, { render: false });
+        const nextThinkingFlow = appendDockupThinkingFlowText(current.thinkingFlow, event.delta || "");
+        updateLastDockupAgentMessage({ thinking: nextThinking, thinkingFlow: nextThinkingFlow, status: "" }, { render: false });
         appendDockupThinkingDelta(event.delta || "", current.thinkMode);
+      } else if (event.type === "tool_call") {
+        clearStreamTimers();
+        const toolName = String(event.tool || "tool").trim() || "tool";
+        const args = event.arguments && typeof event.arguments === "object" ? event.arguments : {};
+        appendDockupAssistantProgress({
+          kind: "tool_call",
+          stage: toolName,
+          tool: toolName,
+          arguments: args,
+          text: formatDockupFunctionCall(toolName, args),
+        });
       } else if (event.type === "answer") {
         clearStreamTimers();
         setDockupAssistantStatus("");
         const nextContent = `${current.content || ""}${event.delta || ""}`;
         updateLastDockupAgentMessage({ content: nextContent, status: "" }, { render: false });
         appendDockupAnswerDelta(event.delta || "");
+      } else if (event.type === "status") {
+        clearStreamTimers();
+        const stage = String(event.stage || "").trim();
+        const rawStatus = String(event.delta || "").trim();
+        const nextStatus = rawStatus;
+        if (nextStatus) {
+          appendDockupAssistantProgress({
+            kind: "status",
+            stage,
+            text: nextStatus,
+          });
+          void refreshDockupAgentWorkflowState(stage, event.result || {});
+        }
       } else if (event.type === "done") {
         clearStreamTimers();
         const fallbackSeconds = Math.max(0.001, (performance.now() - startedAt) / 1000);
@@ -2010,6 +2301,7 @@ async function sendDockupAgentMessage() {
           metrics,
         }, { render: false });
         finalizeDockupAssistantDom(metrics);
+        void refreshDockupAgentWorkflowState("");
       } else if (event.type === "error") {
         clearStreamTimers();
         updateLastDockupAgentMessage({
@@ -2415,6 +2707,10 @@ function syncSelectionMapForLigandWorkflow() {
   Object.keys(appState.selectionMap || {}).forEach((pdbId) => {
     const row = ensureSelectionMapEntry(pdbId);
     if (!row) return;
+    if (!isMultiLigandMode() && String(row.ligand_resname || "") === "all_set") {
+      row.ligand_resnames = [];
+      return;
+    }
     const ligandNames = normalizeLigandNameList(row.ligand_resnames || []);
     if (isMultiLigandMode()) {
       const keptLigands = ligandNames.slice(0, 2);
@@ -2454,6 +2750,39 @@ function hydrateGridDataFromQueue(queueRows = appState.queueData || []) {
     next[pdbId] = normalizeQueueGrid(grid);
   });
   gridDataPerReceptor = next;
+}
+
+function mergeAgentGridData(result = {}) {
+  const source = result?.grid_data && typeof result.grid_data === "object" ? result.grid_data : {};
+  const fromBoxes = result?.gridboxes && typeof result.gridboxes === "object" ? result.gridboxes : {};
+  Object.entries(source).forEach(([pdbId, grid]) => {
+    const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
+    if (!normalizedPdbId || !grid || typeof grid !== "object") return;
+    const normalizedGrid = normalizeQueueGrid(grid);
+    if (normalizedGrid) gridDataPerReceptor[normalizedPdbId] = normalizedGrid;
+  });
+  Object.entries(fromBoxes).forEach(([pdbId, box]) => {
+    const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
+    if (!normalizedPdbId || gridDataPerReceptor[normalizedPdbId]) return;
+    const center = Array.isArray(box?.center) ? box.center : [];
+    const size = Array.isArray(box?.size) ? box.size : [];
+    const normalizedGrid = normalizeQueueGrid({
+      cx: Number(center[0]),
+      cy: Number(center[1]),
+      cz: Number(center[2]),
+      sx: Number(size[0]),
+      sy: Number(size[1]),
+      sz: Number(size[2]),
+    });
+    if (normalizedGrid) gridDataPerReceptor[normalizedPdbId] = normalizedGrid;
+  });
+  const selected = String(appState.selectedReceptor || "").trim().toUpperCase();
+  if (selected && gridDataPerReceptor[selected]) {
+    gridboxData = { ...gridDataPerReceptor[selected] };
+    setGridboxSliders();
+    showGridControlsPanel();
+    drawGridbox();
+  }
 }
 
 function getFlexResiduesForReceptor(pdbId = appState.selectedReceptor) {
@@ -3045,6 +3374,13 @@ async function loadState() {
     });
     syncSelectionMapForLigandWorkflow();
     appState.resultsRootPath = String(data.results_root_path || appState.resultsRootPath || RESULTS_DOCK_ROOT).trim() || RESULTS_DOCK_ROOT;
+    if (data.agent_grid_data && typeof data.agent_grid_data === "object") {
+      Object.entries(data.agent_grid_data).forEach(([pdbId, grid]) => {
+        const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
+        const normalizedGrid = normalizeQueueGrid(grid);
+        if (normalizedPdbId && normalizedGrid) gridDataPerReceptor[normalizedPdbId] = normalizedGrid;
+      });
+    }
     hydrateGridDataFromQueue(appState.queueData);
 
     if (els.runCount) els.runCount.value = data.runs || 1;
@@ -4037,6 +4373,14 @@ function focusOnLigand(lig) {
 // Ligand Table - Using structure parsing like script.js
 // =====================================================
 
+function clearSelectedLigandPanel(message = "Load a receptor to view detected native ligands.") {
+  selectedLigandData = null;
+  if (els.ligandTable) {
+    els.ligandTable.className = "table simple";
+    els.ligandTable.innerHTML = `<div class="helper">${escapeHtml(message)}</div>`;
+  }
+}
+
 function populateLigandTableFromStructure(structure, chainFilter = appState.selectedChain) {
   if (!els.ligandTable) return;
 
@@ -4145,6 +4489,11 @@ function populateLigandTableFromStructure(structure, chainFilter = appState.sele
 async function refreshViewer() {
   if (!appState.selectedReceptor) {
     setViewportMessage("Load a receptor to start the viewer.");
+    clearSelectedLigandPanel();
+    if (typeof stage !== "undefined" && stage) stage.removeAllComponents();
+    comp = null;
+    nativeLigComp = null;
+    gridboxData = null;
     dispatchGridSelectionContext("no-receptor");
     dispatchFlexSelectionContext("no-receptor");
     return;
@@ -6004,9 +6353,14 @@ async function removeReceptor(pdbId) {
     } catch (cacheErr) {
       console.warn("Failed to clear binding-site cache for receptor:", pdbId, cacheErr);
     }
-    delete gridSelectionMetaPerReceptor[String(pdbId || "").trim().toUpperCase()];
-    if (appState.selectedReceptor === pdbId) {
+    const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
+    delete gridSelectionMetaPerReceptor[normalizedPdbId];
+    delete gridDataPerReceptor[normalizedPdbId];
+    if (appState.selectionMap) delete appState.selectionMap[normalizedPdbId];
+    if (String(appState.selectedReceptor || "").trim().toUpperCase() === normalizedPdbId) {
       externalGridSelectionData = null;
+      gridboxData = null;
+      clearSelectedLigandPanel();
     }
     // If the removed one was selected, the backend handles re-selection logic,
     // but we need to update frontend state.
@@ -6021,6 +6375,8 @@ async function removeReceptor(pdbId) {
       // But simpler is to just refresh everything.
       const state = await fetchJSON("/api/state");
       appState.selectedReceptor = state.selected_receptor;
+      appState.selectedChain = state.selected_chain || "all";
+      appState.selectedLigand = state.selected_ligand || "";
       await refreshViewer();
     }
   } catch (e) {
@@ -7489,9 +7845,17 @@ function bindEvents() {
     els.clearReceptorsBtn.addEventListener("click", async () => {
       if (!confirm("Are you sure you want to delete ALL stored receptors?")) return;
       await fetchJSON("/api/receptors/clear_all", { method: "POST" });
+      appState.selectedReceptor = "";
+      appState.selectedLigand = "";
+      appState.selectedChain = "all";
+      appState.selectionMap = {};
+      gridDataPerReceptor = {};
+      gridboxData = null;
+      clearSelectedLigandPanel();
       await refreshReceptorFiles();
       await refreshReceptorSummary();
       if (typeof stage !== "undefined" && stage) stage.removeAllComponents();
+      await refreshViewer();
     });
   }
 
@@ -7500,6 +7864,10 @@ function bindEvents() {
     els.clearLigandsBtn.addEventListener("click", async () => {
       if (!confirm("Are you sure you want to delete ALL stored ligands?")) return;
       await fetchJSON("/api/ligands/clear_all", { method: "POST" });
+      Object.keys(appState.selectionMap || {}).forEach((pdbId) => {
+        appState.selectionMap[pdbId].ligand_resname = "";
+        appState.selectionMap[pdbId].ligand_resnames = [];
+      });
       await refreshLigands();
       await refreshReceptorSummary();
     });
@@ -8195,11 +8563,15 @@ function bindEvents() {
       const paddingVal = document.getElementById("gridPadding")?.value || 0;
 
       const payload = {
+        format: "json",
+        mode: appState.mode || "Docking",
         selection_map: normalizeSelectionMapState(appState.selectionMap || {}),
         grid_data: gridDataPerReceptor || {},
         docking_config: normalizeDockingConfig(appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
         run_count: parseInt(runCountVal),
-        padding: parseFloat(paddingVal)
+        padding: parseFloat(paddingVal),
+        out_root_path: document.getElementById("outRootPath")?.value || "data/dock",
+        out_root_name: document.getElementById("outRootName")?.value || ""
       };
 
       // Fetch blob from backend
@@ -8216,7 +8588,7 @@ function bindEvents() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = "docking_config.xlsx";
+        a.download = "docking_config.json";
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -8262,6 +8634,18 @@ function bindEvents() {
           appState.dockingConfig = normalizeDockingConfig(data.docking_config);
           applyAdvancedDockingConfigToModal(appState.dockingConfig);
           renderDockingConfigSummary();
+        }
+        if (Number.isFinite(Number(data.run_count)) && document.getElementById("runCount")) {
+          document.getElementById("runCount").value = String(Math.max(1, Math.round(Number(data.run_count))));
+        }
+        if (Number.isFinite(Number(data.padding)) && document.getElementById("gridPadding")) {
+          document.getElementById("gridPadding").value = String(Number(data.padding));
+        }
+        if (typeof data.out_root_path === "string" && document.getElementById("outRootPath")) {
+          document.getElementById("outRootPath").value = data.out_root_path || "data/dock";
+        }
+        if (typeof data.out_root_name === "string" && document.getElementById("outRootName")) {
+          document.getElementById("outRootName").value = data.out_root_name || "";
         }
         syncDockingModeUI();
 

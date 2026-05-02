@@ -7,10 +7,12 @@ import threading
 import time
 import subprocess
 import signal
+from queue import Queue
 from typing import Any
 from pathlib import Path
 from urllib.parse import urlparse
 
+from ..agent.autonomous_docking import AGENT_STATE, AVAILABLE_FUNCTIONS as DOCKING_FUNCTIONS, TOOLS as DOCKING_TOOLS
 from ..agent.ollama_client import chat, normalize_base_url, probe_ollama, running_models, stream_chat, unload_model
 from ..agent.state_context import docking_state_context, state_system_prompt
 from ..config import BASE
@@ -25,6 +27,8 @@ DEFAULT_KEEP_ALIVE = -1
 DEFAULT_NUM_GPU = -1
 DEFAULT_WARMUP_TOKENS = 1
 DEFAULT_THINK_MODE = "auto"
+AGENT_TEMPERATURE = 0.8
+AGENT_NUM_PREDICT = 4096
 NUM_CTX_CHOICES = (1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072)
 NUM_BATCH_CHOICES = (64, 128, 256, 512)
 KEEP_ALIVE_CHOICES = (-1, 300, 900, 1800, 3600)
@@ -49,6 +53,7 @@ _WARMUP_JOB: dict[str, Any] = {
     "started_at": None,
     "finished_at": None,
 }
+
 _WARMUP_TOKEN = 0
 
 
@@ -869,6 +874,415 @@ def _build_chat_request(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _tool_options(settings: dict[str, Any]) -> dict[str, Any]:
+    options = _ollama_options(settings)
+    options["temperature"] = AGENT_TEMPERATURE
+    options["num_predict"] = AGENT_NUM_PREDICT
+    return options
+
+
+def _message_tool_calls(data: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    message = data.get("message") if isinstance(data.get("message"), dict) else {}
+    raw_calls = message.get("tool_calls") if isinstance(message.get("tool_calls"), list) else []
+    calls: list[dict[str, Any]] = []
+    for raw_call in raw_calls:
+        function = (raw_call or {}).get("function") if isinstance(raw_call, dict) else {}
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+        args = function.get("arguments") or {}
+        if isinstance(args, str):
+            try:
+                parsed_args = json.loads(args)
+            except Exception:
+                parsed_args = {}
+            args = parsed_args if isinstance(parsed_args, dict) else {}
+        if not isinstance(args, dict):
+            args = {}
+        calls.append({"name": name, "arguments": args})
+    return calls, message
+
+
+def _tool_call_label(name: str, args: dict[str, Any]) -> str:
+    try:
+        raw_args = json.dumps(args, ensure_ascii=False, separators=(",", ":"))
+    except TypeError:
+        raw_args = "{}"
+    return f"{name}({raw_args})"
+
+
+def _tool_status(name: str, result: dict[str, Any]) -> str:
+    if result.get("summary"):
+        return str(result.get("summary") or "")
+    if name == "get_dockup_state":
+        return f"State: {len(result.get('loaded_receptors') or [])} receptor(s), {len(result.get('loaded_ligands') or [])} ligand(s), queue={result.get('queue_jobs', 0)}"
+    if name == "fetch_assets":
+        return f"Assets: {len(result.get('loaded_receptors') or [])} receptor(s), {len(result.get('saved_ligands') or [])} ligand file(s)"
+    if name == "inspect_assets":
+        inv = result.get("inventory") if isinstance(result.get("inventory"), dict) else {}
+        return f"Inspection: {len(inv.get('receptors') or {})} receptor(s), {len(inv.get('ligands') or [])} ligand(s)"
+    if name == "show_in_viewer":
+        return result.get("summary") or f"Viewer selected {result.get('selected_receptor') or '-'}"
+    if name == "show_residues":
+        return result.get("summary") or f"Residues: {len(result.get('residues') or [])}"
+    if name == "select_workspace":
+        return f"Workspace selected: {len(result.get('selected') or [])} receptor row(s)"
+    if name == "set_gridbox":
+        return f"Gridbox: {len(result.get('gridboxes') or {})} receptor(s)"
+    if name == "set_docking_config":
+        cfg = result.get("config") if isinstance(result.get("config"), dict) else {}
+        return f"Config: engine={cfg.get('engine') or '-'} mode={cfg.get('mode') or '-'} run_count={cfg.get('run_count') or 1}"
+    if name == "build_or_run_queue":
+        queue = result.get("queue") if isinstance(result.get("queue"), dict) else {}
+        return f"Queue: jobs={queue.get('new_jobs', 0)} batch={queue.get('batch_id') or '-'}"
+    if name == "delete_ligands":
+        return f"Deleted ligands: {len(result.get('deleted') or [])}"
+    if name == "delete_receptors":
+        return f"Deleted receptors: {len(result.get('deleted') or [])}"
+    if name == "delete_queue_batches":
+        return f"Deleted queue batches: {len(result.get('deleted_batch_ids') or [])}; queue={result.get('queue_count', 0)}"
+    if name == "read_tool_details":
+        return f"Read details: {result.get('topic') or 'workflow'}"
+    if name == "plan_assets":
+        return f"Planned assets: receptors={result.get('receptors') or '-'} ligands={result.get('ligands') or '-'}"
+    if name == "download_assets":
+        loaded = ", ".join(result.get("loaded_receptors") or []) or "-"
+        saved = ", ".join(result.get("saved_ligands") or []) or "-"
+        failed = (result.get("failed_receptors") or []) + (result.get("failed_ligands") or [])
+        suffix = f" | failed={len(failed)}" if failed else ""
+        return f"Assets ready: receptors={loaded} ligands={saved}{suffix}"
+    if name == "submit_setup_rows":
+        return f"Setup rows selected: {len(result.get('rows') or [])} receptor(s)"
+    if name == "make_gridboxes":
+        warnings = result.get("warnings") or []
+        suffix = f" | warnings={len(warnings)}" if warnings else ""
+        return f"Gridboxes computed: {len(result.get('grid_data') or {})} receptor(s){suffix}"
+    if name == "submit_batch_config":
+        cfg = result.get("docking_config") if isinstance(result.get("docking_config"), dict) else {}
+        return (
+            f"Config set: run_count={result.get('run_count', 1)} "
+            f"padding={result.get('padding', 0)} engine={cfg.get('docking_engine') or '-'} "
+            f"mode={cfg.get('docking_mode') or '-'} out={result.get('out_root_name') or '-'}"
+        )
+    if name == "validate_batch":
+        return f"Validated: jobs={result.get('job_count', 0)} run_count-aware total_runs={result.get('total_runs', 0)}"
+    if name == "build_queue":
+        return f"Queue built: new_jobs={result.get('new_jobs', 0)} batch={result.get('batch_id') or '-'}"
+    if name == "run_queue":
+        return (
+            f"Run queued: jobs={result.get('queue_jobs', result.get('job_count', 0))} "
+            f"total_runs={result.get('planned_total_runs', result.get('total_runs', 0))} "
+            f"mode={'test/log' if result.get('test_mode') else 'full'}"
+        )
+    return "Tool finished"
+
+
+def _tool_context_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Keep model-visible tool results small; full results stay in trace/UI events."""
+    compact: dict[str, Any] = {
+        "ok": bool(result.get("ok", True)),
+        "summary": _tool_status(name, result),
+    }
+    for key in ("error", "allowed_next_tools"):
+        if key in result:
+            compact[key] = result.get(key)
+    if name == "get_dockup_state":
+        for key in (
+            "loaded_receptors",
+            "loaded_ligands",
+            "selected_receptor",
+            "selected_chain",
+            "selected_native_ligand",
+            "workspace_rows",
+            "gridbox_ready",
+            "gridbox_count",
+            "queue_jobs",
+            "run_status",
+        ):
+            compact[key] = result.get(key)
+    elif name == "fetch_assets":
+        compact.update(
+            {
+                "loaded_receptors": (result.get("loaded_receptors") or [])[:8],
+                "saved_ligands": (result.get("saved_ligands") or [])[:12],
+                "failed_receptors": (result.get("failed_receptors") or [])[:4],
+                "failed_ligands": (result.get("failed_ligands") or [])[:4],
+                "retry_attempts": (result.get("retry_attempts") or [])[:6],
+            }
+        )
+    elif name == "inspect_assets":
+        inv = result.get("inventory") if isinstance(result.get("inventory"), dict) else {}
+        receptors = inv.get("receptors") if isinstance(inv.get("receptors"), dict) else {}
+        compact["inventory"] = {
+            "receptors": dict(list(receptors.items())[:6]),
+            "ligands": (inv.get("ligands") or [])[:12],
+        }
+    elif name == "show_in_viewer":
+        compact["selected_receptor"] = result.get("selected_receptor")
+        compact["selected_chain"] = result.get("selected_chain")
+        compact["selected_native_ligand"] = result.get("selected_native_ligand")
+    elif name == "show_residues":
+        compact["receptor"] = result.get("receptor")
+        compact["residue"] = result.get("residue")
+        compact["residues"] = (result.get("residues") or [])[:32]
+        compact["selection"] = result.get("selection")
+    elif name == "select_workspace":
+        compact["selected"] = (result.get("selected") or [])[:8]
+    elif name == "set_gridbox":
+        compact["gridboxes"] = dict(list((result.get("gridboxes") or {}).items())[:8])
+        compact["warnings"] = (result.get("warnings") or [])[:4]
+    elif name == "set_docking_config":
+        compact["config"] = result.get("config") if isinstance(result.get("config"), dict) else {}
+        compact["validation"] = result.get("validation") if isinstance(result.get("validation"), dict) else {}
+    elif name == "build_or_run_queue":
+        compact["queue"] = result.get("queue") if isinstance(result.get("queue"), dict) else {}
+        compact["run"] = result.get("run") if isinstance(result.get("run"), dict) else {}
+    elif name == "delete_ligands":
+        compact["deleted"] = (result.get("deleted") or [])[:16]
+        compact["missing"] = (result.get("missing") or [])[:8]
+        compact["active_ligands"] = (result.get("active_ligands") or [])[:16]
+    elif name == "delete_receptors":
+        compact["deleted"] = (result.get("deleted") or [])[:16]
+        compact["missing"] = (result.get("missing") or [])[:8]
+        compact["remaining_receptors"] = (result.get("remaining_receptors") or [])[:16]
+    elif name == "delete_queue_batches":
+        compact["deleted_batch_ids"] = (result.get("deleted_batch_ids") or [])[:16]
+        compact["queue_count"] = result.get("queue_count", 0)
+    elif name == "read_tool_details":
+        compact["topic"] = result.get("topic")
+        compact["details"] = result.get("details")
+    return compact
+
+
+def _reset_docking_tool_state() -> None:
+    AGENT_STATE.update({"inventory": {}, "setup_rows": [], "grid_data": {}, "batch_config": {}, "batch_id": ""})
+
+
+def _execute_named_tool(name: str, args: dict[str, Any], *, test_mode: bool) -> dict[str, Any]:
+    clean_args = dict(args or {})
+    if name == "run_queue":
+        clean_args.setdefault("test_mode", test_mode)
+    if name == "build_queue":
+        clean_args.setdefault("replace_queue", True)
+    func = DOCKING_FUNCTIONS.get(name)
+    if not func:
+        return {"ok": False, "error": f"Unknown DockUP tool: {name}"}
+    try:
+        result = func(**clean_args)
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    if isinstance(result, dict):
+        return result
+    return {"ok": True, "result": result}
+
+
+def _chat_agent_step(
+    request: dict[str, Any],
+    messages: list[dict[str, Any]],
+    *,
+    progress_callback=None,
+) -> dict[str, Any]:
+    if not progress_callback:
+        return chat(
+            base_url=request["base_url"],
+            model=request["model"],
+            messages=messages,
+            tools=DOCKING_TOOLS,
+            keep_alive=request["settings"]["keep_alive"],
+            think=_think_flag(request["think_mode"]),
+            options=_tool_options(request["settings"]),
+            timeout_seconds=240.0,
+        )
+
+    content_parts: list[str] = []
+    thinking_parts: list[str] = []
+    last_tool_calls: list[dict[str, Any]] = []
+    final_raw: dict[str, Any] = {}
+    in_think_markup = False
+    for chunk in stream_chat(
+        base_url=request["base_url"],
+        model=request["model"],
+        messages=messages,
+        tools=DOCKING_TOOLS,
+        keep_alive=request["settings"]["keep_alive"],
+        think=_think_flag(request["think_mode"]),
+        options=_tool_options(request["settings"]),
+        timeout_seconds=240.0,
+    ):
+        if isinstance(chunk, dict):
+            final_raw = chunk
+        message = chunk.get("message") if isinstance(chunk.get("message"), dict) else {}
+        thinking_delta = str(message.get("thinking") or "")
+        if thinking_delta:
+            thinking_parts.append(thinking_delta)
+            progress_callback({"type": "thinking", "delta": thinking_delta})
+        content_delta = str(message.get("content") or "")
+        if content_delta:
+            split_rows, in_think_markup = _split_think_markup(content_delta, in_think=in_think_markup)
+            for kind, delta in split_rows:
+                if kind == "thinking":
+                    thinking_parts.append(delta)
+                    progress_callback({"type": "thinking", "delta": delta})
+                else:
+                    content_parts.append(delta)
+                    progress_callback({"type": "answer", "delta": delta})
+        raw_calls = message.get("tool_calls") if isinstance(message.get("tool_calls"), list) else []
+        if raw_calls:
+            last_tool_calls = raw_calls
+    assembled_message = {
+        "role": "assistant",
+        "content": "".join(content_parts).strip(),
+        "thinking": "".join(thinking_parts).strip(),
+    }
+    if last_tool_calls:
+        assembled_message["tool_calls"] = last_tool_calls
+    final_raw["message"] = assembled_message
+    return final_raw
+
+
+def _tool_loop_answer(result: dict[str, Any]) -> str:
+    if result.get("answer"):
+        return str(result.get("answer") or "")
+    trace = result.get("trace") if isinstance(result.get("trace"), list) else []
+    last_by_tool: dict[str, dict[str, Any]] = {}
+    for row in trace:
+        if isinstance(row, dict) and row.get("tool"):
+            tool_result = row.get("result") if isinstance(row.get("result"), dict) else {}
+            last_by_tool[str(row.get("tool"))] = tool_result
+    queue_tool_names = {"submit_batch_config", "validate_batch", "build_queue", "run_queue", "build_or_run_queue"}
+    has_queue_work = any(name in last_by_tool for name in queue_tool_names)
+    if not has_queue_work:
+        failures = [
+            _tool_status(str(row.get("tool") or ""), row.get("result") if isinstance(row.get("result"), dict) else {})
+            for row in trace
+            if isinstance(row, dict)
+            and row.get("tool")
+            and isinstance(row.get("result"), dict)
+            and not row["result"].get("ok", True)
+        ]
+        return "\n".join(failures)
+    validation = last_by_tool.get("validate_batch", {})
+    queue_action = last_by_tool.get("build_or_run_queue", {})
+    queue_from_action = queue_action.get("queue") if isinstance(queue_action.get("queue"), dict) else {}
+    run_from_action = queue_action.get("run") if isinstance(queue_action.get("run"), dict) else {}
+    run_result = last_by_tool.get("run_queue", {}) or run_from_action
+    queue_result = last_by_tool.get("build_queue", {}) or queue_from_action
+    failed_queue = queue_action if queue_action and not queue_action.get("ok", True) else {}
+    if not failed_queue and last_by_tool.get("build_queue") and not last_by_tool["build_queue"].get("ok", True):
+        failed_queue = last_by_tool["build_queue"]
+    if not failed_queue and last_by_tool.get("run_queue") and not last_by_tool["run_queue"].get("ok", True):
+        failed_queue = last_by_tool["run_queue"]
+    if failed_queue:
+        validation_payload = failed_queue.get("validation") if isinstance(failed_queue.get("validation"), dict) else {}
+        errors = validation_payload.get("errors") or failed_queue.get("errors") or []
+        answer = str(failed_queue.get("summary") or failed_queue.get("error") or "Queue step failed.")
+        if errors:
+            answer += "\nErrors: " + " | ".join(str(item) for item in errors[:6])
+        return answer
+    if not validation:
+        validation = {
+            "job_count": queue_result.get("job_count") or queue_result.get("new_jobs") or run_result.get("queue_jobs") or 0,
+            "total_runs": queue_result.get("total_runs") or run_result.get("planned_total_runs") or 0,
+        }
+    grids = (AGENT_STATE.get("grid_data") or {}) if isinstance(AGENT_STATE.get("grid_data"), dict) else {}
+    grid_lines = [
+        f"- {pdb_id}: center=({grid.get('cx')}, {grid.get('cy')}, {grid.get('cz')}), size=({grid.get('sx')}, {grid.get('sy')}, {grid.get('sz')})"
+        for pdb_id, grid in grids.items()
+    ]
+    try:
+        run_count = max(1, int((AGENT_STATE.get("batch_config") or {}).get("run_count") or 1))
+    except (TypeError, ValueError):
+        run_count = 1
+    job_count = validation.get("job_count", run_result.get("queue_jobs", 0)) or 0
+    total_runs = run_result.get("planned_total_runs", validation.get("total_runs", 0)) or 0
+    batch_id = run_result.get("batch_id") or queue_result.get("batch_id") or ""
+    if not job_count and not total_runs and not batch_id:
+        return ""
+    answer = (
+        f"Job combinations: {job_count}\n"
+        + f"Run count per job: {run_count}\n"
+        + f"Total planned runs: {total_runs}"
+    )
+    if batch_id:
+        answer += f"\nBatch: {batch_id}"
+    if grid_lines:
+        answer += "\n\nGridboxes:\n" + "\n".join(grid_lines)
+    if run_result.get("test_mode"):
+        answer += "\nMode: test/log run; no heavy docking process was started."
+    elif run_result.get("started"):
+        answer += "\nMode: full run requested."
+    return answer
+
+
+def _run_single_agent_tool_loop(
+    payload: dict[str, Any],
+    request: dict[str, Any],
+    *,
+    progress_callback=None,
+    max_steps: int = 12,
+) -> dict[str, Any]:
+    _reset_docking_tool_state()
+    messages = list(request["messages"])
+    trace: list[dict[str, Any]] = []
+    test_mode = _normalize_bool(payload.get("test_mode"), True)
+    last_thinking = ""
+    thinking_streamed = False
+    repeated_calls: dict[str, int] = {}
+    repeated_failures: set[str] = set()
+    for step in range(max_steps):
+        try:
+            data = _chat_agent_step(request, messages, progress_callback=progress_callback)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "trace": trace, "agent_state": dict(AGENT_STATE)}
+        calls, message = _message_tool_calls(data)
+        content = str(message.get("content") or "").strip()
+        thinking = str(message.get("thinking") or "").strip()
+        if thinking:
+            last_thinking += thinking
+            if progress_callback:
+                thinking_streamed = True
+        trace.append({"step": step + 1, "assistant": message})
+        messages.append(message)
+        if not calls:
+            return {
+                "ok": True,
+                "answer": content,
+                "answer_streamed": bool(progress_callback and content),
+                "thinking": last_thinking,
+                "thinking_streamed": thinking_streamed,
+                "trace": trace,
+                "agent_state": dict(AGENT_STATE),
+                "raw": data,
+            }
+        for call in calls:
+            name = str(call.get("name") or "").strip()
+            args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+            call_key = f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)}"
+            repeated_calls[call_key] = repeated_calls.get(call_key, 0) + 1
+            if repeated_calls[call_key] > 2 or call_key in repeated_failures:
+                return {
+                    "ok": True,
+                    "answer": _tool_loop_answer({"trace": trace}),
+                    "thinking": last_thinking,
+                    "thinking_streamed": thinking_streamed,
+                    "trace": trace,
+                    "agent_state": dict(AGENT_STATE),
+                    "stopped_reason": "repeated_tool_call",
+                }
+            if progress_callback:
+                progress_callback({"type": "tool_call", "tool": name, "arguments": args, "prompt": _tool_call_label(name, args)})
+            result = _execute_named_tool(name, args, test_mode=test_mode)
+            trace.append({"tool": name, "arguments": args, "result": result})
+            if not result.get("ok", True):
+                repeated_failures.add(call_key)
+            if progress_callback:
+                progress_callback({"type": "status", "stage": name, "delta": _tool_status(name, result), "result": result})
+            messages.append({"role": "tool", "tool_name": name, "content": json.dumps(_tool_context_result(name, result), ensure_ascii=False)})
+    return {"ok": False, "error": "Max tool-call steps reached.", "trace": trace, "agent_state": dict(AGENT_STATE)}
+
+
 def ask(payload: dict[str, Any]) -> dict[str, Any]:
     request = _build_chat_request(payload)
     model = request["model"]
@@ -879,24 +1293,33 @@ def ask(payload: dict[str, Any]) -> dict[str, Any]:
     if not message:
         return {"ok": False, "error": "Message is empty.", "state_context": state_context}
 
-    try:
-        data = chat(
-            base_url=request["base_url"],
-            model=model,
-            messages=request["messages"],
-            keep_alive=request["settings"]["keep_alive"],
-            think=_think_flag(request["think_mode"]),
-            options=_ollama_options(request["settings"]),
-            timeout_seconds=240.0,
-        )
-    except Exception as exc:
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "state_context": state_context}
-    answer = ""
-    thinking = ""
-    if isinstance(data.get("message"), dict):
-        answer = str(data["message"].get("content") or "").strip()
-        thinking = str(data["message"].get("thinking") or "").strip()
-    return {"ok": True, "answer": answer, "thinking": thinking, "model": model, "think_mode": request["think_mode"], "state_context": state_context, "raw": data}
+    result = _run_single_agent_tool_loop(payload, request)
+    if not result.get("ok"):
+        return {"ok": False, "error": str(result.get("error") or "DockUP tool workflow failed."), "state_context": state_context, "raw": result}
+    answer = _tool_loop_answer(result)
+    return {
+        "ok": True,
+        "answer": answer,
+        "thinking": str(result.get("thinking") or ""),
+        "model": model,
+        "think_mode": request["think_mode"],
+        "state_context": docking_state_context(),
+        "raw": result,
+    }
+
+
+def autonomous_docking(payload: dict[str, Any]) -> dict[str, Any]:
+    request = _build_chat_request(payload)
+    if not request["model"]:
+        return {"ok": False, "error": "Select an Ollama model first."}
+    if not request["message"]:
+        return {"ok": False, "error": "Message is empty."}
+    return _run_single_agent_tool_loop(
+        payload,
+        request,
+        progress_callback=payload.get("progress_callback") if callable(payload.get("progress_callback")) else None,
+        max_steps=int(payload.get("max_steps") or 12),
+    )
 
 
 def _duration_seconds(value: Any) -> float | None:
@@ -959,36 +1382,66 @@ def stream_ask(payload: dict[str, Any]):
         return
 
     yield event({"type": "start", "model": model, "think_mode": request["think_mode"]})
-    in_think_markup = False
-    try:
-        for data in stream_chat(
-            base_url=request["base_url"],
-            model=model,
-            messages=request["messages"],
-            keep_alive=request["settings"]["keep_alive"],
-            think=_think_flag(request["think_mode"]),
-            options=_ollama_options(request["settings"]),
-            timeout_seconds=240.0,
-        ):
-            message_row = data.get("message") if isinstance(data.get("message"), dict) else {}
-            thinking_delta = str(message_row.get("thinking") or "")
-            content_delta = str(message_row.get("content") or "")
-            if thinking_delta:
-                yield event({"type": "thinking", "delta": thinking_delta})
-            if content_delta:
-                split_rows, in_think_markup = _split_think_markup(content_delta, in_think=in_think_markup)
-                for row_type, delta in split_rows:
-                    if delta:
-                        yield event({"type": row_type, "delta": delta})
-            if data.get("done"):
-                metrics = {
-                    "total_seconds": _duration_seconds(data.get("total_duration")),
-                    "load_seconds": _duration_seconds(data.get("load_duration")),
-                    "prompt_tokens": data.get("prompt_eval_count"),
-                    "answer_tokens": data.get("eval_count"),
-                    "tokens_per_second": _tokens_per_second(data.get("eval_count"), data.get("eval_duration")),
+    started = time.perf_counter()
+    progress_queue: Queue[dict[str, Any]] = Queue()
+    result_holder: dict[str, Any] = {}
+
+    def worker() -> None:
+        try:
+            result_holder["result"] = _run_single_agent_tool_loop(
+                payload,
+                request,
+                progress_callback=progress_queue.put,
+            )
+        except Exception as exc:
+            result_holder["result"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            progress_queue.put({"type": "__done__"})
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    while True:
+        item = progress_queue.get()
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "__done__":
+            break
+        if item.get("type") == "tool_call":
+            yield event(
+                {
+                    "type": "tool_call",
+                    "tool": str(item.get("tool") or ""),
+                    "arguments": item.get("arguments") if isinstance(item.get("arguments"), dict) else {},
+                    "prompt": str(item.get("prompt") or ""),
                 }
-                yield event({"type": "done", "metrics": metrics, "raw": data})
-                return
-    except Exception as exc:
-        yield event({"type": "error", "error": f"{type(exc).__name__}: {exc}", "state_context": state_context})
+            )
+        elif item.get("type") == "thinking":
+            yield event({"type": "thinking", "delta": str(item.get("delta") or "")})
+        elif item.get("type") == "answer":
+            yield event({"type": "answer", "delta": str(item.get("delta") or "")})
+        elif item.get("type") == "status":
+            yield event(
+                {
+                    "type": "status",
+                    "delta": str(item.get("delta") or ""),
+                    "stage": str(item.get("stage") or ""),
+                    "result": item.get("result") if isinstance(item.get("result"), dict) else {},
+                }
+            )
+    thread.join(timeout=0.5)
+    result = result_holder.get("result") if isinstance(result_holder.get("result"), dict) else {"ok": False, "error": "DockUP tool workflow failed."}
+    if not result.get("ok"):
+        yield event({"type": "error", "error": str(result.get("error") or "DockUP tool workflow failed."), "raw": result})
+        return
+    answer = _tool_loop_answer(result)
+    if result.get("thinking") and not result.get("thinking_streamed"):
+        yield event({"type": "thinking", "delta": str(result.get("thinking") or "")})
+    if answer and not (result.get("answer_streamed") and answer == str(result.get("answer") or "")):
+        yield event({"type": "answer", "delta": answer})
+    yield event(
+        {
+            "type": "done",
+            "metrics": {"total_seconds": round(time.perf_counter() - started, 3)},
+            "raw": result,
+        }
+    )

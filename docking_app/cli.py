@@ -1,4 +1,6 @@
 import argparse
+import json
+import sys
 import time
 import datetime
 from pathlib import Path
@@ -144,7 +146,149 @@ def run_docking_cli(args):
         
     print(f"Batch completed with status: {RUN_STATE['status']}")
 
+
+def run_agent_assets_cli(args) -> int:
+    try:
+        from .agent.autonomous_docking import AGENT_STATE, fetch_assets, plan_assets
+    except ImportError:
+        from docking_app.agent.autonomous_docking import AGENT_STATE, fetch_assets, plan_assets
+
+    AGENT_STATE.update({"inventory": {}, "setup_rows": [], "grid_data": {}, "batch_config": {}, "batch_id": ""})
+    planned = plan_assets(args.receptors, args.ligands)
+    result = fetch_assets(planned["receptors"], planned["ligands"])
+    payload = {"ok": not result.get("failed_receptors") and not result.get("failed_ligands"), "planned": planned, "assets": result}
+    print(json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None))
+    return 0 if payload["ok"] else 2
+
+
+def run_agent_workflow_cli(args) -> int:
+    try:
+        from .agent.autonomous_docking import (
+            AGENT_STATE,
+            build_queue,
+            fetch_assets,
+            make_gridboxes,
+            plan_assets,
+            prepare_batch,
+            run_queue,
+            setup_docking,
+            suggest_setup_rows,
+            validate_batch,
+        )
+    except ImportError:
+        from docking_app.agent.autonomous_docking import (
+            AGENT_STATE,
+            build_queue,
+            fetch_assets,
+            make_gridboxes,
+            plan_assets,
+            prepare_batch,
+            run_queue,
+            setup_docking,
+            suggest_setup_rows,
+            validate_batch,
+        )
+
+    AGENT_STATE.update({"inventory": {}, "setup_rows": [], "grid_data": {}, "batch_config": {}, "batch_id": ""})
+    trace: list[dict[str, object]] = []
+
+    planned = plan_assets(args.receptors, args.ligands)
+    trace.append({"tool": "plan_assets", "arguments": {"receptors": args.receptors, "ligands": args.ligands}, "result": planned})
+
+    assets = fetch_assets(planned["receptors"], planned["ligands"])
+    trace.append({"tool": "fetch_assets", "arguments": planned, "result": assets})
+    if assets.get("failed_receptors") or assets.get("failed_ligands"):
+        payload = {"ok": False, "error": "asset download failed", "trace": trace}
+        print(json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None))
+        return 2
+
+    rows = str(args.rows or "").strip()
+    if not rows:
+        rows = suggest_setup_rows(AGENT_STATE.get("inventory") or {}, args.box_size)
+    if not rows:
+        payload = {"ok": False, "error": "could not choose setup rows from receptor native ligands", "trace": trace}
+        print(json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None))
+        return 2
+
+    setup = setup_docking(rows)
+    trace.append({"tool": "submit_setup_rows", "arguments": {"rows": rows}, "result": setup})
+
+    grids = make_gridboxes(rows)
+    trace.append({"tool": "make_gridboxes", "arguments": {"rows": rows}, "result": grids})
+    if grids.get("warnings") and not grids.get("grid_data"):
+        payload = {"ok": False, "error": "gridbox creation failed", "trace": trace}
+        print(json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None))
+        return 2
+
+    batch = prepare_batch(run_count=args.runs, padding=args.padding, out_root_name=args.out_root_name)
+    trace.append(
+        {
+            "tool": "submit_batch_config",
+            "arguments": {"run_count": args.runs, "padding": args.padding, "out_root_name": args.out_root_name},
+            "result": batch,
+        }
+    )
+
+    validation = validate_batch()
+    trace.append({"tool": "validate_batch", "arguments": {}, "result": validation})
+    if not validation.get("ok"):
+        payload = {"ok": False, "error": "batch validation failed", "validation": validation, "trace": trace}
+        print(json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None))
+        return 2
+
+    queue = build_queue(replace_queue=args.replace_queue)
+    trace.append({"tool": "build_queue", "arguments": {"replace_queue": args.replace_queue}, "result": queue})
+    if not queue.get("ok"):
+        payload = {"ok": False, "error": "queue build failed", "queue": queue, "trace": trace}
+        print(json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None))
+        return 2
+
+    run = run_queue(test_mode=args.test_mode)
+    trace.append({"tool": "run_queue", "arguments": {"test_mode": args.test_mode}, "result": run})
+    payload = {
+        "ok": bool(run.get("ok")),
+        "validation": validation,
+        "queue": queue,
+        "run": run,
+        "setup_rows": setup.get("rows"),
+        "grid_data": grids.get("grid_data"),
+        "trace": trace,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None))
+    return 0 if payload["ok"] else 2
+
+
+def run_agent_cli(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="DockUP agent-safe CLI")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    assets = sub.add_parser("agent-assets", help="Fetch receptor/ligand assets and print compact inventory")
+    assets.add_argument("--receptors", required=True, help="Comma/space separated PDB IDs")
+    assets.add_argument("--ligands", required=True, help="Comma/semicolon separated ligand names, CIDs, local identifiers, or explicit forms like ethylene[1,3]")
+    assets.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
+    assets.set_defaults(func=run_agent_assets_cli)
+
+    workflow = sub.add_parser("agent-workflow", help="Run the DockUP agent tool flow without an LLM")
+    workflow.add_argument("--receptors", required=True, help="Comma/space separated PDB IDs")
+    workflow.add_argument("--ligands", required=True, help="Comma/semicolon separated ligand names, CIDs, local identifiers, or explicit forms like ethylene[1,3]")
+    workflow.add_argument("--rows", default="", help="Optional setup rows: receptor,chain,native_ligand,box_size,dock_ligands;...")
+    workflow.add_argument("--box-size", type=float, default=20.0, help="Auto setup gridbox size")
+    workflow.add_argument("--runs", type=int, default=1, help="Runs per receptor/ligand setup")
+    workflow.add_argument("--padding", type=float, default=0.0, help="Extra grid padding")
+    workflow.add_argument("--out-root-name", default="", help="Output folder name under data/dock")
+    workflow.add_argument("--replace-queue", action="store_true", help="Replace current queue with the generated batch")
+    workflow.add_argument("--test-mode", action="store_true", help="Materialize/mock run without starting heavy docking")
+    workflow.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
+    workflow.set_defaults(func=run_agent_workflow_cli)
+
+    args = parser.parse_args(argv)
+    return int(args.func(args))
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] in {"agent-assets", "agent-workflow"}:
+        raise SystemExit(run_agent_cli(sys.argv[1:]))
+
     parser = argparse.ArgumentParser(description="Docking Automation CLI - Seamlessly integrates with the backend")
     parser.add_argument("--mode", choices=["Docking", "Redocking"], default="Docking", help="Job Type")
     parser.add_argument("--receptors", nargs="+", required=True, help="PDB IDs to process (e.g. 7X2F 6CM4)")

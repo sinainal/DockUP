@@ -79,6 +79,11 @@ def ollama_chat(payload: dict[str, object]) -> JSONResponse:
     return JSONResponse(ollama_agent.ask(payload))
 
 
+@router.post("/ollama/autonomous-docking")
+def ollama_autonomous_docking(payload: dict[str, object]) -> JSONResponse:
+    return JSONResponse(ollama_agent.autonomous_docking(payload))
+
+
 @router.post("/ollama/chat/stream")
 def ollama_chat_stream(payload: dict[str, object]) -> StreamingResponse:
     return StreamingResponse(

@@ -307,6 +307,7 @@ def api_state() -> JSONResponse:
         "selection_map": STATE.get("selection_map", {}),
         "active_ligands": STATE.get("active_ligands", []),
         "grid_file_path": STATE["grid_file_path"],
+        "agent_grid_data": STATE.get("agent_grid_data", {}),
         "queue_count": len(STATE["queue"]),
         "queue": STATE.get("queue", []),
         "runs": STATE["runs"],
@@ -451,6 +452,10 @@ def clear_all_ligands() -> JSONResponse:
         except Exception:
             pass
     STATE["active_ligands"] = []
+    for row in STATE.get("selection_map", {}).values():
+        if isinstance(row, dict):
+            row["ligand_resname"] = ""
+            row["ligand_resnames"] = []
     _normalize_active_ligands_state()
     save_state_cache()
     return JSONResponse({"ligands": []})
@@ -576,6 +581,11 @@ def delete_receptor_file(payload: dict[str, Any]) -> JSONResponse:
         remaining_meta.append(item)
     STATE["receptor_meta"] = remaining_meta
     _normalize_receptor_state()
+    grid_data = STATE.get("agent_grid_data") if isinstance(STATE.get("agent_grid_data"), dict) else {}
+    if grid_data:
+        for candidate in {target.stem.upper(), target.name.upper(), target.stem[:4].upper()}:
+            grid_data.pop(candidate, None)
+        STATE["agent_grid_data"] = grid_data
     save_state_cache()
 
     receptors = _collect_receptor_rows()
@@ -595,6 +605,7 @@ def clear_all_receptors() -> JSONResponse:
     STATE["selected_ligand"] = ""
     STATE["selected_chain"] = "all"
     STATE["selected_ids"] = []
+    STATE["agent_grid_data"] = {}
     save_state_cache()
     return JSONResponse({"receptors": []})
 
@@ -633,11 +644,16 @@ def remove_receptor(payload: SelectReceptorPayload) -> JSONResponse:
     ]
     if pdb_id in STATE["selection_map"]:
         del STATE["selection_map"][pdb_id]
+    STATE["selected_ids"] = [
+        rid for rid in STATE.get("selected_ids", []) if _normalize_receptor_id(rid) != pdb_id
+    ]
 
     # If selected receptor was removed, select another one if available
     if STATE["selected_receptor"] == pdb_id:
         STATE["selected_receptor"] = STATE["receptor_meta"][0]["pdb_id"] if STATE["receptor_meta"] else ""
         STATE["selected_ligand"] = ""
+        STATE["selected_chain"] = "all"
+        STATE["selected_ids"] = [STATE["selected_receptor"]] if STATE["selected_receptor"] else []
 
     clear_cached_results(pdb_id)
     pocket_state = get_runtime_state()
@@ -1094,9 +1110,9 @@ def run_recent_continue(payload: dict[str, Any]) -> JSONResponse:
 
 @router.post("/api/queue/remove_batch")
 def remove_batch(payload: dict[str, Any]) -> JSONResponse:
-    batch_id = payload.get("batch_id")
-    if batch_id is not None:
-        STATE["queue"] = [job for job in STATE["queue"] if job.get("batch_id") != batch_id]
+    batch_id = str(payload.get("batch_id") or "").strip()
+    if batch_id:
+        STATE["queue"] = [job for job in STATE["queue"] if str(job.get("batch_id") or "").strip() != batch_id]
     save_state_cache()
 
     return JSONResponse({

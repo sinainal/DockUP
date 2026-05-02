@@ -7,21 +7,20 @@ from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from ..config import BASE, DOCK_DIR, RECEPTOR_DIR
+from ..config import RECEPTOR_DIR
 from ..helpers import (
     build_flex_residue_spec,
     normalize_docking_config,
     normalize_flex_residue_list,
     normalize_ligand_name_list,
-    read_json,
-    write_json,
 )
 from ..services import _existing_files, _init_selection_map, _load_receptor_meta, _normalize_receptor_id
-from ..state import DOCKING_CONFIG_DEFAULTS, STATE, save_state_cache
+from ..state import STATE, save_state_cache
 
 router = APIRouter()
+CONFIG_SCHEMA = "dockup.config.v1"
 
 
 @router.post("/api/config/docking")
@@ -31,35 +30,157 @@ def save_docking_config(payload: dict[str, Any]) -> JSONResponse:
     save_state_cache()
     return JSONResponse({"ok": True, "docking_config": cfg})
 
-@router.post("/api/config/save")
-def save_config(payload: dict[str, Any]) -> StreamingResponse:
-    # Single sheet "Configuration" containing all receptor data
-    # Columns: pdb_id, chain, ligand, grid + run settings + docking settings
-    
-    # Global settings from payload
-    global_runs = payload.get("run_count", STATE["runs"])
-    global_pad = payload.get("padding", STATE.get("grid_pad", 0))
-    docking_cfg = normalize_docking_config(payload.get("docking_config") or STATE.get("docking_config") or {})
-    
-    rows = []
-    row_type = "Multi-Ligand" if docking_cfg.get("ligand_binding_mode") == "multi_ligand" else STATE["mode"]
-    
-    # Iterate over loaded receptors
-    sel_map = payload.get("selection_map", {})
-    grid_data = payload.get("grid_data", {})
-    
-    for r in STATE["receptor_meta"]:
-        pdb_id = _normalize_receptor_id(r.get("pdb_id"))
+
+def _to_int(value: Any, default: int = 1) -> int:
+    try:
+        parsed = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+    return max(1, parsed)
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _clean_optional_number(value: Any) -> float | None:
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalise_selection_map(raw: Any) -> dict[str, dict[str, Any]]:
+    source = raw if isinstance(raw, dict) else {}
+    out: dict[str, dict[str, Any]] = {}
+    for raw_pdb_id, raw_sel in source.items():
+        pdb_id = _normalize_receptor_id(raw_pdb_id)
         if not pdb_id:
             continue
-        sel = sel_map.get(pdb_id, {})
+        sel = raw_sel if isinstance(raw_sel, dict) else {}
+        ligand_names = normalize_ligand_name_list(sel.get("ligand_resnames") or sel.get("ligands") or [])
+        ligand_label = str(sel.get("ligand_resname") or sel.get("ligand") or "").strip()
+        if not ligand_names and ligand_label and ligand_label != "all_set":
+            ligand_names = [ligand_label]
+        out[pdb_id] = {
+            "chain": str(sel.get("chain") or "all").strip() or "all",
+            "ligand_resname": ligand_label,
+            "ligand_resnames": ligand_names,
+            "flex_residues": normalize_flex_residue_list(sel.get("flex_residues") or sel.get("flex_residue_spec") or []),
+        }
+    return out
+
+
+def _normalise_grid_data(raw: Any) -> dict[str, dict[str, float]]:
+    source = raw if isinstance(raw, dict) else {}
+    out: dict[str, dict[str, float]] = {}
+    for raw_pdb_id, raw_grid in source.items():
+        pdb_id = _normalize_receptor_id(raw_pdb_id)
+        grid = raw_grid if isinstance(raw_grid, dict) else {}
+        values = {
+            "cx": _clean_optional_number(grid.get("cx")),
+            "cy": _clean_optional_number(grid.get("cy")),
+            "cz": _clean_optional_number(grid.get("cz")),
+            "sx": _clean_optional_number(grid.get("sx")),
+            "sy": _clean_optional_number(grid.get("sy")),
+            "sz": _clean_optional_number(grid.get("sz")),
+        }
+        if pdb_id and all(value is not None for value in values.values()):
+            out[pdb_id] = {key: float(value) for key, value in values.items() if value is not None}
+    return out
+
+
+def _config_document_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    selection_source = payload.get("selection_map") if "selection_map" in payload else STATE.get("selection_map", {})
+    grid_source = payload.get("grid_data") if "grid_data" in payload else {}
+    return {
+        "schema": CONFIG_SCHEMA,
+        "mode": str(payload.get("mode") or STATE.get("mode") or "Docking"),
+        "run_count": _to_int(payload.get("run_count", STATE.get("runs", 1))),
+        "padding": _to_float(payload.get("padding", STATE.get("grid_pad", 0))),
+        "out_root_path": str(payload.get("out_root_path") or STATE.get("out_root_path") or "data/dock"),
+        "out_root_name": str(payload.get("out_root_name") or STATE.get("out_root_name") or ""),
+        "docking_config": normalize_docking_config(payload.get("docking_config") or STATE.get("docking_config") or {}),
+        "selection_map": _normalise_selection_map(selection_source),
+        "grid_data": _normalise_grid_data(grid_source),
+    }
+
+
+def _load_receptors_for_config(pdb_ids: list[str]) -> None:
+    requested = [_normalize_receptor_id(pid) for pid in pdb_ids if _normalize_receptor_id(pid)]
+    if not requested:
+        return
+    existing_ids = {_normalize_receptor_id(r.get("pdb_id")) for r in STATE.get("receptor_meta", [])}
+    new_ids = [pid for pid in requested if pid not in existing_ids]
+    if not new_ids:
+        return
+    pdb_files = _existing_files(RECEPTOR_DIR, (".pdb",))
+    meta = _load_receptor_meta(new_ids, pdb_files)
+    if meta:
+        STATE["receptor_meta"].extend(meta)
+        STATE["selection_map"].update(_init_selection_map(meta))
+
+
+def _apply_config_document(config: dict[str, Any]) -> dict[str, Any]:
+    selection_map = _normalise_selection_map(config.get("selection_map") or config.get("s") or {})
+    grid_data = _normalise_grid_data(config.get("grid_data") or config.get("g") or {})
+    pdb_ids = sorted(set(selection_map.keys()) | set(grid_data.keys()))
+    _load_receptors_for_config(pdb_ids)
+
+    loaded_docking_config = normalize_docking_config(
+        config.get("docking_config") or config.get("dc") or STATE.get("docking_config") or {}
+    )
+    mode = str(config.get("mode") or config.get("m") or STATE.get("mode") or "Docking").strip() or "Docking"
+    if mode == "Multi-Ligand":
+        mode = "Docking"
+        loaded_docking_config = normalize_docking_config({**loaded_docking_config, "ligand_binding_mode": "multi_ligand"})
+
+    STATE["mode"] = mode
+    STATE["runs"] = _to_int(config.get("run_count", config.get("runs", STATE.get("runs", 1))))
+    STATE["grid_pad"] = _to_float(config.get("padding", config.get("grid_pad", STATE.get("grid_pad", 0))))
+    STATE["out_root_path"] = str(config.get("out_root_path") or STATE.get("out_root_path") or "data/dock")
+    STATE["out_root_name"] = str(config.get("out_root_name") or STATE.get("out_root_name") or "")
+    STATE["selection_map"].update(selection_map)
+    STATE["docking_config"] = loaded_docking_config
+    save_state_cache()
+
+    return {
+        "ok": True,
+        "schema": CONFIG_SCHEMA,
+        "selection_map": selection_map,
+        "grid_data": grid_data,
+        "queue": STATE["queue"],
+        "mode": STATE["mode"],
+        "run_count": STATE["runs"],
+        "padding": STATE["grid_pad"],
+        "out_root_path": STATE.get("out_root_path", "data/dock"),
+        "out_root_name": STATE.get("out_root_name", ""),
+        "docking_config": loaded_docking_config,
+    }
+
+
+def _xlsx_response_from_document(config: dict[str, Any]) -> StreamingResponse:
+    docking_cfg = normalize_docking_config(config.get("docking_config") or {})
+    rows = []
+    row_type = "Multi-Ligand" if docking_cfg.get("ligand_binding_mode") == "multi_ligand" else config.get("mode", "Docking")
+    sel_map = _normalise_selection_map(config.get("selection_map") or {})
+    grid_data = _normalise_grid_data(config.get("grid_data") or {})
+
+    for pdb_id, sel in sel_map.items():
         grid = grid_data.get(pdb_id, {})
-        
         rows.append({
-            "type": row_type, # Add type (Docking/Redocking/Multi-Ligand)
+            "type": row_type,
             "pdb_id": pdb_id,
             "chain": sel.get("chain", "all"),
-            "ligand": sel.get("ligand_resname", "") or sel.get("ligand", ""),
+            "ligand": sel.get("ligand_resname", ""),
             "ligands": ",".join(normalize_ligand_name_list(sel.get("ligand_resnames") or [])),
             "ligand_binding_mode": docking_cfg.get("ligand_binding_mode"),
             "grid_center_x": grid.get("cx"),
@@ -68,10 +189,10 @@ def save_config(payload: dict[str, Any]) -> StreamingResponse:
             "grid_size_x": grid.get("sx"),
             "grid_size_y": grid.get("sy"),
             "grid_size_z": grid.get("sz"),
-            "run_count": global_runs, # Saving global setting for reference
-            "padding": global_pad,     # Saving global setting for reference
+            "run_count": config.get("run_count", 1),
+            "padding": config.get("padding", 0),
             "docking_mode": docking_cfg.get("docking_mode"),
-            "flex_residues": build_flex_residue_spec(sel.get("flex_residues") or sel.get("flex_residue_spec") or []),
+            "flex_residues": build_flex_residue_spec(sel.get("flex_residues") or []),
             "pdb2pqr_ph": docking_cfg.get("pdb2pqr_ph"),
             "pdb2pqr_ff": docking_cfg.get("pdb2pqr_ff"),
             "pdb2pqr_ffout": docking_cfg.get("pdb2pqr_ffout"),
@@ -85,26 +206,44 @@ def save_config(payload: dict[str, Any]) -> StreamingResponse:
             "vina_cpu": docking_cfg.get("vina_cpu"),
             "vina_seed": docking_cfg.get("vina_seed"),
         })
-        
-    df = pd.DataFrame(rows)
-    
+
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name='Configuration', index=False)
-            
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        pd.DataFrame(rows).to_excel(writer, sheet_name="Configuration", index=False)
     output.seek(0)
-    
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=docking_config.xlsx"}
+        headers={"Content-Disposition": "attachment; filename=docking_config.xlsx"},
     )
+
+
+@router.post("/api/config/save")
+def save_config(payload: dict[str, Any]) -> Response:
+    config = _config_document_from_payload(payload)
+    fmt = str(payload.get("format") or payload.get("config_format") or "xlsx").strip().lower()
+    if fmt == "json":
+        content = json.dumps(config, ensure_ascii=False, indent=2).encode("utf-8")
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={"Content-Disposition": "attachment; filename=docking_config.json"},
+        )
+    return _xlsx_response_from_document(config)
 
 
 @router.post("/api/config/load")
 def load_config(file: UploadFile = File(...)) -> JSONResponse:
     try:
         content = file.file.read()
+        filename = str(file.filename or "").lower()
+        content_type = str(file.content_type or "").lower()
+        if filename.endswith(".json") or "json" in content_type:
+            data = json.loads(content.decode("utf-8"))
+            if not isinstance(data, dict):
+                return JSONResponse({"error": "Config JSON must be an object."}, status_code=400)
+            return JSONResponse(_apply_config_document(data))
+
         xls = pd.ExcelFile(io.BytesIO(content))
         
         selection_map = {}
@@ -190,12 +329,18 @@ def load_config(file: UploadFile = File(...)) -> JSONResponse:
                 )
                 STATE["docking_config"] = loaded_docking_config
 
+        save_state_cache()
         return JSONResponse({
             "ok": True,
+            "schema": CONFIG_SCHEMA,
             "selection_map": selection_map,
             "grid_data": grid_data,
-            "queue": STATE["queue"], # Return existing queue (empty or not)
+            "queue": STATE["queue"],
             "mode": STATE["mode"],
+            "run_count": STATE["runs"],
+            "padding": STATE["grid_pad"],
+            "out_root_path": STATE.get("out_root_path", "data/dock"),
+            "out_root_name": STATE.get("out_root_name", ""),
             "docking_config": loaded_docking_config,
         })
 
