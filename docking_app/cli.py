@@ -224,10 +224,11 @@ def cmd_live_state(args: argparse.Namespace) -> int:
 
 def cmd_live_run_status(args: argparse.Namespace) -> int:
     data = _live_client(args).get_run_status()
-    payload = _live_envelope(
+    inner = _envelope_data(data) or data
+    payload = _coerce_live_envelope(
         "run.status",
         data,
-        message=f"run: {data.get('status') or '-'} {data.get('completed_runs', 0)}/{data.get('total_runs', 0)}",
+        message=f"run: {inner.get('status') or '-'} {inner.get('completed_runs', 0)}/{inner.get('total_runs', 0)}",
     )
     _print_payload(payload, as_json=args.json, pretty=args.pretty)
     return 0 if payload["ok"] else 2
@@ -325,6 +326,89 @@ def cmd_live_viewer_show(args: argparse.Namespace) -> int:
     pdb_id = str(args.pdb_id or "").strip().upper()
     data = _live_client(args).show_viewer(pdb_id, chain=str(args.chain or ""))
     payload = _coerce_live_envelope("viewer.show", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_workspace_select(args: argparse.Namespace) -> int:
+    data = _live_client(args).select_workspace(
+        str(args.receptor or "all"),
+        chain=str(args.chain or "auto"),
+        native_ligand=str(args.native_ligand or "auto"),
+        dock_ligands=str(args.dock_ligands or "all"),
+    )
+    payload = _coerce_live_envelope("workspace.select", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_gridbox_set(args: argparse.Namespace) -> int:
+    data = _live_client(args).set_gridbox(
+        method=str(args.method or "native_ligand"),
+        size=float(args.size),
+        padding=float(args.padding),
+        center=str(args.center or ""),
+        pocket_rank=int(args.pocket_rank),
+        p2rank_mode=str(args.p2rank_mode or "fit"),
+    )
+    payload = _coerce_live_envelope("gridbox.set", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_config_set(args: argparse.Namespace) -> int:
+    payload_args = {
+        "engine": args.engine,
+        "mode": args.mode,
+        "run_count": args.runs,
+        "padding": args.padding,
+        "out_root_name": args.out_root_name,
+        "exhaustiveness": args.exhaustiveness,
+        "num_modes": args.num_modes,
+        "energy_range": args.energy_range,
+        "cpu": args.cpu,
+        "seed": args.seed,
+        "ph": args.ph,
+        "advanced": args.advanced,
+    }
+    data = _live_client(args).set_config(**payload_args)
+    payload = _coerce_live_envelope("config.set", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_queue_list(args: argparse.Namespace) -> int:
+    data = _live_client(args).list_queue()
+    inner = _envelope_data(data) or data
+    payload = _coerce_live_envelope("queue.list", data, message=f"queue: {inner.get('queue_count', 0)} job(s)")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_queue_build(args: argparse.Namespace) -> int:
+    data = _live_client(args).build_queue(replace_queue=not bool(args.append))
+    payload = _coerce_live_envelope("queue.build", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_queue_remove(args: argparse.Namespace) -> int:
+    data = _live_client(args).remove_queue_batch(str(args.batch_id or ""))
+    payload = _coerce_live_envelope("queue.remove", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_run_start(args: argparse.Namespace) -> int:
+    data = _live_client(args).start_run(test_mode=bool(args.test_mode), batch_id=args.batch_id)
+    payload = _coerce_live_envelope("run.start", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_run_stop(args: argparse.Namespace) -> int:
+    data = _live_client(args).stop_run()
+    payload = _coerce_live_envelope("run.stop", data)
     _print_payload(payload, as_json=args.json, pretty=args.pretty)
     return 0 if payload["ok"] else 2
 
@@ -483,6 +567,14 @@ def run_agent_cli(argv: list[str]) -> int:
     live_run_status = live_run_sub.add_parser("status", help="Read live run status")
     add_live_output_flags(live_run_status, suppress_default=True)
     live_run_status.set_defaults(func=cmd_live_run_status)
+    live_run_start = live_run_sub.add_parser("start", help="Start the live queue")
+    live_run_start.add_argument("--test-mode", action="store_true", help="Start a test/log run without heavy docking")
+    live_run_start.add_argument("--batch-id", type=int, default=None, help="Optional queue batch id to run")
+    add_live_output_flags(live_run_start, suppress_default=True)
+    live_run_start.set_defaults(func=cmd_live_run_start)
+    live_run_stop = live_run_sub.add_parser("stop", help="Stop the active live run")
+    add_live_output_flags(live_run_stop, suppress_default=True)
+    live_run_stop.set_defaults(func=cmd_live_run_stop)
 
     live_receptor = live_sub.add_parser("receptor", help="Receptor-related live commands")
     live_receptor_sub = live_receptor.add_subparsers(dest="receptor_cmd", required=True)
@@ -529,6 +621,60 @@ def run_agent_cli(argv: list[str]) -> int:
     live_viewer_show.add_argument("--chain", default="")
     add_live_output_flags(live_viewer_show, suppress_default=True)
     live_viewer_show.set_defaults(func=cmd_live_viewer_show)
+
+    live_workspace = live_sub.add_parser("workspace", help="Workspace-related live commands")
+    live_workspace_sub = live_workspace.add_subparsers(dest="workspace_cmd", required=True)
+    live_workspace_select = live_workspace_sub.add_parser("select", help="Select receptor/native/dock ligands for docking")
+    live_workspace_select.add_argument("receptor", nargs="?", default="all")
+    live_workspace_select.add_argument("--chain", default="auto")
+    live_workspace_select.add_argument("--native-ligand", default="auto")
+    live_workspace_select.add_argument("--dock-ligands", default="all")
+    add_live_output_flags(live_workspace_select, suppress_default=True)
+    live_workspace_select.set_defaults(func=cmd_live_workspace_select)
+
+    live_gridbox = live_sub.add_parser("gridbox", help="Gridbox-related live commands")
+    live_gridbox_sub = live_gridbox.add_subparsers(dest="gridbox_cmd", required=True)
+    live_gridbox_set = live_gridbox_sub.add_parser("set", help="Set a live gridbox")
+    live_gridbox_set.add_argument("--method", default="native_ligand", choices=["native_ligand", "current_selection", "manual", "p2rank", "gridfinder", "auto"])
+    live_gridbox_set.add_argument("--size", type=float, default=20.0)
+    live_gridbox_set.add_argument("--padding", type=float, default=0.0)
+    live_gridbox_set.add_argument("--center", default="", help="Manual center as x,y,z")
+    live_gridbox_set.add_argument("--pocket-rank", type=int, default=1)
+    live_gridbox_set.add_argument("--p2rank-mode", default="fit")
+    add_live_output_flags(live_gridbox_set, suppress_default=True)
+    live_gridbox_set.set_defaults(func=cmd_live_gridbox_set)
+
+    live_config = live_sub.add_parser("config", help="Config-related live commands")
+    live_config_sub = live_config.add_subparsers(dest="config_cmd", required=True)
+    live_config_set = live_config_sub.add_parser("set", help="Set live docking config")
+    live_config_set.add_argument("--engine", default="vina_gpu_21")
+    live_config_set.add_argument("--mode", default="standard")
+    live_config_set.add_argument("--runs", type=int, default=1)
+    live_config_set.add_argument("--padding", type=float, default=0.0)
+    live_config_set.add_argument("--out-root-name", default="")
+    live_config_set.add_argument("--exhaustiveness", type=int, default=None)
+    live_config_set.add_argument("--num-modes", type=int, default=None)
+    live_config_set.add_argument("--energy-range", type=float, default=None)
+    live_config_set.add_argument("--cpu", type=int, default=None)
+    live_config_set.add_argument("--seed", type=int, default=None)
+    live_config_set.add_argument("--ph", type=float, default=None)
+    live_config_set.add_argument("--advanced", default="")
+    add_live_output_flags(live_config_set, suppress_default=True)
+    live_config_set.set_defaults(func=cmd_live_config_set)
+
+    live_queue = live_sub.add_parser("queue", help="Queue-related live commands")
+    live_queue_sub = live_queue.add_subparsers(dest="queue_cmd", required=True)
+    live_queue_list = live_queue_sub.add_parser("list", help="List live queue jobs")
+    add_live_output_flags(live_queue_list, suppress_default=True)
+    live_queue_list.set_defaults(func=cmd_live_queue_list)
+    live_queue_build = live_queue_sub.add_parser("build", help="Build live queue from current workspace/config/gridbox")
+    live_queue_build.add_argument("--append", action="store_true", help="Append jobs instead of replacing queue")
+    add_live_output_flags(live_queue_build, suppress_default=True)
+    live_queue_build.set_defaults(func=cmd_live_queue_build)
+    live_queue_remove = live_queue_sub.add_parser("remove", help="Remove one queue batch")
+    live_queue_remove.add_argument("batch_id")
+    add_live_output_flags(live_queue_remove, suppress_default=True)
+    live_queue_remove.set_defaults(func=cmd_live_queue_remove)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

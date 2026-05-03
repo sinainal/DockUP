@@ -5,13 +5,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from ..config import LIGAND_DIR, RECEPTOR_DIR
 from ..helpers import normalize_docking_config
-from ..models import FetchLigandsPayload, LoadReceptorsPayload, SelectReceptorPayload
+from ..models import FetchLigandsPayload, LoadReceptorsPayload, RunStartPayload, SelectReceptorPayload
+from ..agent import autonomous_docking
 from ..routes import core
-from ..state import RUN_STATE, STATE
+from ..state import RUN_STATE, STATE, save_state_cache
 from .models import ControlEnvelope, ControlError
 
 
@@ -31,6 +33,21 @@ def _response_payload(response: Any) -> tuple[dict[str, Any], int]:
     if isinstance(response, dict):
         return response, 200
     return {"data": response}, 200
+
+
+def _call_route(func: Any, *args: Any, **kwargs: Any) -> tuple[dict[str, Any], int]:
+    try:
+        return _response_payload(func(*args, **kwargs))
+    except HTTPException as exc:
+        detail = exc.detail
+        if isinstance(detail, dict):
+            data = dict(detail)
+            data.setdefault("error", data.get("detail") or "Request failed.")
+        else:
+            data = {"error": str(detail or "Request failed.")}
+        return data, int(exc.status_code or 500)
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}, 500
 
 
 def _state_snapshot() -> dict[str, Any]:
@@ -312,4 +329,228 @@ def show_viewer(pdb_id: str, *, chain: str = "") -> dict[str, Any]:
         ui_hints={"refresh": ["state", "viewer"], "selected_receptor": compact.get("pdb_id")},
         status_code=status,
         next_actions=["receptor.load", "receptor.select"],
+    )
+
+
+def select_workspace(
+    receptor: str = "all",
+    *,
+    chain: str = "auto",
+    native_ligand: str = "auto",
+    dock_ligands: str = "all",
+) -> dict[str, Any]:
+    before = _state_snapshot()
+    _prepare_active_dock_ligands(dock_ligands)
+    result = autonomous_docking.select_workspace(
+        receptor=receptor,
+        chain=chain,
+        native_ligand=native_ligand,
+        dock_ligands=dock_ligands,
+    )
+    status = 200 if result.get("ok") else 400
+    return _envelope(
+        "workspace.select",
+        result,
+        before=before,
+        message=str(result.get("summary") or "workspace selected"),
+        ui_hints={"refresh": ["state", "workspace", "viewer"]},
+        status_code=status,
+        next_actions=["receptor.load", "ligand.fetch", "workspace.select"],
+    )
+
+
+def _prepare_active_dock_ligands(dock_ligands: str) -> None:
+    raw = str(dock_ligands or "").strip()
+    available = {path.name for path in LIGAND_DIR.glob("*.sdf") if path.is_file()}
+    if not available:
+        return
+    current = [str(name or "").strip() for name in STATE.get("active_ligands", []) if str(name or "").strip() in available]
+    seen = set(current)
+    if not raw or raw.lower() == "all":
+        if not current:
+            current = sorted(available)
+    else:
+        for item in [part.strip() for part in raw.split(",") if part.strip()]:
+            if item in available and item not in seen:
+                current.append(item)
+                seen.add(item)
+    STATE["active_ligands"] = current
+    autonomous_docking.AGENT_STATE["inventory"] = autonomous_docking._inventory_for(
+        autonomous_docking._state_receptor_ids(),
+        current,
+    )
+    save_state_cache()
+
+
+def set_gridbox(
+    method: str = "native_ligand",
+    *,
+    size: float = 20.0,
+    padding: float = 0.0,
+    center: str = "",
+    pocket_rank: int = 1,
+    p2rank_mode: str = "fit",
+) -> dict[str, Any]:
+    before = _state_snapshot()
+    result = autonomous_docking.set_gridbox(
+        method=method,
+        size=size,
+        padding=padding,
+        center=center,
+        pocket_rank=pocket_rank,
+        p2rank_mode=p2rank_mode,
+    )
+    status = 200 if result.get("ok") else 400
+    return _envelope(
+        "gridbox.set",
+        result,
+        before=before,
+        message=str(result.get("summary") or "gridbox set"),
+        ui_hints={"refresh": ["state", "viewer", "gridbox"]},
+        status_code=status,
+        error_code="gridbox_set_failed",
+        next_actions=["workspace.select", "gridbox.set"],
+    )
+
+
+def set_config(
+    *,
+    engine: str = "vina_gpu_21",
+    mode: str = "standard",
+    run_count: int = 1,
+    padding: float = 0.0,
+    out_root_name: str = "",
+    exhaustiveness: int | None = None,
+    num_modes: int | None = None,
+    energy_range: float | None = None,
+    cpu: int | None = None,
+    seed: int | None = None,
+    ph: float | None = None,
+    advanced: str = "",
+) -> dict[str, Any]:
+    before = _state_snapshot()
+    result = autonomous_docking.set_docking_config(
+        engine=engine,
+        mode=mode,
+        run_count=run_count,
+        padding=padding,
+        out_root_name=out_root_name,
+        exhaustiveness=exhaustiveness,
+        num_modes=num_modes,
+        energy_range=energy_range,
+        cpu=cpu,
+        seed=seed,
+        ph=ph,
+        advanced=advanced,
+    )
+    status = 200 if result.get("ok", True) else 400
+    return _envelope(
+        "config.set",
+        result,
+        before=before,
+        message=str(result.get("summary") or "config set"),
+        ui_hints={"refresh": ["state", "config"]},
+        status_code=status,
+        next_actions=["gridbox.set", "queue.build"],
+    )
+
+
+def _queue_build_payload(replace_queue: bool) -> dict[str, Any]:
+    return {
+        "mode": str(STATE.get("mode") or "Docking"),
+        "run_count": int(STATE.get("runs") or 1),
+        "padding": float(STATE.get("grid_pad") or 0.0),
+        "out_root_path": str(STATE.get("out_root_path") or "data/dock"),
+        "out_root_name": str(STATE.get("out_root_name") or ""),
+        "docking_config": normalize_docking_config(STATE.get("docking_config") or {}),
+        "selection_map": STATE.get("selection_map") if isinstance(STATE.get("selection_map"), dict) else {},
+        "grid_data": STATE.get("agent_grid_data") if isinstance(STATE.get("agent_grid_data"), dict) else {},
+        "replace_queue": bool(replace_queue),
+    }
+
+
+def get_queue() -> dict[str, Any]:
+    before = _state_snapshot()
+    queue = STATE.get("queue") if isinstance(STATE.get("queue"), list) else []
+    batches = sorted({str(row.get("batch_id") or "") for row in queue if isinstance(row, dict) and row.get("batch_id")})
+    data = {"queue_count": len(queue), "queue": queue, "batch_ids": batches}
+    return _envelope(
+        "queue.list",
+        data,
+        before=before,
+        after=_state_snapshot(),
+        message=f"queue: {len(queue)} job(s)",
+        ui_hints={"refresh": ["state", "queue"]},
+    )
+
+
+def build_queue(*, replace_queue: bool = True) -> dict[str, Any]:
+    before = _state_snapshot()
+    data, status = _call_route(core.queue_build, _queue_build_payload(replace_queue))
+    return _envelope(
+        "queue.build",
+        data,
+        before=before,
+        message=f"queue built: {data.get('queue_count', 0)} job(s)",
+        ui_hints={"refresh": ["state", "queue"]},
+        status_code=status,
+        error_code="queue_build_failed",
+        next_actions=["workspace.select", "gridbox.set", "config.set"],
+    )
+
+
+def remove_queue_batch(batch_id: str) -> dict[str, Any]:
+    before = _state_snapshot()
+    data, status = _call_route(core.remove_batch, {"batch_id": str(batch_id or "").strip()})
+    return _envelope(
+        "queue.remove",
+        data,
+        before=before,
+        message=f"queue batch removed: {batch_id or 'all'}",
+        ui_hints={"refresh": ["state", "queue"]},
+        status_code=status,
+        next_actions=["queue.list"],
+    )
+
+
+def run_start(*, test_mode: bool = False, batch_id: int | None = None) -> dict[str, Any]:
+    before = _state_snapshot()
+    data, status = _call_route(core.run_start, RunStartPayload(is_test_mode=bool(test_mode), batch_id=batch_id))
+    return _envelope(
+        "run.start",
+        data,
+        before=before,
+        message=f"run status: {data.get('status') or '-'}",
+        ui_hints={"refresh": ["state", "run"]},
+        status_code=status,
+        error_code="run_start_failed",
+        next_actions=["queue.build", "run.status"],
+    )
+
+
+def run_stop() -> dict[str, Any]:
+    before = _state_snapshot()
+    data, status = _call_route(core.run_stop)
+    return _envelope(
+        "run.stop",
+        data,
+        before=before,
+        message=str(data.get("message") or f"run status: {data.get('status') or '-'}"),
+        ui_hints={"refresh": ["state", "run"]},
+        status_code=status,
+        next_actions=["run.status"],
+    )
+
+
+def run_status() -> dict[str, Any]:
+    before = _state_snapshot()
+    data, status = _call_route(core.run_status)
+    return _envelope(
+        "run.status",
+        data,
+        before=before,
+        after=_state_snapshot(),
+        message=f"run: {data.get('status') or '-'} {data.get('completed_runs', 0)}/{data.get('total_runs', 0)}",
+        ui_hints={"refresh": ["run"]},
+        status_code=status,
     )

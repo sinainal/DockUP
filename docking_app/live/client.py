@@ -65,7 +65,7 @@ class DockUPClient:
         return self._request("GET", "/api/control/state")
 
     def get_run_status(self) -> dict[str, Any]:
-        return self._request("GET", "/api/run/status")
+        return self._request("GET", "/api/control/run/status")
 
     def list_receptors(self) -> dict[str, Any]:
         return self._request("GET", "/api/control/receptors/list")
@@ -96,6 +96,54 @@ class DockUPClient:
 
     def show_viewer(self, pdb_id: str, *, chain: str = "") -> dict[str, Any]:
         return self._request("POST", "/api/control/viewer/show", json_payload={"pdb_id": pdb_id, "chain": chain})
+
+    def select_workspace(self, receptor: str = "all", *, chain: str = "auto", native_ligand: str = "auto", dock_ligands: str = "all") -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/control/workspace/select",
+            json_payload={"receptor": receptor, "chain": chain, "native_ligand": native_ligand, "dock_ligands": dock_ligands},
+        )
+
+    def set_gridbox(
+        self,
+        *,
+        method: str = "native_ligand",
+        size: float = 20.0,
+        padding: float = 0.0,
+        center: str = "",
+        pocket_rank: int = 1,
+        p2rank_mode: str = "fit",
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/control/gridbox/set",
+            json_payload={
+                "method": method,
+                "size": size,
+                "padding": padding,
+                "center": center,
+                "pocket_rank": pocket_rank,
+                "p2rank_mode": p2rank_mode,
+            },
+        )
+
+    def set_config(self, **payload: Any) -> dict[str, Any]:
+        return self._request("POST", "/api/control/config/set", json_payload=dict(payload))
+
+    def list_queue(self) -> dict[str, Any]:
+        return self._request("GET", "/api/control/queue/list")
+
+    def build_queue(self, *, replace_queue: bool = True) -> dict[str, Any]:
+        return self._request("POST", "/api/control/queue/build", json_payload={"replace_queue": replace_queue})
+
+    def remove_queue_batch(self, batch_id: str) -> dict[str, Any]:
+        return self._request("POST", "/api/control/queue/remove", json_payload={"batch_id": batch_id})
+
+    def start_run(self, *, test_mode: bool = False, batch_id: int | None = None) -> dict[str, Any]:
+        return self._request("POST", "/api/control/run/start", json_payload={"test_mode": test_mode, "batch_id": batch_id})
+
+    def stop_run(self) -> dict[str, Any]:
+        return self._request("POST", "/api/control/run/stop", json_payload={})
 
     def get_receptor_detail(self, pdb_id: str, *, chain: str = "") -> dict[str, Any]:
         path = f"/api/receptors/{str(pdb_id or '').strip()}"

@@ -48,3 +48,47 @@ class LigandDeleteRequest(BaseModel):
 class ViewerShowRequest(BaseModel):
     pdb_id: str
     chain: str = ""
+
+
+class WorkspaceSelectRequest(BaseModel):
+    receptor: str = "all"
+    chain: str = "auto"
+    native_ligand: str = "auto"
+    dock_ligands: str = "all"
+
+
+class GridboxSetRequest(BaseModel):
+    method: str = "native_ligand"
+    size: float = 20.0
+    padding: float = 0.0
+    center: str = ""
+    pocket_rank: int = 1
+    p2rank_mode: str = "fit"
+
+
+class ConfigSetRequest(BaseModel):
+    engine: str = "vina_gpu_21"
+    mode: str = "standard"
+    run_count: int = 1
+    padding: float = 0.0
+    out_root_name: str = ""
+    exhaustiveness: int | None = None
+    num_modes: int | None = None
+    energy_range: float | None = None
+    cpu: int | None = None
+    seed: int | None = None
+    ph: float | None = None
+    advanced: str = ""
+
+
+class QueueBuildRequest(BaseModel):
+    replace_queue: bool = True
+
+
+class QueueRemoveRequest(BaseModel):
+    batch_id: str = ""
+
+
+class RunStartRequest(BaseModel):
+    test_mode: bool = False
+    batch_id: int | None = None

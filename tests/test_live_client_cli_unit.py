@@ -33,13 +33,13 @@ def test_live_client_reads_state_from_ui_endpoint() -> None:
 def test_live_client_reads_run_status_from_ui_endpoint() -> None:
     client = DockUPClient(
         "http://dockup.local",
-        transport=_transport({("GET", "/api/run/status"): {"status": "idle", "total_runs": 0}}),
+        transport=_transport({("GET", "/api/control/run/status"): {"ok": True, "action": "run.status", "data": {"status": "idle", "total_runs": 0}}}),
     )
 
     payload = client.get_run_status()
 
-    assert payload["status"] == "idle"
-    assert payload["total_runs"] == 0
+    assert payload["data"]["status"] == "idle"
+    assert payload["data"]["total_runs"] == 0
 
 
 def test_live_client_loads_and_selects_receptor_through_ui_endpoints() -> None:
@@ -149,3 +149,36 @@ def test_live_cli_ligand_commands_use_control_envelopes(monkeypatch, capsys) -> 
     assert code == 0
     assert output["action"] == "ligand.list"
     assert output["data"]["ligands"] == ["dopamine.sdf"]
+
+
+def test_live_cli_queue_and_run_commands_use_control_envelopes(monkeypatch, capsys) -> None:
+    class FakeClient:
+        def build_queue(self, *, replace_queue: bool = True) -> dict[str, object]:
+            return {
+                "ok": True,
+                "action": "queue.build",
+                "message": "queue built: 2 job(s)",
+                "data": {"queue_count": 2, "replace_queue": replace_queue},
+            }
+
+        def start_run(self, *, test_mode: bool = False, batch_id: int | None = None) -> dict[str, object]:
+            return {
+                "ok": True,
+                "action": "run.start",
+                "message": "run status: running",
+                "data": {"status": "running", "test_mode": test_mode, "batch_id": batch_id},
+            }
+
+    monkeypatch.setattr(cli, "_live_client", lambda _args: FakeClient())
+
+    code = cli.run_agent_cli(["live", "queue", "build", "--append", "--json"])
+    output = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert output["action"] == "queue.build"
+    assert output["data"]["replace_queue"] is False
+
+    code = cli.run_agent_cli(["live", "run", "start", "--test-mode", "--json"])
+    output = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert output["action"] == "run.start"
+    assert output["data"]["test_mode"] is True
