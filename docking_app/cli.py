@@ -64,6 +64,24 @@ def _live_envelope(
         "error": {"message": str(error), "recoverable": True} if error else None,
     }
 
+
+def _coerce_live_envelope(
+    action: str,
+    data: dict[str, Any],
+    *,
+    message: str = "",
+    ui_hints: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if {"ok", "action", "data"}.issubset(data.keys()):
+        return data
+    return _live_envelope(action, data, message=message, ui_hints=ui_hints)
+
+
+def _envelope_data(payload: dict[str, Any]) -> dict[str, Any]:
+    data = payload.get("data")
+    return data if isinstance(data, dict) else {}
+
+
 def run_docking_cli(args):
     """
     Main execution logic for CLI.
@@ -194,10 +212,11 @@ def run_docking_cli(args):
 
 def cmd_live_state(args: argparse.Namespace) -> int:
     data = _live_client(args).get_state()
-    payload = _live_envelope(
+    state = _envelope_data(data) or data
+    payload = _coerce_live_envelope(
         "state.get",
         data,
-        message=f"state: receptor={data.get('selected_receptor') or '-'} queue={data.get('queue_count', 0)} run={data.get('run_status') or '-'}",
+        message=f"state: receptor={state.get('selected_receptor') or '-'} queue={state.get('queue_count', 0)} run={state.get('run_status') or '-'}",
     )
     _print_payload(payload, as_json=args.json, pretty=args.pretty)
     return 0 if payload["ok"] else 2
@@ -216,8 +235,9 @@ def cmd_live_run_status(args: argparse.Namespace) -> int:
 
 def cmd_live_receptor_list(args: argparse.Namespace) -> int:
     data = _live_client(args).list_receptors()
-    receptors = data.get("receptors") if isinstance(data.get("receptors"), list) else []
-    payload = _live_envelope(
+    inner = _envelope_data(data) or data
+    receptors = inner.get("receptors") if isinstance(inner.get("receptors"), list) else []
+    payload = _coerce_live_envelope(
         "receptor.list",
         data,
         message=f"receptors: {len(receptors)}",
@@ -229,9 +249,10 @@ def cmd_live_receptor_list(args: argparse.Namespace) -> int:
 def cmd_live_receptor_load(args: argparse.Namespace) -> int:
     pdb_ids = " ".join(str(item).strip() for item in args.pdb_ids if str(item).strip())
     data = _live_client(args).load_receptors(pdb_ids)
-    summary = data.get("summary") if isinstance(data.get("summary"), list) else []
-    ignored = data.get("ignored_ids") if isinstance(data.get("ignored_ids"), list) else []
-    payload = _live_envelope(
+    inner = _envelope_data(data) or data
+    summary = inner.get("summary") if isinstance(inner.get("summary"), list) else []
+    ignored = inner.get("ignored_ids") if isinstance(inner.get("ignored_ids"), list) else []
+    payload = _coerce_live_envelope(
         "receptor.load",
         data,
         message=f"loaded receptors: {len(summary)}" + (f"; ignored={','.join(str(x) for x in ignored)}" if ignored else ""),
@@ -244,49 +265,68 @@ def cmd_live_receptor_load(args: argparse.Namespace) -> int:
 def cmd_live_receptor_select(args: argparse.Namespace) -> int:
     pdb_id = str(args.pdb_id or "").strip().upper()
     data = _live_client(args).select_receptor(pdb_id)
-    payload = _live_envelope(
+    inner = _envelope_data(data) or data
+    payload = _coerce_live_envelope(
         "receptor.select",
         data,
-        message=f"selected receptor: {data.get('selected_receptor') or pdb_id or '-'}",
-        ui_hints={"refresh": ["state", "viewer"], "selected_receptor": data.get("selected_receptor") or pdb_id},
+        message=f"selected receptor: {inner.get('selected_receptor') or pdb_id or '-'}",
+        ui_hints={"refresh": ["state", "viewer"], "selected_receptor": inner.get("selected_receptor") or pdb_id},
     )
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_receptor_delete(args: argparse.Namespace) -> int:
+    data = _live_client(args).delete_receptor(str(args.target or "").strip())
+    payload = _coerce_live_envelope("receptor.delete", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_receptor_clear(args: argparse.Namespace) -> int:
+    data = _live_client(args).clear_receptors()
+    payload = _coerce_live_envelope("receptor.clear", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_ligand_list(args: argparse.Namespace) -> int:
+    data = _live_client(args).list_ligands()
+    inner = _envelope_data(data) or data
+    ligands = inner.get("ligands") if isinstance(inner.get("ligands"), list) else []
+    payload = _coerce_live_envelope("ligand.list", data, message=f"ligands: {len(ligands)}")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_ligand_fetch(args: argparse.Namespace) -> int:
+    ligand_ids = ";".join(str(item).strip() for item in args.ligands if str(item).strip())
+    data = _live_client(args).fetch_ligands(ligand_ids)
+    payload = _coerce_live_envelope("ligand.fetch", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_ligand_delete(args: argparse.Namespace) -> int:
+    data = _live_client(args).delete_ligand(str(args.name or "").strip())
+    payload = _coerce_live_envelope("ligand.delete", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_ligand_clear(args: argparse.Namespace) -> int:
+    data = _live_client(args).clear_ligands()
+    payload = _coerce_live_envelope("ligand.clear", data)
     _print_payload(payload, as_json=args.json, pretty=args.pretty)
     return 0 if payload["ok"] else 2
 
 
 def cmd_live_viewer_show(args: argparse.Namespace) -> int:
     pdb_id = str(args.pdb_id or "").strip().upper()
-    client = _live_client(args)
-    select_result = client.select_receptor(pdb_id)
-    if select_result.get("error"):
-        payload = _live_envelope("viewer.show", select_result)
-        _print_payload(payload, as_json=args.json, pretty=args.pretty)
-        return 2
-    detail = client.get_receptor_detail(pdb_id, chain=str(args.chain or ""))
-    pdb_text = str(detail.get("pdb_text") or "")
-    compact = {
-        "pdb_id": detail.get("pdb_id") or pdb_id,
-        "pdb_text_length": len(pdb_text),
-        "chains": detail.get("chains") or [],
-        "ligands_by_chain": detail.get("ligands_by_chain") or {},
-        "pdb_file": detail.get("pdb_file") or "",
-        "selected_chain": detail.get("selected_chain") or args.chain or "all",
-        "selected_ligand": detail.get("selected_ligand") or "",
-    }
-    if detail.get("error"):
-        compact["error"] = detail.get("error")
-    payload = _live_envelope(
-        "viewer.show",
-        compact,
-        message=(
-            f"viewer ready: {compact['pdb_id']} ({compact['pdb_text_length']} pdb chars)"
-            if compact.get("pdb_text_length")
-            else f"viewer data missing: {pdb_id}"
-        ),
-        ui_hints={"refresh": ["state", "viewer"], "selected_receptor": compact.get("pdb_id")},
-    )
+    data = _live_client(args).show_viewer(pdb_id, chain=str(args.chain or ""))
+    payload = _coerce_live_envelope("viewer.show", data)
     _print_payload(payload, as_json=args.json, pretty=args.pretty)
-    return 0 if payload["ok"] and compact.get("pdb_text_length") else 2
+    return 0 if payload["ok"] else 2
 
 
 def run_agent_assets_cli(args) -> int:
@@ -457,6 +497,30 @@ def run_agent_cli(argv: list[str]) -> int:
     live_receptor_select.add_argument("pdb_id")
     add_live_output_flags(live_receptor_select, suppress_default=True)
     live_receptor_select.set_defaults(func=cmd_live_receptor_select)
+    live_receptor_delete = live_receptor_sub.add_parser("delete", help="Delete a stored receptor file from live state")
+    live_receptor_delete.add_argument("target")
+    add_live_output_flags(live_receptor_delete, suppress_default=True)
+    live_receptor_delete.set_defaults(func=cmd_live_receptor_delete)
+    live_receptor_clear = live_receptor_sub.add_parser("clear", help="Clear all stored receptors from live state")
+    add_live_output_flags(live_receptor_clear, suppress_default=True)
+    live_receptor_clear.set_defaults(func=cmd_live_receptor_clear)
+
+    live_ligand = live_sub.add_parser("ligand", help="Ligand-related live commands")
+    live_ligand_sub = live_ligand.add_subparsers(dest="ligand_cmd", required=True)
+    live_ligand_list = live_ligand_sub.add_parser("list", help="List stored ligands")
+    add_live_output_flags(live_ligand_list, suppress_default=True)
+    live_ligand_list.set_defaults(func=cmd_live_ligand_list)
+    live_ligand_fetch = live_ligand_sub.add_parser("fetch", help="Fetch ligand structures into live state")
+    live_ligand_fetch.add_argument("ligands", nargs="+")
+    add_live_output_flags(live_ligand_fetch, suppress_default=True)
+    live_ligand_fetch.set_defaults(func=cmd_live_ligand_fetch)
+    live_ligand_delete = live_ligand_sub.add_parser("delete", help="Delete one stored ligand")
+    live_ligand_delete.add_argument("name")
+    add_live_output_flags(live_ligand_delete, suppress_default=True)
+    live_ligand_delete.set_defaults(func=cmd_live_ligand_delete)
+    live_ligand_clear = live_ligand_sub.add_parser("clear", help="Clear all stored ligands")
+    add_live_output_flags(live_ligand_clear, suppress_default=True)
+    live_ligand_clear.set_defaults(func=cmd_live_ligand_clear)
 
     live_viewer = live_sub.add_parser("viewer", help="Viewer-related live commands")
     live_viewer_sub = live_viewer.add_subparsers(dest="viewer_cmd", required=True)

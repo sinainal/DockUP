@@ -62,19 +62,40 @@ class DockUPClient:
         return payload
 
     def get_state(self) -> dict[str, Any]:
-        return self._request("GET", "/api/state")
+        return self._request("GET", "/api/control/state")
 
     def get_run_status(self) -> dict[str, Any]:
         return self._request("GET", "/api/run/status")
 
     def list_receptors(self) -> dict[str, Any]:
-        return self._request("GET", "/api/receptors/list")
+        return self._request("GET", "/api/control/receptors/list")
 
     def load_receptors(self, pdb_ids: str) -> dict[str, Any]:
-        return self._request("POST", "/api/receptors/load", json_payload={"pdb_ids": pdb_ids})
+        return self._request("POST", "/api/control/receptors/load", json_payload={"pdb_ids": pdb_ids})
 
     def select_receptor(self, pdb_id: str) -> dict[str, Any]:
-        return self._request("POST", "/api/receptors/select", json_payload={"pdb_id": pdb_id})
+        return self._request("POST", "/api/control/receptors/select", json_payload={"pdb_id": pdb_id})
+
+    def delete_receptor(self, target: str) -> dict[str, Any]:
+        return self._request("POST", "/api/control/receptors/delete", json_payload={"target": target})
+
+    def clear_receptors(self) -> dict[str, Any]:
+        return self._request("POST", "/api/control/receptors/clear", json_payload={})
+
+    def list_ligands(self) -> dict[str, Any]:
+        return self._request("GET", "/api/control/ligands/list")
+
+    def fetch_ligands(self, ligand_ids: str) -> dict[str, Any]:
+        return self._request("POST", "/api/control/ligands/fetch", json_payload={"ligand_ids": ligand_ids})
+
+    def delete_ligand(self, name: str) -> dict[str, Any]:
+        return self._request("POST", "/api/control/ligands/delete", json_payload={"name": name})
+
+    def clear_ligands(self) -> dict[str, Any]:
+        return self._request("POST", "/api/control/ligands/clear", json_payload={})
+
+    def show_viewer(self, pdb_id: str, *, chain: str = "") -> dict[str, Any]:
+        return self._request("POST", "/api/control/viewer/show", json_payload={"pdb_id": pdb_id, "chain": chain})
 
     def get_receptor_detail(self, pdb_id: str, *, chain: str = "") -> dict[str, Any]:
         path = f"/api/receptors/{str(pdb_id or '').strip()}"
