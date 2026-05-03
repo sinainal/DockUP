@@ -336,10 +336,35 @@ def cmd_live_ligand_clear(args: argparse.Namespace) -> int:
     return 0 if payload["ok"] else 2
 
 
+def cmd_live_assets_inspect(args: argparse.Namespace) -> int:
+    data = _live_client(args).inspect_assets()
+    inner = _envelope_data(data) or data
+    inventory = inner.get("inventory") if isinstance(inner.get("inventory"), dict) else {}
+    receptors = inventory.get("receptors") if isinstance(inventory.get("receptors"), dict) else {}
+    ligands = inventory.get("ligands") if isinstance(inventory.get("ligands"), list) else []
+    payload = _coerce_live_envelope("assets.inspect", data, message=f"assets: {len(receptors)} receptor(s), {len(ligands)} ligand(s)")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
 def cmd_live_viewer_show(args: argparse.Namespace) -> int:
     pdb_id = str(args.pdb_id or "").strip().upper()
     data = _live_client(args).show_viewer(pdb_id, chain=str(args.chain or ""))
     payload = _coerce_live_envelope("viewer.show", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_viewer_residues(args: argparse.Namespace) -> int:
+    pdb_id = str(args.pdb_id or "").strip().upper()
+    data = _live_client(args).show_residues(pdb_id, residue=str(args.residue or "TRP"), chain=str(args.chain or "all"))
+    inner = _envelope_data(data) or data
+    payload = _coerce_live_envelope(
+        "viewer.residues",
+        data,
+        message=str(inner.get("summary") or f"residues: {len(inner.get('residues') or [])}"),
+        ui_hints={"refresh": ["state", "viewer", "grid-selection"]},
+    )
     _print_payload(payload, as_json=args.json, pretty=args.pretty)
     return 0 if payload["ok"] else 2
 
@@ -423,6 +448,31 @@ def cmd_live_run_start(args: argparse.Namespace) -> int:
 def cmd_live_run_stop(args: argparse.Namespace) -> int:
     data = _live_client(args).stop_run()
     payload = _coerce_live_envelope("run.stop", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_results_folders(args: argparse.Namespace) -> int:
+    data = _live_client(args).list_result_folders()
+    inner = _envelope_data(data) or data
+    folders = inner.get("folders") if isinstance(inner.get("folders"), list) else []
+    payload = _coerce_live_envelope("results.folders", data, message=f"result folders: {len(folders)}")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_results_scan(args: argparse.Namespace) -> int:
+    data = _live_client(args).scan_results(root_path=str(args.root or "data/dock"))
+    inner = _envelope_data(data) or data
+    results = inner.get("results") if isinstance(inner.get("results"), list) else []
+    payload = _coerce_live_envelope("results.scan", data, message=f"results: {len(results)}")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_results_detail(args: argparse.Namespace) -> int:
+    data = _live_client(args).get_result_detail(result_dir=str(args.result_dir or ""))
+    payload = _coerce_live_envelope("results.detail", data)
     _print_payload(payload, as_json=args.json, pretty=args.pretty)
     return 0 if payload["ok"] else 2
 
@@ -583,6 +633,12 @@ def cmd_live_report_render(args: argparse.Namespace) -> int:
         "otofigure_surface_opacity": args.surface_opacity,
         "otofigure_protein_color": args.protein_color,
         "otofigure_ligand_thickness": args.ligand_thickness,
+        "otofigure_far_ratio": args.far_ratio,
+        "otofigure_close_ratio": args.close_ratio,
+        "otofigure_interaction_ratio": args.interaction_ratio,
+        "otofigure_far_padding": args.far_padding,
+        "otofigure_far_frame_margin": args.far_frame_margin,
+        "otofigure_close_padding": args.close_padding,
         "receptors": list(args.receptors or []),
         "run_by_receptor": _json_arg(args.run_by_receptor_json, {}),
         "ligand_by_receptor": _json_arg(args.ligand_by_receptor_json, {}),
@@ -774,6 +830,12 @@ def run_agent_cli(argv: list[str]) -> int:
     add_live_output_flags(live_state, suppress_default=True)
     live_state.set_defaults(func=cmd_live_state)
 
+    live_assets = live_sub.add_parser("assets", help="Inspect live receptor/ligand inventory")
+    live_assets_sub = live_assets.add_subparsers(dest="assets_cmd", required=True)
+    live_assets_inspect = live_assets_sub.add_parser("inspect", help="Inspect loaded receptors and active ligands")
+    add_live_output_flags(live_assets_inspect, suppress_default=True)
+    live_assets_inspect.set_defaults(func=cmd_live_assets_inspect)
+
     live_run = live_sub.add_parser("run", help="Run-related live commands")
     live_run_sub = live_run.add_subparsers(dest="run_cmd", required=True)
     live_run_status = live_run_sub.add_parser("status", help="Read live run status")
@@ -833,6 +895,12 @@ def run_agent_cli(argv: list[str]) -> int:
     live_viewer_show.add_argument("--chain", default="")
     add_live_output_flags(live_viewer_show, suppress_default=True)
     live_viewer_show.set_defaults(func=cmd_live_viewer_show)
+    live_viewer_residues = live_viewer_sub.add_parser("residues", help="List/highlight residues such as TRP in the live viewer")
+    live_viewer_residues.add_argument("pdb_id", nargs="?", default="")
+    live_viewer_residues.add_argument("--residue", default="TRP", help="Residue code or name, e.g. TRP or tryptophan")
+    live_viewer_residues.add_argument("--chain", default="all")
+    add_live_output_flags(live_viewer_residues, suppress_default=True)
+    live_viewer_residues.set_defaults(func=cmd_live_viewer_residues)
 
     live_workspace = live_sub.add_parser("workspace", help="Workspace-related live commands")
     live_workspace_sub = live_workspace.add_subparsers(dest="workspace_cmd", required=True)
@@ -887,6 +955,20 @@ def run_agent_cli(argv: list[str]) -> int:
     live_queue_remove.add_argument("batch_id")
     add_live_output_flags(live_queue_remove, suppress_default=True)
     live_queue_remove.set_defaults(func=cmd_live_queue_remove)
+
+    live_results = live_sub.add_parser("results", help="Results-page live commands")
+    live_results_sub = live_results.add_subparsers(dest="results_cmd", required=True)
+    live_results_folders = live_results_sub.add_parser("folders", help="List dock result roots")
+    add_live_output_flags(live_results_folders, suppress_default=True)
+    live_results_folders.set_defaults(func=cmd_live_results_folders)
+    live_results_scan = live_results_sub.add_parser("scan", help="Scan result folders")
+    live_results_scan.add_argument("--root", default="data/dock")
+    add_live_output_flags(live_results_scan, suppress_default=True)
+    live_results_scan.set_defaults(func=cmd_live_results_scan)
+    live_results_detail = live_results_sub.add_parser("detail", help="Read one result detail")
+    live_results_detail.add_argument("result_dir")
+    add_live_output_flags(live_results_detail, suppress_default=True)
+    live_results_detail.set_defaults(func=cmd_live_results_detail)
 
     def add_report_path_flags(cmd: argparse.ArgumentParser) -> None:
         cmd.add_argument("--root", default="data/dock", help="Report root path")
@@ -997,6 +1079,12 @@ def run_agent_cli(argv: list[str]) -> int:
     report_render.add_argument("--surface-opacity", type=float, default=0.5)
     report_render.add_argument("--protein-color", default="bluewhite")
     report_render.add_argument("--ligand-thickness", type=float, default=0.22)
+    report_render.add_argument("--far-ratio", type=int, default=4)
+    report_render.add_argument("--close-ratio", type=int, default=2)
+    report_render.add_argument("--interaction-ratio", type=int, default=3)
+    report_render.add_argument("--far-padding", type=float, default=0.03)
+    report_render.add_argument("--far-frame-margin", type=float, default=0.03)
+    report_render.add_argument("--close-padding", type=float, default=0.20)
     add_live_output_flags(report_render, suppress_default=True)
     report_render.set_defaults(func=cmd_live_report_render)
 

@@ -50,6 +50,12 @@ class ViewerShowRequest(BaseModel):
     chain: str = ""
 
 
+class ViewerResiduesRequest(BaseModel):
+    pdb_id: str = ""
+    residue: str = "TRP"
+    chain: str = "all"
+
+
 class WorkspaceSelectRequest(BaseModel):
     receptor: str = "all"
     chain: str = "auto"
@@ -92,3 +98,11 @@ class QueueRemoveRequest(BaseModel):
 class RunStartRequest(BaseModel):
     test_mode: bool = False
     batch_id: int | None = None
+
+
+class ResultsScanRequest(BaseModel):
+    root_path: str = "data/dock"
+
+
+class ResultsDetailRequest(BaseModel):
+    result_dir: str = ""

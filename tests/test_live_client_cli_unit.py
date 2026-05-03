@@ -91,6 +91,40 @@ def test_live_client_loads_and_selects_receptor_through_ui_endpoints() -> None:
     ]
 
 
+def test_live_client_covers_assets_viewer_and_results_control_endpoints() -> None:
+    seen: list[tuple[str, str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8") or "{}") if request.content else None
+        seen.append((request.method, request.url.path, payload))
+        if request.url.path == "/api/control/assets/inspect":
+            return httpx.Response(200, json={"ok": True, "action": "assets.inspect", "data": {"inventory": {}}})
+        if request.url.path == "/api/control/viewer/residues":
+            return httpx.Response(200, json={"ok": True, "action": "viewer.residues", "data": {"summary": "Found 8 TRP residue(s)."}})
+        if request.url.path == "/api/control/results/folders":
+            return httpx.Response(200, json={"ok": True, "action": "results.folders", "data": {"folders": []}})
+        if request.url.path == "/api/control/results/scan":
+            return httpx.Response(200, json={"ok": True, "action": "results.scan", "data": {"results": []}})
+        if request.url.path == "/api/control/results/detail":
+            return httpx.Response(200, json={"ok": True, "action": "results.detail", "data": {"result": {"folder_name": "run1"}}})
+        return httpx.Response(404, json={"error": "unexpected"})
+
+    client = DockUPClient("http://dockup.local", transport=httpx.MockTransport(handler))
+
+    assert client.inspect_assets()["action"] == "assets.inspect"
+    assert client.show_residues("6CM4", residue="TRP", chain="all")["action"] == "viewer.residues"
+    assert client.list_result_folders()["action"] == "results.folders"
+    assert client.scan_results(root_path="data/dock")["action"] == "results.scan"
+    assert client.get_result_detail(result_dir="/tmp/run1")["action"] == "results.detail"
+    assert seen == [
+        ("GET", "/api/control/assets/inspect", None),
+        ("POST", "/api/control/viewer/residues", {"pdb_id": "6CM4", "residue": "TRP", "chain": "all"}),
+        ("GET", "/api/control/results/folders", None),
+        ("POST", "/api/control/results/scan", {"root_path": "data/dock"}),
+        ("POST", "/api/control/results/detail", {"result_dir": "/tmp/run1"}),
+    ]
+
+
 def test_live_cli_state_prints_json_envelope(monkeypatch, capsys) -> None:
     class FakeClient:
         def get_state(self) -> dict[str, object]:
@@ -161,6 +195,53 @@ def test_live_cli_viewer_show_verifies_receptor_detail(monkeypatch, capsys) -> N
     assert output["data"]["pdb_id"] == "6CM4"
     assert output["data"]["pdb_text_length"] == len("ATOM\nEND\n")
     assert output["ui_hints"]["refresh"] == ["state", "viewer"]
+
+
+def test_live_cli_assets_viewer_residues_and_results_commands(monkeypatch, capsys) -> None:
+    class FakeClient:
+        def inspect_assets(self) -> dict[str, object]:
+            return {"ok": True, "action": "assets.inspect", "data": {"inventory": {"receptors": {"6CM4": {}}, "ligands": []}}}
+
+        def show_residues(self, pdb_id: str = "", *, residue: str = "TRP", chain: str = "all") -> dict[str, object]:
+            return {
+                "ok": True,
+                "action": "viewer.residues",
+                "data": {"summary": "Found 8 TRP residue(s).", "receptor": pdb_id, "residue": residue, "chain": chain, "residues": []},
+            }
+
+        def list_result_folders(self) -> dict[str, object]:
+            return {"ok": True, "action": "results.folders", "data": {"folders": [{"path": "data/dock"}]}}
+
+        def scan_results(self, *, root_path: str = "data/dock") -> dict[str, object]:
+            return {"ok": True, "action": "results.scan", "data": {"root_path": root_path, "results": []}}
+
+        def get_result_detail(self, *, result_dir: str) -> dict[str, object]:
+            return {"ok": True, "action": "results.detail", "data": {"result": {"folder_name": result_dir}}}
+
+    monkeypatch.setattr(cli, "_live_client", lambda _args: FakeClient())
+
+    code = cli.run_agent_cli(["live", "assets", "inspect", "--json"])
+    output = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert output["action"] == "assets.inspect"
+
+    code = cli.run_agent_cli(["live", "viewer", "residues", "6CM4", "--residue", "tryptophan", "--json"])
+    output = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert output["action"] == "viewer.residues"
+    assert output["data"]["residue"] == "tryptophan"
+
+    code = cli.run_agent_cli(["live", "results", "folders", "--json"])
+    assert json.loads(capsys.readouterr().out)["action"] == "results.folders"
+    assert code == 0
+
+    code = cli.run_agent_cli(["live", "results", "scan", "--root", "data/dock", "--json"])
+    assert json.loads(capsys.readouterr().out)["action"] == "results.scan"
+    assert code == 0
+
+    code = cli.run_agent_cli(["live", "results", "detail", "/tmp/run1", "--json"])
+    assert json.loads(capsys.readouterr().out)["action"] == "results.detail"
+    assert code == 0
 
 
 def test_live_cli_ligand_commands_use_control_envelopes(monkeypatch, capsys) -> None:
@@ -268,6 +349,10 @@ def test_live_cli_report_render_and_compile_payloads(monkeypatch, capsys) -> Non
             "5MOZ",
             "--run-by-receptor-json",
             '{"6CM4":"run1"}',
+            "--far-ratio",
+            "5",
+            "--close-padding",
+            "0.33",
             "--json",
         ]
     )
@@ -278,6 +363,8 @@ def test_live_cli_report_render_and_compile_payloads(monkeypatch, capsys) -> Non
     assert calls[0][1]["source_path"] == "data/dock/run_a"
     assert calls[0][1]["render_mode"] == "otofigure"
     assert calls[0][1]["receptors"] == ["6CM4", "5MOZ"]
+    assert calls[0][1]["otofigure_far_ratio"] == 5
+    assert calls[0][1]["otofigure_close_padding"] == 0.33
     assert calls[0][1]["run_by_receptor"] == {"6CM4": "run1"}
 
     code = cli.run_agent_cli(

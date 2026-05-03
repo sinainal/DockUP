@@ -44,6 +44,37 @@ def show_in_viewer(receptor: str = "", chain: str = "", native_ligand: str = "")
     return result
 
 
+def show_residues(receptor: str = "", residue: str = "TRP", chain: str = "all") -> dict[str, Any]:
+    envelope = actions.show_residues(receptor or "", residue=residue or "TRP", chain=chain or "all")
+    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
+    result = _base_result(envelope)
+    result.update(
+        {
+            "receptor": data.get("receptor") or receptor,
+            "residue": data.get("residue") or residue,
+            "chain": data.get("chain") or chain or "all",
+            "residues": data.get("residues") or [],
+            "selection": data.get("selection") or "",
+            "viewer_selection": data.get("viewer_selection"),
+            "allowed_next_tools": data.get("allowed_next_tools") or ["show_in_viewer", "set_gridbox", "select_workspace"],
+        }
+    )
+    return result
+
+
+def inspect_assets() -> dict[str, Any]:
+    envelope = actions.inspect_assets()
+    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
+    result = _base_result(envelope)
+    result.update(
+        {
+            "inventory": data.get("inventory") or {},
+            "allowed_next_tools": data.get("allowed_next_tools") or ["select_workspace", "fetch_assets", "read_tool_details"],
+        }
+    )
+    return result
+
+
 def select_workspace(receptor: str = "all", chain: str = "auto", native_ligand: str = "auto", dock_ligands: str = "all") -> dict[str, Any]:
     envelope = actions.select_workspace(receptor, chain=chain, native_ligand=native_ligand, dock_ligands=dock_ligands)
     data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
@@ -316,7 +347,9 @@ def delete_queue_batches(batch_id: str = "all") -> dict[str, Any]:
 
 
 CONTROL_TOOL_FUNCTIONS = {
+    "inspect_assets": inspect_assets,
     "show_in_viewer": show_in_viewer,
+    "show_residues": show_residues,
     "select_workspace": select_workspace,
     "set_gridbox": set_gridbox,
     "set_docking_config": set_docking_config,

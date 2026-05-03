@@ -13,6 +13,7 @@ from ..helpers import normalize_docking_config
 from ..models import FetchLigandsPayload, LoadReceptorsPayload, RunStartPayload, SelectReceptorPayload
 from ..agent import autonomous_docking
 from ..routes import core
+from ..routes import results as result_routes
 from ..state import RUN_STATE, STATE, save_state_cache
 from .models import ControlEnvelope, ControlError
 
@@ -240,6 +241,24 @@ def list_ligands() -> dict[str, Any]:
     )
 
 
+def inspect_assets() -> dict[str, Any]:
+    before = _state_snapshot()
+    result = autonomous_docking.inspect_assets()
+    status = 200 if result.get("ok", True) else 400
+    inventory = result.get("inventory") if isinstance(result.get("inventory"), dict) else {}
+    receptors = inventory.get("receptors") if isinstance(inventory.get("receptors"), dict) else {}
+    ligands = inventory.get("ligands") if isinstance(inventory.get("ligands"), list) else []
+    return _envelope(
+        "assets.inspect",
+        result,
+        before=before,
+        message=str(result.get("summary") or f"assets: {len(receptors)} receptor(s), {len(ligands)} ligand(s)"),
+        ui_hints={"refresh": ["state", "receptors", "ligands", "workspace"]},
+        status_code=status,
+        next_actions=["receptor.load", "ligand.fetch", "workspace.select"],
+    )
+
+
 def fetch_ligands(ligand_ids: str) -> dict[str, Any]:
     before = _state_snapshot()
     data, status = _response_payload(core.fetch_ligands(FetchLigandsPayload(ligand_ids=ligand_ids)))
@@ -329,6 +348,27 @@ def show_viewer(pdb_id: str, *, chain: str = "") -> dict[str, Any]:
         ui_hints={"refresh": ["state", "viewer"], "selected_receptor": compact.get("pdb_id")},
         status_code=status,
         next_actions=["receptor.load", "receptor.select"],
+    )
+
+
+def show_residues(pdb_id: str = "", *, residue: str = "TRP", chain: str = "all") -> dict[str, Any]:
+    before = _state_snapshot()
+    result = autonomous_docking.show_residues(receptor=pdb_id, residue=residue, chain=chain)
+    status = 200 if result.get("ok", True) else 400
+    viewer_selection = result.get("viewer_selection") if isinstance(result.get("viewer_selection"), dict) else {}
+    return _envelope(
+        "viewer.residues",
+        result,
+        before=before,
+        message=str(result.get("summary") or f"residues: {len(result.get('residues') or [])}"),
+        ui_hints={
+            "refresh": ["state", "viewer", "grid-selection"],
+            "viewer_selection": viewer_selection,
+            "selected_receptor": result.get("receptor") or pdb_id,
+        },
+        status_code=status,
+        error_code="viewer_residues_failed",
+        next_actions=["receptor.load", "viewer.show"],
     )
 
 
@@ -456,13 +496,22 @@ def set_config(
 
 
 def _queue_build_payload(replace_queue: bool) -> dict[str, Any]:
+    docking_config = normalize_docking_config(STATE.get("docking_config") or {})
+    requested_mode = str(STATE.get("mode") or "Docking")
+    ligand_binding_mode = str(docking_config.get("ligand_binding_mode") or "single").strip().lower()
+    if ligand_binding_mode == "multi_ligand":
+        effective_mode = "Multi-Ligand"
+    elif requested_mode == "Multi-Ligand":
+        effective_mode = "Docking"
+    else:
+        effective_mode = requested_mode or "Docking"
     return {
-        "mode": str(STATE.get("mode") or "Docking"),
+        "mode": effective_mode,
         "run_count": int(STATE.get("runs") or 1),
         "padding": float(STATE.get("grid_pad") or 0.0),
         "out_root_path": str(STATE.get("out_root_path") or "data/dock"),
         "out_root_name": str(STATE.get("out_root_name") or ""),
-        "docking_config": normalize_docking_config(STATE.get("docking_config") or {}),
+        "docking_config": docking_config,
         "selection_map": STATE.get("selection_map") if isinstance(STATE.get("selection_map"), dict) else {},
         "grid_data": STATE.get("agent_grid_data") if isinstance(STATE.get("agent_grid_data"), dict) else {},
         "replace_queue": bool(replace_queue),
@@ -553,4 +602,52 @@ def run_status() -> dict[str, Any]:
         message=f"run: {data.get('status') or '-'} {data.get('completed_runs', 0)}/{data.get('total_runs', 0)}",
         ui_hints={"refresh": ["run"]},
         status_code=status,
+    )
+
+
+def results_folders() -> dict[str, Any]:
+    before = _state_snapshot()
+    data, status = _call_route(result_routes.results_dock_folders)
+    folders = data.get("folders") if isinstance(data.get("folders"), list) else []
+    return _envelope(
+        "results.folders",
+        data,
+        before=before,
+        after=_state_snapshot(),
+        message=f"result folders: {len(folders)}",
+        ui_hints={"refresh": ["results"]},
+        status_code=status,
+    )
+
+
+def results_scan(root_path: str = "data/dock") -> dict[str, Any]:
+    before = _state_snapshot()
+    data, status = _call_route(result_routes.scan_results, {"root_path": root_path})
+    results = data.get("results") if isinstance(data.get("results"), list) else []
+    return _envelope(
+        "results.scan",
+        data,
+        before=before,
+        message=f"results: {len(results)}",
+        ui_hints={"refresh": ["state", "results"]},
+        status_code=status,
+        error_code="results_scan_failed",
+    )
+
+
+def results_detail(result_dir: str) -> dict[str, Any]:
+    before = _state_snapshot()
+    data, status = _call_route(result_routes.results_detail, {"result_dir": str(result_dir or "").strip()})
+    result = data.get("result") if isinstance(data.get("result"), dict) else {}
+    label = result.get("label") or result.get("folder_name") or result.get("ligand_display_name") or "-"
+    return _envelope(
+        "results.detail",
+        data,
+        before=before,
+        after=_state_snapshot(),
+        message=f"result detail: {label}",
+        ui_hints={"refresh": ["results", "viewer"]},
+        status_code=status,
+        error_code="results_detail_failed",
+        next_actions=["results.scan"],
     )

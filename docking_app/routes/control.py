@@ -14,7 +14,10 @@ from ..control.models import (
     ReceptorDeleteRequest,
     ReceptorLoadRequest,
     ReceptorSelectRequest,
+    ResultsDetailRequest,
+    ResultsScanRequest,
     RunStartRequest,
+    ViewerResiduesRequest,
     ViewerShowRequest,
     WorkspaceSelectRequest,
 )
@@ -76,9 +79,20 @@ def control_ligand_clear() -> JSONResponse:
     return JSONResponse(actions.clear_ligands())
 
 
+@router.get("/assets/inspect")
+def control_assets_inspect() -> JSONResponse:
+    return JSONResponse(actions.inspect_assets())
+
+
 @router.post("/viewer/show")
 def control_viewer_show(payload: ViewerShowRequest) -> JSONResponse:
     result = actions.show_viewer(payload.pdb_id, chain=payload.chain)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@router.post("/viewer/residues")
+def control_viewer_residues(payload: ViewerResiduesRequest) -> JSONResponse:
+    result = actions.show_residues(payload.pdb_id, residue=payload.residue, chain=payload.chain)
     return JSONResponse(result, status_code=200 if result.get("ok") else 400)
 
 
@@ -157,3 +171,20 @@ def control_run_stop() -> JSONResponse:
 @router.get("/run/status")
 def control_run_status() -> JSONResponse:
     return JSONResponse(actions.run_status())
+
+
+@router.get("/results/folders")
+def control_results_folders() -> JSONResponse:
+    return JSONResponse(actions.results_folders())
+
+
+@router.post("/results/scan")
+def control_results_scan(payload: ResultsScanRequest) -> JSONResponse:
+    result = actions.results_scan(payload.root_path)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@router.post("/results/detail")
+def control_results_detail(payload: ResultsDetailRequest) -> JSONResponse:
+    result = actions.results_detail(payload.result_dir)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
