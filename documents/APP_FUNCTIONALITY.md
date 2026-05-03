@@ -1,124 +1,142 @@
-# DockUP -- Full Function Reference
+# DockUP — Tam İşlev Referansı (Hata Ayıklama Kılavuzu)
 
-> **Created:** 2026-03-03
-> **Last updated:** 2026-05-03
-> **Version:** 0.2.0
-> **Purpose:** Living reference for DockUP's application surface. Use this document for debugging, regression checks, onboarding, and implementation updates.
-
----
-
-## Table of Contents
-
-1. [Directory Structure](#1-directory-structure)
-2. [Runtime State](#2-runtime-state)
-3. [Configuration](#3-configuration)
-4. [Helpers](#4-helpers)
-5. [Manifest](#5-manifest)
-6. [Services](#6-services)
-7. [Sessions](#7-sessions)
-8. [Core API](#8-core-api)
-9. [Pocket API](#9-pocket-api)
-10. [Results API](#10-results-api)
-11. [Report API](#11-report-api)
-12. [Config API](#12-config-api)
-13. [Extensions API](#13-extensions-api)
-14. [Agent Layer](#14-agent-layer)
-15. [Frontend / Backend Flow](#15-frontend--backend-flow)
-16. [Known Issues and Notes](#16-known-issues-and-notes)
-17. [Dependencies](#17-dependencies)
+> **Oluşturulma:** 2026-03-03  
+> **Sürüm:** 0.1.0 bazlı güncel referans  
+> **Amaç:** Uygulama işlevlerinin tamamını belgeleyen referans dökümanı. Hata ayıklama, regresyon testi ve geliştirme için kullanılır.
+>
+> **Not:** Bu belge, 0.1.0 bazlı ayrıntılı referansın güncel yüzeyle birleştirilmiş halidir.
 
 ---
 
-## 1. Directory Structure
+## İçindekiler
 
-```text
+1. [Dizin Yapısı](#1-dizin-yapısı)
+2. [Konfigürasyon (config.py)](#2-konfigürasyon)
+3. [State (Durum Yönetimi)](#3-state)
+4. [Yardımcı Fonksiyonlar (helpers.py)](#4-yardımcı-fonksiyonlar)
+5. [Manifest (manifest.py)](#5-manifest)
+6. [Servisler (services.py)](#6-servisler)
+7. [Oturumlar (sessions.py)](#7-oturumlar)
+8. [API — Core Routes](#8-api--core-routes)
+9. [API — Results Routes](#9-api--results-routes)
+10. [API — Config Routes](#10-api--config-routes)
+11. [API — Report Routes](#11-api--report-routes)
+12. [Bilinen Sorunlar ve Hata Ayıklama Notları](#12-bilinen-sorunlar-ve-hata-ayıklama-notları)
+13. [Frontend ↔ Backend Etkileşim Şeması](#13-frontend--backend-etkileşim-şeması)
+14. [Güncel Ekler](#14-güncel-ekler)
+
+---
+
+## 1. Dizin Yapısı
+
+```
 DockUP/
-├── README.md
-├── start.sh
-├── documents/
-├── figure_scripts/
+├── start.sh                        # Uygulamayı başlatan shell scripti
+├── documents/                      # Bu referans dökümanı
+├── figure_scripts/                 # Grafik üretimi için Python modülleri
 │   └── final_plots/
-├── docking_app/
-│   ├── app.py
-│   ├── cli.py
-│   ├── config.py
-│   ├── state.py
-│   ├── helpers.py
-│   ├── manifest.py
-│   ├── sessions.py
-│   ├── services.py
-│   ├── models.py
-│   ├── routes/
-│   ├── extensions/
-│   ├── static/
-│   ├── templates/
-│   └── workspace/
-├── scripts/
-└── tests/
+│       ├── affinity_variants.py    # Affinite boxplot
+│       ├── interacted_residue_plots.py  # Interaksiyon frekans ısı haritası
+│       ├── common_residue_interactions.py  # Ortak rezidü ısı haritası
+│       └── interaction_plots.py    # Yığılmış çubuk grafik
+└── docking_app/
+    ├── __init__.py                 # app nesnesini export eder
+    ├── app.py                      # FastAPI uygulaması oluşturulur
+    ├── cli.py                      # Komut satırı arayüzü
+    ├── config.py                   # Path sabitleri
+    ├── state.py                    # Global uygulama durumu
+    ├── helpers.py                  # Ortak yardımcı fonksiyonlar
+    ├── manifest.py                 # Manifest okuma/yazma
+    ├── sessions.py                 # Run session yönetimi
+    ├── services.py                 # İş mantığı servisleri
+    ├── models.py                   # Pydantic veri modelleri
+    ├── templates/                  # Jinja2 HTML şablonları
+    ├── static/                     # CSS, JS dosyaları
+    └── routes/
+        ├── __init__.py             # Router toparlama
+        ├── core.py                 # Temel API endpoint'leri
+        ├── results.py              # Sonuç tarama endpoint'leri
+        ├── config_routes.py        # Konfigürasyon endpoint'leri
+        └── report.py               # Rapor üretim endpoint'leri
+
+    workspace/                      # Tüm veri dosyaları (665 MB)
+        data/
+        ├── ligand/                 # Yüklenen .sdf ligand dosyaları
+        ├── receptor/               # Yüklenen .pdb reseptör dosyaları
+        └── dock/                   # Docking çıktı dizini
+            ├── manifest.tsv        # Aktif docking kuyruğu
+            ├── _run_sessions/      # Run oturum index'i (JSON)
+            ├── dimer_full/         # Tam dimer sonuçları
+            ├── dimer_final_linked/ # Bağlantılı/organize dimer sonuçları
+            └── dopamine_trimer/    # Örnek veri seti
+        plip-2.4.0/                 # PLIP protein-ligand etkileşim analiz aracı
 ```
 
-Key runtime areas:
+---
 
-- `docking_app/workspace/data/ligand/`: loaded ligand files
-- `docking_app/workspace/data/receptor/`: loaded receptor files
-- `docking_app/workspace/data/dock/`: docking output, sessions, and manifests
-- `scripts/`: run scripts and queue execution helpers
+## 2. Konfigürasyon
+
+**Dosya:** `docking_app/config.py`
+
+| Sabit | Değer | Açıklama |
+|---|---|---|
+| `BASE` | `DockUP/` | Uygulama kök dizini |
+| `PACKAGE_DIR` | `DockUP/docking_app/` | Paket dizini |
+| `WORKSPACE_DIR` | `docking_app/workspace/` | Tüm runtime verisi |
+| `DATA_DIR` | `workspace/data/` | Veri ana dizini |
+| `LIGAND_DIR` | `data/ligand/` | Ligand deposu |
+| `RECEPTOR_DIR` | `data/receptor/` | Reseptör deposu |
+| `DOCK_DIR` | `data/dock/` | Docking çıktı dizini |
+| `PLIP_DIR` | `workspace/plip-2.4.0/` | PLIP kurulum dizini |
+| `TEMPLATES_DIR` | `docking_app/templates/` | HTML şablonları |
+| `STATIC_DIR` | `docking_app/static/` | Statik dosyalar |
+
+> **Önemli:** Tüm relative path'ler (`data/dock` gibi) önce `WORKSPACE_DIR` altında aranır, bulunamazsa `BASE` altında aranır.
 
 ---
 
-## 2. Runtime State
+## 3. State
 
-**Files:** `docking_app/state.py`, `docking_app/agent/state_context.py`, `docking_app/agent/agent_runtime.py`
+**Dosya:** `docking_app/state.py`
 
-The application keeps a process-local `STATE` dictionary and a `RUN_STATE` dictionary. The agent layer also keeps a compact `AGENT_STATE`. All of them reset when the server restarts.
+Uygulama hafızada bir `STATE` dictionary tutar. Sunucu yeniden başlatıldığında sıfırlanır.
 
-### STATE keys
+### STATE Anahtarları
 
-| Key | Meaning |
-|---|---|
-| `mode` | Active UI mode |
-| `selected_receptor` | Active receptor ID |
-| `selected_ligand` | Active ligand name |
-| `selected_chain` | Active chain selection |
-| `grid_file_path` | Active grid file path |
-| `queue` | Current queue rows |
-| `runs` | Run count per job |
-| `out_root` | Output root |
-| `out_root_path` | Parent path for output root |
-| `out_root_name` | Output folder name |
-| `receptor_meta` | Receptor metadata cache |
-| `selection_map` | Receptor / chain / ligand selection map |
-| `results_root_path` | Results scan root |
-| `docking_config` | Current docking config |
-| `grid_pad` | Grid padding |
-| `agent_grid_data` | Gridboxes computed by the agent |
+| Anahtar | Tip | Açıklama |
+|---|---|---|
+| `mode` | `str` | Aktif mod: `"Docking"`, `"Redocking"`, `"Results"`, `"Report"` |
+| `selected_receptor` | `str` | Seçili PDB ID |
+| `selected_ligand` | `str` | Seçili ligand adı |
+| `selected_chain` | `str` | Seçili zincir (ör: `"A"`, `"all"`) |
+| `grid_file_path` | `str` | Yüklü grid dosyasının tam yolu |
+| `queue` | `list` | Aktif docking görevi kuyruğu |
+| `runs` | `int` | Her iş çifti için run sayısı |
+| `out_root` | `str` | Docking çıktı kök dizini |
+| `out_root_path` | `str` | Çıktı dizini parent path'i |
+| `out_root_name` | `str` | Çıktı dizini ismi |
+| `receptor_meta` | `list` | Yüklü reseptörlerin metadata listesi |
+| `selection_map` | `dict` | `{pdb_id: {chain, ligand_resname}}` |
+| `results_root_path` | `str` | Sonuç tarama için kök path |
+| `docking_config` | `dict` | Aktif docking parametreleri |
+| `grid_pad` | `float` | Grid padding değeri |
+| `agent_grid_data` | `dict` | Agent tarafında oluşturulan gridbox verileri |
 
-### RUN_STATE keys
+### RUN_STATE Anahtarları
 
-| Key | Meaning |
-|---|---|
-| `status` | `idle`, `running`, `stopping`, `stopped`, `error`, or `done` |
-| `returncode` | Process exit code |
-| `log_lines` | Recent log lines |
-| `command` | Executed command |
-| `out_root` | Output path for the active run |
-| `start_time` | Unix timestamp |
-| `total_runs` | Planned run count |
-| `completed_runs` | Finished run count |
-| `batch_log_path` | Batch log path |
+| Anahtar | Tip | Açıklama |
+|---|---|---|
+| `status` | `str` | `"idle"`, `"running"`, `"stopping"`, `"stopped"`, `"error"`, `"done"` |
+| `returncode` | `int\|None` | İşlem çıkış kodu |
+| `log_lines` | `list[str]` | Son 400 log satırı |
+| `command` | `str` | Çalıştırılan komut string'i |
+| `out_root` | `str` | Aktif çalışmanın çıktı dizini |
+| `start_time` | `float` | Unix timestamp |
+| `total_runs` | `int` | Toplam planlanan run sayısı |
+| `completed_runs` | `int` | Tamamlanan run sayısı |
+| `batch_log_path` | `str` | Batch log dosyası yolu |
 
-### Agent memory
-
-The agent runtime keeps a short working memory, not a full transcript. It tracks:
-
-- recent actions
-- last tool
-- last error
-- last answer
-- workflow stage
-- compact state summary
-
-### Default docking config
+### DOCKING_CONFIG_DEFAULTS
 
 ```python
 {
@@ -139,131 +157,557 @@ The agent runtime keeps a short working memory, not a full transcript. It tracks
 
 ---
 
-## 3. Configuration
+## 4. Yardımcı Fonksiyonlar
 
-**File:** `docking_app/config.py`
+**Dosya:** `docking_app/helpers.py`
 
-| Constant | Description |
-|---|---|
-| `BASE` | Repository root |
-| `PACKAGE_DIR` | `docking_app/` package root |
-| `WORKSPACE_DIR` | Runtime data root |
-| `DATA_DIR` | Shared data root |
-| `LIGAND_DIR` | Ligand storage directory |
-| `RECEPTOR_DIR` | Receptor storage directory |
-| `DOCK_DIR` | Docking output directory |
-| `PLIP_DIR` | PLIP installation directory |
-| `TEMPLATES_DIR` | Jinja2 template directory |
-| `STATIC_DIR` | Static assets directory |
+### Tip Dönüşüm Yardımcıları
 
-Path resolution rule:
+| Fonksiyon | İmza | Açıklama |
+|---|---|---|
+| `boolish` | `(value, default) → bool` | "true"/"false"/"1"/"0"/"yes"/"no" gibi string'leri bool'a çevirir |
+| `to_optional_int` | `(value, min, max) → int\|None` | Boş veya hatalı değerde None döner |
+| `to_optional_float` | `(value, min, max) → float\|None` | Boş veya hatalı değerde None döner |
 
-- Relative paths are resolved under `WORKSPACE_DIR` first.
-- If not found there, `BASE` is used as fallback when the route allows it.
+### Docking Konfigürasyon
 
----
+| Fonksiyon | İmza | Açıklama |
+|---|---|---|
+| `normalize_docking_config` | `(raw) → dict` | Ham dict'i güvenli tiplerle temizler |
+| `restore_manifest_value` | `(raw) → str` | `__EMPTY__` sentinel'ini `""` yapar |
 
-## 4. Helpers
+### Path Yardımcıları
 
-**File:** `docking_app/helpers.py`
+| Fonksiyon | İmza | Açıklama |
+|---|---|---|
+| `to_display_path` | `(path) → str` | Absolute path'i `data/dock/...` formatına çevirir |
+| `relative_to_base` | `(path) → str\|None` | BASE veya WORKSPACE dışındaysa `None` döner |
+| `resolve_dock_directory` | `(path_text, default, allow_create) → Path` | Relative path'i WORKSPACE/BASE altında çözer; DOCK_DIR dışındaysa 400 fırlatır |
+| `safe_mtime` | `(path) → float` | Dosya değişim zamanı, hata = 0.0 |
+| `read_json` | `(path, default) → Any` | JSON okur, hata varsa default döner |
+| `write_json` | `(path, payload) → None` | JSON'u atomik yazar (.tmp → rename) |
+| `timestamp_token` | `() → str` | `"20260303_161513"` formatında timestamp |
 
-Core helpers:
+### Path Sabitleri (modül seviyesinde)
 
-- `boolish(value, default)` converts common truthy/falsey strings to `bool`
-- `to_optional_int(value, min, max)` returns `None` for empty or invalid values
-- `to_optional_float(value, min, max)` returns `None` for empty or invalid values
-- `normalize_docking_config(raw)` sanitizes raw docking config dictionaries
-- `restore_manifest_value(raw)` restores the `__EMPTY__` sentinel to an empty string
-- `normalize_ligand_db_filename(filename)` normalizes ligand filenames for the workspace
-
-Path helpers:
-
-- `to_display_path(path)` converts an absolute path into a workspace-relative display path
-- `relative_to_base(path)` returns a base-relative path or `None`
-- `resolve_dock_directory(path_text, default, allow_create)` resolves a docking output path safely
-- `safe_mtime(path)` returns file modification time or `0.0`
-- `read_json(path, default)` reads JSON safely
-- `write_json(path, payload)` writes JSON atomically
-- `timestamp_token()` returns a compact timestamp token
-
-Workspace helpers:
-
-- `build_flex_residue_spec(...)`
-- `normalize_flex_residue_list(...)`
-- `normalize_ligand_name_list(...)`
-- `normalize_selection_map(...)`
+```python
+BASE_RESOLVED = BASE.resolve()
+DATA_DIR_RESOLVED = DATA_DIR.resolve()
+DOCK_DIR_RESOLVED = DOCK_DIR.resolve()
+WORKSPACE_RESOLVED = WORKSPACE_DIR.resolve()
+```
 
 ---
 
 ## 5. Manifest
 
-**File:** `docking_app/manifest.py`
+**Dosya:** `docking_app/manifest.py`
 
-The manifest stores docking jobs as TSV rows.
+Manifest (`manifest.tsv`), docking kuyruğunu TSV formatında tutar. Her satır bir docking işini tanımlar.
 
-Important helpers:
+### Manifest Sütun Düzeni
 
-- `config_to_manifest_values(cfg)`
-- `manifest_values_to_config(cols)`
-- `append_docking_config_args(args, cfg_raw)`
-- `parse_manifest_rows(manifest_path)`
-- `write_manifest(path, queue, global_cfg)`
-- `build_preview_command(queue, out_root, runs)`
-- `normalize_ligand_folder_name(name)`
-- `persist_root_run_meta(...)`
+```
+pdb_id | chain | ligand | lig_spec | pdb_file | grid_pad | grid_file | force_run_id |
+pdb2pqr_ph | pdb2pqr_ff | pdb2pqr_ffout | pdb2pqr_nodebump | pdb2pqr_keep_chain |
+mkrec_allow_bad_res | mkrec_default_altloc | vina_exhaustiveness |
+vina_num_modes | vina_energy_range | vina_cpu | vina_seed
+```
 
-Manifest rows represent receptor, chain, ligand, grid, output, and docking settings.
+### Fonksiyonlar
 
----
-
-## 6. Services
-
-**File:** `docking_app/services.py`
-
-This module contains the backend business logic used by the API routes.
-
-Major responsibilities:
-
-- receptor loading and summarization
-- ligand file management
-- workspace selection
-- gridbox parsing and creation
-- queue building and validation
-- run startup and lifecycle management
-- results scanning and PLIP report parsing
-- run script generation
+| Fonksiyon | Açıklama |
+|---|---|
+| `config_to_manifest_values(cfg)` | Docking config dict'ini string listesine dönüştürür (manifest satırı için) |
+| `manifest_values_to_config(cols)` | TSV sütunlarını config dict'ine geri çevirir |
+| `append_docking_config_args(args, cfg_raw)` | CLI argümanlarına docking parametrelerini ekler |
+| `parse_manifest_rows(manifest_path)` | Manifest dosyasını okur, her satırı dict listesi olarak döner |
+| `write_manifest(path, queue, global_cfg)` | Queue listesinden manifest.tsv oluşturur |
+| `build_preview_command(queue, out_root, runs)` | İlk queue elemanı için run1.sh preview komutu üretir |
+| `normalize_ligand_folder_name(name)` | Ligand klasör adını normalize eder |
+| `persist_root_run_meta(...)` | Docking kök meta verisini JSON'a yazar |
 
 ---
 
-## 7. Sessions
+## 6. Servisler
 
-**File:** `docking_app/sessions.py`
+**Dosya:** `docking_app/services.py`
 
-Run sessions are stored under `DOCK_DIR/_run_sessions/index.json`.
+Backend iş mantığını içerir. Route handler'ları tarafından çağrılır.
 
-The session layer supports:
+### Reseptör Yönetimi
 
-- loading stored sessions
-- registering new sessions
-- scanning recent incomplete runs
-- preparing a resume queue
-- continuing an existing run
-- deleting a saved session entry
+| Fonksiyon | Açıklama |
+|---|---|
+| `_load_receptor_meta(pdb_ids, pdb_files)` | PDB ID listesi için online PDB fetch veya yerel dosya okuma |
+| `_summarize_receptors(meta_list)` | Reseptör metadata listesini frontend'e uygun formata çevirir |
+| `_get_meta(pdb_id)` | STATE'ten belirli bir PDB ID'nin metadata'sını bulur |
+| `_init_selection_map(meta_list)` | Yeni reseptörler için selection_map başlangıç değerleri |
+
+### Ligand & Dosya İşlemleri
+
+| Fonksiyon | Açıklama |
+|---|---|
+| `_save_uploads(files, target_dir)` | UploadFile listesini hedef dizine kaydeder |
+| `_existing_files(directory, extensions)` | Dizindeki belirli uzantılı dosyaları listeler |
+| `_ligand_table(meta)` | Bir reseptör için ligand listesini tablo formatında döner |
+
+### Grid & Queue
+
+| Fonksiyon | Açıklama |
+|---|---|
+| `_parse_grid_file(path)` | `.gpf` veya `gridbox.txt` dosyasını okur |
+| `_build_queue(payload)` | Frontend payload'ından docking queue job'ları oluşturur |
+
+### Run Yönetimi
+
+| Fonksiyon | Açıklama |
+|---|---|
+| `_start_run(manifest_path, runs, out_root, total, preview_cmd, is_test)` | `run1.sh` scriptini arka planda subprocess olarak başlatır; `RUN_STATE`'i günceller |
+
+### Sonuç Analizi
+
+| Fonksiyon | Açıklama |
+|---|---|
+| `_scan_results(root_path)` | Dizindeki tüm docking sonuçlarını tarar; `{runs, averages, root_path}` döner |
+| `_parse_results_folder(target)` | Tek bir run dizinini parse eder (affinity, RMSD, PDB ID) |
+| `_parse_plip_report(xml_path)` | PLIP `report.xml`'ini okur; interactions, residues, ligand_info döner |
+
+### Bash Script Üretimi (run1.sh için)
+
+| Fonksiyon | Açıklama |
+|---|---|
+| `_generate_run_script(...)` | Bash run script'ini oluşturur |
+| `_is_empty(value)` | Boş değer kontrolü |
+| `_now_str()` | Geçerli tarih/saati string döner |
 
 ---
 
-## 8. Core API
+## 7. Oturumlar
 
-The core router covers the main docking workspace.
+**Dosya:** `docking_app/sessions.py`
 
-### App and asset endpoints
+Run oturumları, `DOCK_DIR/_run_sessions/index.json` dosyasında saklanır.
 
-- `GET /api/state`
-- `POST /api/mode`
-- `GET /api/ligands/list`
-- `POST /api/ligands/upload`
+### Fonksiyonlar
+
+| Fonksiyon | Açıklama |
+|---|---|
+| `load_run_sessions()` | `_run_sessions/index.json`'ı okur; hata varsa `[]` döner |
+| `save_run_sessions(sessions)` | Session listesini `index.json`'a yazar |
+| `register_run_session(out_root, runs, manifest_path, planned_total)` | Yeni session oluşturur ve index'e ekler |
+| `scan_recent_incomplete_rows(limit, include_jobs)` | Son N tamamlanmamış run'ı tarar; resume edilebilirlik bilgisi içerir |
+| `collect_resume_sessions()` | Devam ettirilebilir tüm session'ları listeler |
+| `build_legacy_session_entry(dock_root)` | Eski format docking dizinlerini session formatına dönüştürür |
+
+### Session Yapısı
+
+```json
+{
+  "id": "uuid4",
+  "out_root": "/abs/path/to/dock/output",
+  "dock_root": "dimer_full",
+  "created_at": "2026-03-03T16:00:00",
+  "planned_total_runs": 25,
+  "queue_count": 5,
+  "runs": 5,
+  "mode": "fresh",
+  "manifest_path": "/abs/path/manifest.tsv",
+  "resumable": true,
+  "resume_reason": "",
+  "pending_queue_rows": [...]
+}
+```
+
+---
+
+## 8. API — Core Routes
+
+**Dosya:** `docking_app/routes/core.py`  
+**Router prefix:** `/`
+
+### Ana Sayfalar
+
+| Method | Endpoint | Açıklama | Dönen |
+|---|---|---|---|
+| GET | `/` | Frontend HTML sayfası | HTML |
+| GET | `/api/state` | Tüm uygulama state'ini döner | `{mode, selected_receptor, selected_ligand, selected_chain, grid_file_path, queue_count, runs, grid_pad, docking_config, out_root, run_status, ...}` |
+
+### Mod Kontrolü
+
+| Method | Endpoint | Body | Açıklama |
+|---|---|---|---|
+| POST | `/api/mode` | `{mode: "Docking"\|"Redocking"\|"Results"\|"Report"}` | Aktif modu değiştirir |
+
+### Ligand Yönetimi
+
+| Method | Endpoint | Açıklama | Dönen |
+|---|---|---|---|
+| GET | `/api/ligands/list` | Yüklü `.sdf` ligandları listeler; normalize eder | `{ligands: [name, ...]}` |
+| POST | `/api/ligands/upload` | Dosya yükle (`multipart/form-data`) | `{saved: [name, ...]}` |
+| POST | `/api/ligands/delete` | `{name: "file.sdf"}` ile ligand siler | `{ligands: [...]}` |
+| POST | `/api/ligands/select` | `{pdb_id, chain, ligand}` seçimini kaydeder | `{ok: true}` |
+
+> **Sorun (bilinen):** `list_ligands` çağrısında `_cleanup_ligand_dir_names()` timestamp suffix'lerini kaldırır. Dosyalar rename edilir.
+
+### Reseptör Yönetimi
+
+| Method | Endpoint | Body/Query | Açıklama | Dönen |
+|---|---|---|---|---|
+| POST | `/api/receptors/upload` | `multipart/form-data` | PDB dosyalarını yükler | `{saved: [...]}` |
+| POST | `/api/receptors/load` | `{pdb_ids: "7X2F\n6CM4\n..."}` | PDB ID'leri ile online'dan PDB fetch'ler | `{summary: [...]}` |
+| POST | `/api/receptors/remove` | `{pdb_id}` | STATE'ten reseptör kaldırır | `{summary: [...]}` |
+| GET | `/api/receptors/summary` | — | Yüklü reseptör özetini döner | `{summary: [...]}` |
+| POST | `/api/receptors/select` | `{pdb_id}` | Aktif reseptörü değiştirir | `{selected_receptor}` |
+| GET | `/api/receptors/{pdb_id}` | — | Reseptör detayları + grid verisi | `{pdb_id, pdb_text, chains, ligands_by_chain, grid_data, ...}` |
+| GET | `/api/receptors/{pdb_id}/ligands` | — | Reseptörün ligand tablosunu döner | `{rows: [...]}` |
+
+### Grid Yönetimi
+
+| Method | Endpoint | Açıklama |
+|---|---|---|
+| POST | `/api/grid/upload` | Grid dosyası yükler, `STATE["grid_file_path"]` günceller |
+| GET | `/api/grid` | Aktif grid verisini döner |
+
+### Queue Yönetimi
+
+| Method | Endpoint | Body | Açıklama |
+|---|---|---|---|
+| POST | `/api/queue/build` | `{run_count, padding, selection_map, grid_data, docking_config, out_root_path, out_root_name}` | Queue'ya yeni job'lar ekler |
+| POST | `/api/queue/remove_batch` | `{batch_id}` | Belirli batch'i queue'dan kaldırır |
+
+> **Sorun (aktif):** Queue build endpoint'i çalışmıyor — `_build_queue()` fonksiyonu payload'ı doğru işlemiyor olabilir. `STATE["queue"]` boş kalıyor ya da `grid_data` eksik aktarılıyor olabilir. Debug için: `POST /api/queue/build` sonrası `GET /api/state` → `queue_count` ve `queue` alanlarını kontrol et.
+
+### Run Kontrolü
+
+| Method | Endpoint | Body | Açıklama | Dönen |
+|---|---|---|---|---|
+| POST | `/api/run/start` | `{is_test_mode: bool}` | manifest.tsv yazar, run1.sh başlatır | `{status, command, out_root}` |
+| POST | `/api/run/stop` | — | SIGTERM → SIGKILL ile aktif süreci durdurur | `{status, returncode, message}` |
+| GET | `/api/run/status` | — | Anlık run durumu + log | `{status, log, command, total_runs, completed_runs, elapsed_seconds}` |
+| GET | `/api/run/recent` | `?limit=1-3` | Son tamamlanmamış run kayıtlarını listeler | `{count, rows}` |
+| POST | `/api/run/recent/prepare` | `{item_id, replace_queue}` | Seçili run'ı resume için queue'ya hazırlar | `{ok, prepared_count, queue, out_root}` |
+| POST | `/api/run/recent/continue` | `{item_id, replace_queue, is_test_mode}` | Hazırlanmış queue'yu başlatır | `{status, command, prepared_count}` |
+| POST | `/api/run/recent/delete` | `{item_id}` | Session index'ten bir kaydı siler | `{ok, deleted_id, count}` |
+
+---
+
+## 9. API — Results Routes
+
+**Dosya:** `docking_app/routes/results.py`
+
+### Sonuç Tarama
+
+| Method | Endpoint | Body/Query | Açıklama | Dönen |
+|---|---|---|---|---|
+| POST | `/api/results/scan` | `{root_path: "data/dock"}` | Dizindeki tüm docking sonuçlarını tarar | `{runs: [...], averages: [...], root_path}` |
+| POST | `/api/results/detail` | `{result_dir: "/abs/path"}` | Tek run'ın detaylarını + PLIP etkileşimlerini döner | `{result, residues, interactions}` |
+| GET | `/api/results/file` | `?path=...` | PDB/SDF dosyası sunar | `FileResponse` |
+
+#### Scan Çıktısı (her `run` elemanı)
+
+```json
+{
+  "pdb_id": "6CM4",
+  "ligand_display_name": "styrene_dimer",
+  "chain": "A",
+  "run_id": 1,
+  "affinity": -7.7,
+  "rmsd": null,
+  "pose_path": "/abs/path/.../6CM4_pose.pdb",
+  "receptor_path": "/abs/path/.../6CM4_rec_raw.pdb",
+  "complex_path": "/abs/path/.../6CM4_complex.pdb",
+  "report_path": "/abs/path/.../plip/report.xml"
+}
+```
+
+#### Averages Çıktısı (her eleman)
+
+```json
+{
+  "pdb_id": "6CM4",
+  "ligand_display_name": "styrene_dimer",
+  "run_count": 5,
+  "avg_affinity": -7.68,
+  "min_affinity": -7.7,
+  "max_affinity": -7.6,
+  "avg_rmsd": null
+}
+```
+
+### Path Çözümleme
+
+| Method | Endpoint | Body | Açıklama |
+|---|---|---|---|
+| POST | `/api/paths/resolve` | `{relative_path, scope: "results"\|"report"\|"generic"}` | Relative path'i gerçek dizin path'ine çözer |
+
+---
+
+## 10. API — Config Routes
+
+**Dosya:** `docking_app/routes/config_routes.py`
+
+| Method | Endpoint | Body | Açıklama | Dönen |
+|---|---|---|---|---|
+| POST | `/api/config/save` | `multipart/form-data: file (.xlsx)` | Docking config Excel dosyasını yükler ve STATE'i günceller | `{ok, config}` |
+| GET | `/api/config/load` | — | Aktif docking config'ini döner | `{config: {...}}` |
+| POST | `/api/config/update` | `{pdb2pqr_ph, pdb2pqr_ff, vina_exhaustiveness, ...}` | Config parametrelerini günceller | `{config: {...}}` |
+
+### Excel Konfigürasyon Formatı
+
+Config `.xlsx` dosyası şu sütunları içerir:
+- `pdb_id`, `chain`, `ligand`, `lig_spec`, `grid_pad`
+- `pdb2pqr_ph`, `pdb2pqr_ff`, `vina_exhaustiveness`, `vina_num_modes`
+
+---
+
+## 11. API — Report Routes
+
+**Dosya:** `docking_app/routes/report.py`
+
+### Kaynak Klasör Yapısı Beklentisi
+
+Rapor sistemi şu dizin yapılarını tanır:
+
+```
+# Pattern A: receptor/ligand/runN
+source_dir/
+  3PBL/
+    styrene_dimer/
+      run1/  (complex.pdb + interaction_map.json + plip/report.xml)
+      run2/
+      run3/
+    ethylene_dimer/
+      run1/
+
+# Pattern B: dimer linked (D1-D5 klasörleri)
+source_dir/
+  D1/
+    ligand_name_1/
+      run1/
+  D2/ ...
+
+# Pattern C: flat PDB_ligand_runN
+source_dir/
+  6CM4_styrene_dimer_run1/  (valid run dir)
+  6CM4_styrene_dimer_run2/
+```
+
+### Geçerli Run Dizini Kriterleri
+
+Bir dizinin "geçerli run" sayılması için şunların hepsi mevcut olmalı:
+- `*_complex.pdb` (en az bir tane)
+- `interaction_map.json`
+- `plip/report.xml`
+
+### Liste & Keşif
+
+| Method | Endpoint | Query Params | Açıklama | Dönen |
+|---|---|---|---|---|
+| GET | `/api/reports/list` | `root_path`, `source_path`, `output_path` | Kaynak analiz eder; reseptör/ligand/run listesi döner | `{receptors, source_folders, source_metadata, render_images, plot_images, ...}` |
+| GET | `/api/reports/images` | `root_path`, `source_path`, `output_path`, `images_root_path` | Üretilmiş imajları listeler | `{render_images, plot_images, images}` |
+| GET | `/api/reports/root-metadata` | `root_path`, `source_path` | Kaynak metadata JSON'unu döner | `{path, receptor_order, ligand_order, receptor_labels, ligand_labels, ...}` |
+| GET | `/api/reports/doc-config` | `root_path`, `source_path` | Rapor doküman konfigürasyonunu döner | `{figure_start_number, extra_sections, figure_caption_overrides}` |
+
+> **Kaynak Klasör Filtreleme:** `_` ile başlayan klasörler (örn. `_run_sessions`) ve `report_outputs`, `plip`, `plots` gibi dahili klasörler listede görünmez.
+
+> **Hata Toleransı:** Geçersiz `source_path` verilirse 400 yerine otomatik olarak default kaynağa (`dimer_final_linked` → `dimer_full` → `dock` root) düşer.
+
+### Metadata Yönetimi
+
+| Method | Endpoint | Açıklama |
+|---|---|---|
+| POST | `/api/reports/root-metadata` | `{source_path, main_type, receptor_labels, ligand_labels, receptor_order, ligand_order}` → JSON'a kaydeder |
+| POST | `/api/reports/doc-config` | `{source_path, figure_start_number, extra_sections, figure_caption_overrides}` → JSON'a kaydeder |
+
+Metadata dosyası: `source_dir/.docking_app_meta.json`
+
+### Grafik Üretimi
+
+| Method | Endpoint | Body | Açıklama |
+|---|---|---|---|
+| POST | `/api/reports/graphs` | `{root_path, source_path, output_path, scripts: ["affinity_table_plus_boxplot", ...]}` | Seçili grafikleri arka planda üretir |
+
+Desteklenen grafik türleri:
+
+| ID | Label | Modül | Çıktı Dosyası |
+|---|---|---|---|
+| `affinity_table_plus_boxplot` | Affinity Table + Boxplot | `figure_scripts.final_plots.affinity_variants` | `affinity_boxplot.png` |
+| `interaction_frequency_heatmap` | Interaction Frequency Heatmap | `figure_scripts.final_plots.interacted_residue_plots` | `run_frequency_heatmap.png` |
+| `common_residue_heatmap` | Common Residue Heatmap | `figure_scripts.final_plots.common_residue_interactions` | `common_residue_heatmap.png` |
+| `interaction_stacked_bar` | Interaction Stacked Bar | `figure_scripts.final_plots.interaction_plots` | `interaction_stacked_bar.png` |
+
+### 3D Render Üretimi
+
+| Method | Endpoint | Body | Açıklama |
+|---|---|---|---|
+| POST | `/api/reports/render` | `{root_path, source_path, output_path, receptor_ids, ligand_names, preferred_run, dpi, preview_mode}` | Seçili reseptör/ligand kombinasyonları için 3D PNG render üretir |
+
+Render; PyMOL veya benzeri araç ile `*_complex.pdb` dosyasından receptor + pose görüntüsü oluşturur.
+
+### Doküman Derleme
+
+| Method | Endpoint | Body | Açıklama |
+|---|---|---|---|
+| POST | `/api/reports/compile` | `{root_path, source_path, output_path, receptor_order, ligand_order, selected_images, figure_start_number, extra_sections, main_type_label, ...}` | Seçili imajları kullanarak `.docx` rapor derler |
+
+Çıktı: `output_root/reports/docking_report_mvp.docx`
+
+Rapor yapısı:
+1. Materials and Methods başlığı (docking parametreleri)
+2. Receptor/Ligand bilgileri
+3. Her reseptör için: 3D render imajı + affinity tablosu
+4. Grafik imajları (boxplot, heatmap, vb.)
+5. Results, Discussion, Conclusion bölümleri (boş şablon)
+
+### Silme İşlemleri
+
+| Method | Endpoint | Açıklama |
+|---|---|---|
+| POST | `/api/reports/images/delete-all` | Output klasöründeki tüm imajları siler |
+| POST | `/api/reports/image/delete` | `{image_path}` ile tek imaj siler |
+| POST | `/api/reports/source/delete` | Source klasörünü ve içeriğini siler |
+
+### Dosya Servisi
+
+| Method | Endpoint | Açıklama |
+|---|---|---|
+| GET | `/api/reports/image/{path:path}` | İmaj dosyasını sunar (WORKSPACE → BASE sırasıyla arar) |
+| GET | `/api/reports/doc` | `.docx` raporu indirilir |
+
+### Durum Takibi
+
+| Method | Endpoint | Açıklama |
+|---|---|---|
+| GET | `/api/reports/status` | Arka plan görev durumunu döner: `{status, progress, message, error}` |
+
+---
+
+## 12. Bilinen Sorunlar ve Hata Ayıklama Notları
+
+### 🔴 Aktif Sorun: Queue Build Çalışmıyor
+
+**Semptom:** "Build Queue" butonu tıklanıyor ama queue dolmuyor.
+
+**Olası Nedenler:**
+1. `POST /api/queue/build` payload'ında `selection_map` boş geliyor → reseptör seçilmemiş olabilir
+2. `_build_queue()` içinde grid_data eksik → `grid_file_path` STATE'te `""` olabilir
+3. Frontend `out_root_name` göndermiyordur → queue'ya eklenmiyor
+
+**Debug Adımları:**
+```bash
+# 1. State kontrol et
+curl http://localhost:8000/api/state | python3 -m json.tool | grep -A5 "queue\|selected"
+
+# 2. Manuel queue build dene
+curl -X POST http://localhost:8000/api/queue/build \
+  -H "Content-Type: application/json" \
+  -d '{"run_count": 1, "out_root_name": "test_run", "out_root_path": "data/dock",
+       "selection_map": {"7X2F": {"chain": "A", "ligand_resname": "LDP"}},
+       "docking_config": {}}'
+
+# 3. Queue count kontrol
+curl http://localhost:8000/api/state | python3 -c "import sys,json;d=json.load(sys.stdin);print('queue:', d['queue_count'], d['queue'])"
+```
+
+### 🟡 Path Resolution — Genel Kural
+
+Uygulama iki kökenden path çözer:
+1. **WORKSPACE_DIR** (`docking_app/workspace/`) — önce aranır
+2. **BASE** (`DockUP/`) — fallback
+
+`data/dock` → `workspace/data/dock` olarak çözümlenir. Bu kuralı bozan bir yerde `(BASE / path)` pattern'i varsa `(WORKSPACE_DIR / path)` ile değiştir.
+
+### 🟡 Sunucu Hot-Reload
+
+`uvicorn` değişiklikleri genellikle 1-3 saniye içinde yakalar. Eğer değişiklik etkili olmuyorsa:
+```bash
+Ctrl+C → ./start.sh
+```
+
+### 🟢 Çalışan Endpoint'ler (Doğrulanmış)
+
+```
+GET  /api/state                           ✅
+GET  /api/ligands/list                    ✅
+POST /api/results/scan (data/dock)        ✅ (200 runs)
+GET  /api/reports/list (data/dock)        ✅
+GET  /api/reports/images (...)            ✅
+GET  /api/reports/image/{path}            ✅
+GET  /api/run/recent                      ✅
+POST /api/mode                            ✅
+```
+
+---
+
+## 13. Frontend ↔ Backend Etkileşim Şeması
+
+```
+Tarayıcı (app.js)
+│
+├── Mod Değişikliği
+│   └── POST /api/mode → STATE.mode güncellenir
+│
+├── Docking Modu
+│   ├── GET  /api/ligands/list         → Ligand dropdown
+│   ├── POST /api/receptors/load       → PDB fetch (RCSB'den)
+│   ├── GET  /api/receptors/{id}       → 3D viewer için PDB text
+│   ├── POST /api/ligands/select       → selection_map güncellenir
+│   ├── POST /api/queue/build      ⚠️  → Queue oluşturulur
+│   ├── POST /api/run/start            → manifest.tsv + run1.sh
+│   ├── GET  /api/run/status (polling) → log + progress
+│   └── POST /api/run/stop             → SIGTERM/SIGKILL
+│
+├── Results Modu
+│   ├── POST /api/results/scan         → run listesi + averages tablosu
+│   ├── POST /api/results/detail       → PLIP interactions + poses
+│   └── GET  /api/results/file?path=   → PDB/SDF dosyası
+│
+├── Report Modu
+│   ├── GET  /api/reports/list         → receptor/ligand/run ağacı
+│   ├── GET  /api/reports/images       → üretilmiş imajlar
+│   ├── POST /api/reports/graphs       → grafik üretimi (arka plan)
+│   ├── POST /api/reports/render       → 3D render (arka plan)
+│   ├── POST /api/reports/compile      → .docx derle
+│   ├── GET  /api/reports/doc          → .docx indir
+│   └── GET  /api/reports/status       → arka plan görev durumu
+│
+└── Config Modu
+    ├── POST /api/config/save          → Excel'den config yükle
+    ├── GET  /api/config/load          → Aktif config'i al
+    └── POST /api/config/update        → Config güncelle
+```
+
+---
+
+## 14. Bağımlılıklar
+
+| Paket | Kullanım |
+|---|---|
+| `fastapi` | Web framework, routing |
+| `uvicorn` | ASGI sunucu |
+| `pydantic` | Veri doğrulama modelleri |
+| `pandas` | Rapor veri işleme, Excel okuma |
+| `requests` | RCSB PDB API'dan PDB dosyası indirme |
+| `python-docx` | `.docx` rapor oluşturma |
+| `jinja2` | HTML template rendering |
+| `python-multipart` | Dosya upload desteği |
+
+---
+
+*Bu döküman DockUP refactoring sonrası oluşturulmuştur. Yeni endpoint eklendiğinde veya mevcut bir endpoint değiştirildiğinde bu dosyayı güncelleyin.*
+
+---
+
+## 14. Güncel Ekler
+
+Bu bölüm, orijinal ayrıntılı referansın üstüne eklenen güncel yüzeyi listeler. Buradaki amaç, eski kapsamı bozmadan yeni davranışları belgelemektir.
+
+### 14.1 Core route ekleri
+
+Yeni veya genişletilmiş core endpoint'leri:
+
 - `POST /api/ligands/fetch`
-- `POST /api/ligands/select`
 - `POST /api/ligands/delete`
 - `POST /api/ligands/clear_all`
 - `GET /api/ligands/active`
@@ -271,49 +715,28 @@ The core router covers the main docking workspace.
 - `POST /api/ligands/active/remove`
 - `POST /api/ligands/active/clear`
 - `GET /api/ligands/content/{name}`
-- `POST /api/receptors/upload`
 - `POST /api/receptors/store`
-- `GET /api/receptors/list`
 - `POST /api/receptors/delete`
 - `POST /api/receptors/clear_all`
 - `POST /api/receptors/add`
 - `POST /api/receptors/load`
-- `POST /api/receptors/remove`
-- `GET /api/receptors/summary`
-- `POST /api/receptors/select`
-- `GET /api/receptors/{pdb_id}`
-- `GET /api/receptors/{pdb_id}/ligands`
-
-### Grid and queue endpoints
-
-- `POST /api/grid/upload`
-- `GET /api/grid`
-- `POST /api/queue/build`
+- `GET /api/receptors/list`
 - `POST /api/queue/remove_batch`
-
-Practical notes:
-
-- Queue build requires a populated `selection_map` and matching `grid_data`.
-- `replace_queue` is supported through the queue build and resume flow.
-- Batch IDs are used to target queue slices without rebuilding the entire queue.
-
-### Run lifecycle endpoints
-
-- `POST /api/run/start`
-- `POST /api/run/stop`
-- `GET /api/run/status`
+- `POST /api/run/recent/delete`
 - `GET /api/run/recent`
 - `POST /api/run/recent/prepare`
 - `POST /api/run/recent/continue`
-- `POST /api/run/recent/delete`
 
-Run start writes a manifest and launches the run script in the background.
+Davranış notları:
 
----
+- Queue build artık `selection_map` ve `grid_data` uyumunu zorunlu doğruluyor.
+- `replace_queue` akışı, queue'yu tamamen yenilemek yerine batch eklemeyi destekliyor.
+- `out_root_path` ve `out_root_name`, workspace-aware çözümleniyor.
+- `agent_grid_data`, agent gridbox çıktılarının kalıcı state karşılığı olarak kullanılıyor.
 
-## 9. Pocket API
+### 14.2 Pocket API
 
-The pocket finder routes generate pocket-based gridboxes and status data.
+Pocket tabanlı gridbox akışı için eklenen endpoint'ler:
 
 - `POST /api/pockets/run`
 - `GET /api/pockets/status`
@@ -322,84 +745,34 @@ The pocket finder routes generate pocket-based gridboxes and status data.
 - `POST /api/pockets/gridbox`
 - `POST /api/pockets/clear`
 
-These routes are used when the agent or the UI needs a pocket-based gridbox instead of a native-ligand or manual grid.
+Bu yüzey, native ligand bulunamadığında veya kullanıcı pocket tabanlı gridbox istediğinde kullanılır.
 
----
+### 14.3 Results API ekleri
 
-## 10. Results API
+Sonuç tarama ve path çözümleme tarafındaki ekler:
 
-The results router is used for result browsing and path resolution.
-
-- `POST /api/results/scan`
 - `GET /api/results/dock-folders`
-- `POST /api/results/detail`
-- `GET /api/results/file`
 - `POST /api/paths/resolve`
 
-Result routes are path-sensitive and should always be fed workspace-aware paths.
+Notlar:
 
----
+- `results/file` endpoint'i receptor ve results kökleri için workspace-aware path doğrulaması yapar.
+- Sonuç ve rapor akışlarında `WORKSPACE_DIR` baz alınır.
 
-## 11. Report API
+### 14.4 Config API ekleri
 
-The report router covers discovery, rendering, graph generation, and document compilation.
-
-### Listing and metadata
-
-- `GET /api/reports/list`
-- `GET /api/reports/preview`
-- `GET /api/reports/images`
-- `GET /api/reports/root-metadata`
-- `GET /api/reports/doc`
-- `GET /api/reports/doc-config`
-- `POST /api/reports/doc-config`
-- `POST /api/reports/root-metadata`
-
-### Cleanup and file serving
-
-- `POST /api/reports/source/delete`
-- `POST /api/reports/images/delete-all`
-- `POST /api/reports/image/delete`
-- `GET /api/reports/image/{path:path}`
-
-### Render and publish
-
-- `POST /api/reports/graphs`
-- `POST /api/reports/render`
-- `POST /api/reports/render/stop`
-- `POST /api/reports/compile`
-- `GET /api/reports/status`
-
-Report routes support listing, rendering, graph generation, compilation, and cleanup.
-
----
-
-## 12. Config API
-
-Docking config documents are supported through the config router.
+Config tarafındaki güncel yüzey:
 
 - `POST /api/config/docking`
 - `POST /api/config/save`
 - `POST /api/config/load`
 - `POST /api/config/update`
 
-Config payloads include:
+Bu yüzey, docking config belgesini içe aktarma / dışa aktarma ve state ile senkron tutma işini kapsar.
 
-- `run_count`
-- `padding`
-- `out_root_path`
-- `out_root_name`
-- `selection_map`
-- `grid_data`
-- `docking_config`
+### 14.5 Extensions API
 
----
-
-## 13. Extensions API
-
-The extensions router exposes the local AI and installer surfaces.
-
-### Vina GPU 21
+AI ve extension yönetim yüzeyi:
 
 - `GET /api/extensions/vina-gpu-21/status`
 - `POST /api/extensions/vina-gpu-21/install`
@@ -407,9 +780,6 @@ The extensions router exposes the local AI and installer surfaces.
 - `POST /api/extensions/vina-gpu-21/uninstall`
 - `POST /api/extensions/vina-gpu-21/use-default`
 - `POST /api/extensions/vina/use-default`
-
-### Ollama
-
 - `GET /api/extensions/ollama/status`
 - `POST /api/extensions/ollama/connect`
 - `POST /api/extensions/ollama/models`
@@ -419,25 +789,20 @@ The extensions router exposes the local AI and installer surfaces.
 - `POST /api/extensions/ollama/request-usage`
 - `POST /api/extensions/ollama/autonomous-docking`
 - `POST /api/extensions/ollama/chat/stream`
-
-### Gemini
-
 - `GET /api/extensions/gemini/status`
 - `POST /api/extensions/gemini/save`
 - `POST /api/extensions/gemini/models`
 - `POST /api/extensions/gemini/chat/stream`
 
-The Ollama extension now reports exact request usage for the current payload and uses a context-sized thinking budget.
+Önemli davranışlar:
 
----
+- Ollama tarafında request usage preview, tam request payload üzerinden hesaplanır.
+- `num_predict`, context budget'ın yaklaşık yarısına göre ayarlanır.
+- Autonomous docking, compact state ve tool sonuçlarıyla çalışır.
 
-## 14. Agent Layer
+### 14.6 Agent layer
 
-**Files:** `docking_app/agent/autonomous_docking.py`, `docking_app/agent/state_context.py`, `docking_app/extensions/ollama_agent.py`
-
-The local agent is not a fixed macro. It is meant to observe the current state, choose tools, read compact results, and refine its next step.
-
-### Agent-facing tools
+Agent katmanının model-visible tool set'i:
 
 - `get_dockup_state()`
 - `fetch_assets(receptors, ligands)`
@@ -454,58 +819,33 @@ The local agent is not a fixed macro. It is meant to observe the current state, 
 - `show_residues(receptor, residue, chain)`
 - `run_agent(...)`
 
-### Agent behavior
+Agent davranış notları:
 
-- Uses compact state context instead of the full transcript.
-- Keeps tool results short and actionable.
-- Supports exact request usage previews for the UI.
-- Allows queue append mode for multi-config runs.
-- Handles gridbox creation from native ligand, current selection, or pocket fallback.
-- Uses `num_predict = max(1024, num_ctx // 2)` for the thinking budget.
+- Agent, tam konuşma geçmişi yerine compact working memory kullanır.
+- Tool sonuçları kısa tutulur.
+- Gridbox akışı native ligand, current selection veya pocket fallback ile çalışabilir.
+- Queue build ve run akışı manuel UI ile aynı backend state'i paylaşır.
 
----
+### 14.7 Current notes
 
-## 15. Frontend / Backend Flow
+- `agent_grid_data` şimdi state'te kalıcıdır ve run/queue akışına taşınır.
+- `remove_batch` hem numeric hem string batch id'lerini destekler.
+- Results/report route'larında workspace-aware path çözümü beklenir.
+- Agent tarafında loop riskini azaltmak için kısa memory ve exact request usage preview kullanılır.
 
-The UI drives DockUP through a compact sequence:
+### 14.8 Report route ekleri
 
-1. Load state.
-2. Fetch receptors and ligands.
-3. Select workspace and native ligand when needed.
-4. Create or validate the gridbox.
-5. Update docking config.
-6. Build the queue.
-7. Start or resume the run.
-8. Scan results and render reports.
+Report yüzeyinde orijinal dökümana eklenen ve güncel kodda bulunan endpoint'ler:
 
-The agent and the manual UI both use the same backend state, so the backend must stay consistent after every action.
+- `GET /api/reports/preview`
+- `GET /api/reports/doc`
+- `GET /api/reports/doc-config`
+- `POST /api/reports/doc-config`
+- `POST /api/reports/root-metadata`
+- `POST /api/reports/image/delete`
+- `POST /api/reports/render/stop`
 
----
+Notlar:
 
-## 16. Known Issues and Notes
-
-Keep this section short and actionable.
-
-- If queue build returns an empty queue, inspect the frontend payload first.
-- If a run starts but does not appear in the UI, check the status polling path and the active run registry.
-- If results are missing, verify that path resolution is using `WORKSPACE_DIR` instead of `BASE`.
-- If session resume fails, inspect the stored paths inside `_run_sessions/index.json`.
-- If the agent seems to loop, check the compact working memory and the request usage preview.
-
----
-
-## 17. Dependencies
-
-| Package | Purpose |
-|---|---|
-| `fastapi` | HTTP API |
-| `uvicorn` | ASGI server |
-| `pydantic` | Validation models |
-| `pandas` | Tabular data and Excel handling |
-| `requests` | Remote PDB fetches |
-| `python-docx` | DOCX report generation |
-| `python-multipart` | File uploads |
-
----
-
-Update this document whenever the runtime surface, routes, agent behavior, or state model changes.
+- Rapor listing tarafı receptor ve ligand dizinlerini daha ayrıntılı tarar.
+- Render akışı, pocket/linked root seçimine göre fallback yapabilir.
