@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from ..control import actions
+from ..control.events import latest_event
 from ..control.models import (
     LigandDeleteRequest,
     LigandFetchRequest,
@@ -171,6 +172,11 @@ def control_run_stop() -> JSONResponse:
 @router.get("/run/status")
 def control_run_status() -> JSONResponse:
     return JSONResponse(actions.run_status())
+
+
+@router.get("/events/latest")
+def control_events_latest(after_id: int = 0) -> JSONResponse:
+    return JSONResponse(latest_event(after_id))
 
 
 @router.get("/results/folders")

@@ -87,6 +87,9 @@ let stage = null;
 let comp = null;
 let gridComp = null;
 let runPoll = null;
+let controlEventPoll = null;
+let latestControlEventId = 0;
+let controlEventApplying = false;
 let recentAutoRefreshTs = 0;
 let selectedLigandData = null; // {resname, resno, chainname}
 let selectedAtomData = null; // {index, atomname, resname, resno, chainname, x, y, z, selection}
@@ -2107,6 +2110,96 @@ async function refreshDockupAgentWorkflowState(stage = "", result = {}) {
   } catch (err) {
     console.warn("DockUP agent live refresh failed:", err);
   }
+}
+
+function controlEventRefreshList(event = {}) {
+  const hints = event?.ui_hints && typeof event.ui_hints === "object" ? event.ui_hints : {};
+  return Array.isArray(hints.refresh) ? hints.refresh.map((item) => String(item || "").trim()).filter(Boolean) : [];
+}
+
+async function applyControlEvent(event = {}) {
+  if (!event || typeof event !== "object" || controlEventApplying) return;
+  controlEventApplying = true;
+  try {
+    const action = String(event.action || "").trim();
+    const data = event.data && typeof event.data === "object" ? event.data : {};
+    const hints = event.ui_hints && typeof event.ui_hints === "object" ? event.ui_hints : {};
+    const refresh = new Set(controlEventRefreshList(event));
+
+    const gridChanged = action === "gridbox.set" ? mergeAgentGridData(data) : false;
+    if (refresh.has("state") || refresh.has("workspace") || refresh.has("queue") || refresh.has("config") || refresh.has("gridbox")) {
+      await loadState();
+    }
+    const gridChangedAfterState = action === "gridbox.set" ? mergeAgentGridData(data) : false;
+
+    if (refresh.has("receptors") || refresh.has("workspace") || refresh.has("viewer") || refresh.has("gridbox")) {
+      await refreshReceptorSummary();
+    }
+    if (refresh.has("ligands")) {
+      await refreshLigands();
+    }
+    if (refresh.has("viewer")) {
+      if (appState.selectedReceptor) {
+        await refreshViewer();
+      } else {
+        clearSelectedLigandPanel();
+      }
+    }
+    if ((gridChanged || gridChangedAfterState) && (refresh.has("gridbox") || action === "gridbox.set")) {
+      setGridboxSliders();
+      showGridControlsPanel();
+      if (els.showGrid) els.showGrid.checked = true;
+      applyGridbox();
+      await refreshReceptorSummary();
+    }
+
+    const selection = hints.viewer_selection && typeof hints.viewer_selection === "object"
+      ? hints.viewer_selection
+      : (data.viewer_selection && typeof data.viewer_selection === "object" ? data.viewer_selection : null);
+    if (selection && window.DockUPGridSelectionSearchBridge?.setResidueSelection) {
+      window.DockUPGridSelectionSearchBridge.setResidueSelection(selection, { refreshUI: true, reason: "control-event" });
+    }
+
+    if (refresh.has("run") || action === "run.start") {
+      await refreshRunPanelFromBackend({ startPolling: true });
+    }
+    if (refresh.has("results")) {
+      await refreshResultsDockFolders(appState.resultsRootPath || els.resultsRootPath?.value || RESULTS_DOCK_ROOT);
+      if (appState.mode === "Results") await scanResults();
+    }
+    if (refresh.has("report") || action.startsWith("report.")) {
+      if (typeof syncReportTaskState === "function") await syncReportTaskState({ silent: true });
+      if (appState.mode === "Report" && typeof fetchReports === "function") await fetchReports();
+    }
+  } catch (err) {
+    console.warn("DockUP control event apply failed:", err);
+  } finally {
+    controlEventApplying = false;
+  }
+}
+
+function startControlEventBridge() {
+  if (controlEventPoll) clearInterval(controlEventPoll);
+  controlEventPoll = setInterval(async () => {
+    try {
+      const payload = await fetchJSON(`/api/control/events/latest?after_id=${encodeURIComponent(latestControlEventId)}`);
+      const event = payload?.event && typeof payload.event === "object" ? payload.event : null;
+      if (!event) {
+        latestControlEventId = Math.max(latestControlEventId, Number(payload?.latest_id || 0));
+        return;
+      }
+      const eventId = Number(event.id || 0);
+      if (!Number.isFinite(eventId) || eventId <= latestControlEventId) return;
+      latestControlEventId = eventId;
+      await applyControlEvent(event);
+    } catch (err) {
+      // Older DockUP servers do not expose the control event bridge yet.
+      if (controlEventPoll) {
+        clearInterval(controlEventPoll);
+        controlEventPoll = null;
+      }
+    }
+  }, 1200);
 }
 
 function renderDockupAgentMessages() {
@@ -8882,6 +8975,7 @@ async function init() {
       els.recentDockingsMeta.textContent = `Failed to load recent dockings: ${e.message || e}`;
     }
   }
+  startControlEventBridge();
   try {
     const results = await Promise.allSettled([refreshOllamaStatus(), refreshGeminiStatus()]);
     const ollamaData = results[0].status === "fulfilled" ? results[0].value : null;

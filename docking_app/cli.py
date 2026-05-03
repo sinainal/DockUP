@@ -452,6 +452,15 @@ def cmd_live_run_stop(args: argparse.Namespace) -> int:
     return 0 if payload["ok"] else 2
 
 
+def cmd_live_events_latest(args: argparse.Namespace) -> int:
+    data = _live_client(args).get_latest_control_event(after_id=int(args.after_id or 0))
+    event = data.get("event") if isinstance(data.get("event"), dict) else None
+    message = f"event: {event.get('action')}" if event else "event: none"
+    payload = _coerce_live_envelope("events.latest", data, message=message)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
 def cmd_live_results_folders(args: argparse.Namespace) -> int:
     data = _live_client(args).list_result_folders()
     inner = _envelope_data(data) or data
@@ -829,6 +838,13 @@ def run_agent_cli(argv: list[str]) -> int:
     live_state = live_sub.add_parser("state", help="Read live DockUP state")
     add_live_output_flags(live_state, suppress_default=True)
     live_state.set_defaults(func=cmd_live_state)
+
+    live_events = live_sub.add_parser("events", help="Control event bridge commands")
+    live_events_sub = live_events.add_subparsers(dest="events_cmd", required=True)
+    live_events_latest = live_events_sub.add_parser("latest", help="Read the latest UI control event")
+    live_events_latest.add_argument("--after-id", type=int, default=0)
+    add_live_output_flags(live_events_latest, suppress_default=True)
+    live_events_latest.set_defaults(func=cmd_live_events_latest)
 
     live_assets = live_sub.add_parser("assets", help="Inspect live receptor/ligand inventory")
     live_assets_sub = live_assets.add_subparsers(dest="assets_cmd", required=True)

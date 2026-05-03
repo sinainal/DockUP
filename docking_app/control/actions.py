@@ -15,6 +15,7 @@ from ..agent import autonomous_docking
 from ..routes import core
 from ..routes import results as result_routes
 from ..state import RUN_STATE, STATE, save_state_cache
+from .events import publish_control_event
 from .models import ControlEnvelope, ControlError
 
 
@@ -114,7 +115,22 @@ def _envelope(
         ui_hints=ui_hints or {},
         error=error,
     )
-    return payload.model_dump()
+    envelope = payload.model_dump()
+    if _should_publish_event(action, envelope):
+        publish_control_event(envelope)
+    return envelope
+
+
+def _should_publish_event(action: str, envelope: dict[str, Any]) -> bool:
+    if not envelope.get("ok"):
+        return False
+    if action in {"state.get", "receptor.list", "ligand.list", "queue.list", "run.status", "results.folders"}:
+        return False
+    if action.startswith("report.") and action in {"report.status", "report.list", "report.images", "report.preview"}:
+        return False
+    hints = envelope.get("ui_hints") if isinstance(envelope.get("ui_hints"), dict) else {}
+    refresh = hints.get("refresh") if isinstance(hints.get("refresh"), list) else []
+    return bool(refresh or hints.get("viewer_selection"))
 
 
 def get_state() -> dict[str, Any]:

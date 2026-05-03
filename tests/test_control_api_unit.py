@@ -72,6 +72,63 @@ def test_control_viewer_show_selects_and_verifies_receptor_payload() -> None:
         STATE.update(previous)
 
 
+def test_control_event_bridge_publishes_ui_hint_events() -> None:
+    from docking_app.control.events import clear_events
+
+    previous = copy.deepcopy(STATE)
+    clear_events()
+    STATE.clear()
+    STATE.update(
+        {
+            "mode": "Docking",
+            "receptor_meta": [
+                {
+                    "pdb_id": "EVT1",
+                    "pdb_text": "ATOM      1  N   TRP A  90       1.000   1.000   1.000\nEND\n",
+                    "chains": ["all", "A"],
+                    "ligands_by_chain": {"all": []},
+                    "pdb_file": "",
+                }
+            ],
+            "selection_map": {"EVT1": {"chain": "all", "ligand_resname": "", "ligand_resnames": [], "flex_residues": []}},
+            "selected_receptor": "EVT1",
+            "selected_ids": ["EVT1"],
+            "selected_ligand": "",
+            "selected_chain": "all",
+            "active_ligands": [],
+            "grid_file_path": "",
+            "agent_grid_data": {},
+            "queue": [],
+            "runs": 1,
+            "grid_pad": 0.0,
+            "docking_config": {},
+            "out_root": "",
+            "out_root_path": "",
+            "out_root_name": "",
+            "results_root_path": "",
+        }
+    )
+    client = TestClient(create_app())
+    try:
+        response = client.post("/api/control/viewer/residues", json={"pdb_id": "EVT1", "residue": "TRP", "chain": "all"})
+        assert response.status_code == 200, response.text
+
+        event_response = client.get("/api/control/events/latest")
+        assert event_response.status_code == 200, event_response.text
+        event_payload = event_response.json()
+        assert event_payload["ok"] is True
+        assert event_payload["event"]["action"] == "viewer.residues"
+        assert event_payload["event"]["ui_hints"]["viewer_selection"]["label"] == "EVT1 TRP (1)"
+
+        after_response = client.get(f"/api/control/events/latest?after_id={event_payload['latest_id']}")
+        assert after_response.status_code == 200, after_response.text
+        assert after_response.json()["event"] is None
+    finally:
+        clear_events()
+        STATE.clear()
+        STATE.update(previous)
+
+
 def test_control_receptor_select_does_not_mutate_on_missing_receptor() -> None:
     previous = copy.deepcopy(STATE)
     STATE.clear()

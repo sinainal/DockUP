@@ -214,6 +214,9 @@ class DockUPClient:
     def stop_run(self) -> dict[str, Any]:
         return self._request("POST", "/api/control/run/stop", json_payload={})
 
+    def get_latest_control_event(self, *, after_id: int = 0) -> dict[str, Any]:
+        return self._request("GET", self._query_path("/api/control/events/latest", after_id=after_id))
+
     def get_receptor_detail(self, pdb_id: str, *, chain: str = "") -> dict[str, Any]:
         path = f"/api/receptors/{str(pdb_id or '').strip()}"
         if chain:
