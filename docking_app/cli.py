@@ -82,6 +82,20 @@ def _envelope_data(payload: dict[str, Any]) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _json_arg(value: str, default: Any) -> Any:
+    text = str(value or "").strip()
+    if not text:
+        return default
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid JSON argument: {exc}") from exc
+
+
+def _csv_arg(value: str) -> list[str]:
+    return [part.strip() for part in str(value or "").split(",") if part.strip()]
+
+
 def run_docking_cli(args):
     """
     Main execution logic for CLI.
@@ -413,6 +427,204 @@ def cmd_live_run_stop(args: argparse.Namespace) -> int:
     return 0 if payload["ok"] else 2
 
 
+def cmd_live_report_list(args: argparse.Namespace) -> int:
+    data = _live_client(args).list_reports(
+        root_path=args.root,
+        source_path=args.source,
+        output_path=args.output,
+        linked_path=args.linked,
+    )
+    receptors = data.get("receptors") if isinstance(data.get("receptors"), list) else []
+    images = data.get("images") if isinstance(data.get("images"), list) else []
+    payload = _coerce_live_envelope(
+        "report.list",
+        data,
+        message=f"report source={data.get('source_path') or '-'} receptors={len(receptors)} images={len(images)}",
+    )
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_report_preview(args: argparse.Namespace) -> int:
+    data = _live_client(args).report_preview(
+        root_path=args.root,
+        source_path=args.source,
+        receptor_id=args.receptor,
+        run_name=args.run,
+        render_mode=args.mode,
+    )
+    payload = _coerce_live_envelope(
+        "report.preview",
+        data,
+        message=str(data.get("message") or f"preview available={data.get('available', True)}"),
+    )
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_report_images(args: argparse.Namespace) -> int:
+    data = _live_client(args).list_report_images(
+        root_path=args.root,
+        source_path=args.source,
+        output_path=args.output,
+        images_root_path=args.images_root,
+    )
+    payload = _coerce_live_envelope("report.images", data, message=f"report images: {data.get('total', 0)}")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_report_metadata_get(args: argparse.Namespace) -> int:
+    data = _live_client(args).get_report_root_metadata(root_path=args.root, source_path=args.source)
+    payload = _coerce_live_envelope("report.metadata.get", data, message=f"metadata source={data.get('source_path') or '-'}")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_report_metadata_save(args: argparse.Namespace) -> int:
+    payload_args = {
+        "root_path": args.root,
+        "source_path": args.source,
+        "reset": bool(args.reset),
+        "main_type": args.main_type,
+        "receptor_labels": _json_arg(args.receptor_labels_json, {}),
+        "ligand_labels": _json_arg(args.ligand_labels_json, {}),
+        "receptor_order": _csv_arg(args.receptor_order),
+        "ligand_order": _csv_arg(args.ligand_order),
+        "figure_start_number": args.figure_start_number,
+        "extra_sections": _json_arg(args.extra_sections_json, []),
+        "figure_caption_overrides": _json_arg(args.caption_overrides_json, {}),
+    }
+    data = _live_client(args).save_report_root_metadata(**payload_args)
+    payload = _coerce_live_envelope("report.metadata.save", data, message="report metadata saved")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_report_doc_config_get(args: argparse.Namespace) -> int:
+    data = _live_client(args).get_report_doc_config(root_path=args.root, source_path=args.source)
+    payload = _coerce_live_envelope("report.doc_config.get", data, message=f"figure_start_number={data.get('figure_start_number', '-')}")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_report_doc_config_save(args: argparse.Namespace) -> int:
+    payload_args = {
+        "root_path": args.root,
+        "source_path": args.source,
+        "figure_start_number": args.figure_start_number,
+        "extra_sections": _json_arg(args.extra_sections_json, []),
+        "figure_caption_overrides": _json_arg(args.caption_overrides_json, {}),
+    }
+    data = _live_client(args).save_report_doc_config(**payload_args)
+    payload = _coerce_live_envelope("report.doc_config.save", data, message="report doc config saved")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_report_delete_source(args: argparse.Namespace) -> int:
+    data = _live_client(args).delete_report_source(root_path=args.root, source_path=args.source)
+    payload = _coerce_live_envelope("report.source.delete", data, message=f"deleted source: {data.get('deleted') or '-'}")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_report_delete_images(args: argparse.Namespace) -> int:
+    data = _live_client(args).delete_all_report_images(
+        root_path=args.root,
+        source_path=args.source,
+        output_path=args.output,
+        scope=args.scope,
+    )
+    payload = _coerce_live_envelope("report.images.delete_all", data, message=f"deleted images: {data.get('deleted_count', 0)}")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_report_delete_image(args: argparse.Namespace) -> int:
+    data = _live_client(args).delete_report_image(
+        root_path=args.root,
+        source_path=args.source,
+        output_path=args.output,
+        images_root_path=args.images_root,
+        path=args.path,
+    )
+    payload = _coerce_live_envelope("report.image.delete", data, message=f"deleted image: {data.get('deleted') or '-'}")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_report_graphs(args: argparse.Namespace) -> int:
+    data = _live_client(args).trigger_report_graphs(
+        root_path=args.root,
+        source_path=args.source,
+        output_path=args.output,
+        linked_path=args.linked,
+        scripts=args.scripts,
+    )
+    payload = _coerce_live_envelope("report.graphs", data, message=f"graphs: {data.get('status') or '-'}")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_report_render(args: argparse.Namespace) -> int:
+    payload_args = {
+        "root_path": args.root,
+        "source_path": args.source,
+        "output_path": args.output,
+        "linked_path": args.linked,
+        "dpi": args.dpi,
+        "render_mode": args.mode,
+        "otofigure_style": args.otofigure_style,
+        "otofigure_ray_trace": not bool(args.no_ray_trace),
+        "otofigure_render_engine": args.otofigure_engine,
+        "otofigure_background": args.background,
+        "otofigure_surface_enabled": not bool(args.no_surface),
+        "otofigure_surface_opacity": args.surface_opacity,
+        "otofigure_protein_color": args.protein_color,
+        "otofigure_ligand_thickness": args.ligand_thickness,
+        "receptors": list(args.receptors or []),
+        "run_by_receptor": _json_arg(args.run_by_receptor_json, {}),
+        "ligand_by_receptor": _json_arg(args.ligand_by_receptor_json, {}),
+        "is_preview": bool(args.preview),
+    }
+    data = _live_client(args).trigger_report_render(**payload_args)
+    payload = _coerce_live_envelope("report.render", data, message=f"render: {data.get('status') or '-'}")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_report_render_stop(args: argparse.Namespace) -> int:
+    data = _live_client(args).stop_report_render()
+    payload = _coerce_live_envelope("report.render.stop", data, message=str(data.get("message") or f"render: {data.get('status') or '-'}"))
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_report_compile(args: argparse.Namespace) -> int:
+    payload_args = {
+        "root_path": args.root,
+        "source_path": args.source,
+        "output_path": args.output,
+        "images_root_path": args.images_root,
+        "selected_images": list(args.images or []),
+        "figure_captions": _json_arg(args.captions_json, {}),
+        "figure_start_number": args.figure_start_number,
+        "extra_sections": _json_arg(args.extra_sections_json, []),
+    }
+    data = _live_client(args).compile_report(**payload_args)
+    payload = _coerce_live_envelope("report.compile", data, message=f"report compile: {data.get('status') or '-'} {data.get('doc_path') or ''}".strip())
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_report_status(args: argparse.Namespace) -> int:
+    data = _live_client(args).get_report_status()
+    payload = _coerce_live_envelope("report.status", data, message=f"report: {data.get('status') or '-'} {data.get('progress', 0)}/{data.get('total', 0)}")
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
 def run_agent_assets_cli(args) -> int:
     try:
         from .agent.autonomous_docking import AGENT_STATE, fetch_assets, plan_assets
@@ -675,6 +887,136 @@ def run_agent_cli(argv: list[str]) -> int:
     live_queue_remove.add_argument("batch_id")
     add_live_output_flags(live_queue_remove, suppress_default=True)
     live_queue_remove.set_defaults(func=cmd_live_queue_remove)
+
+    def add_report_path_flags(cmd: argparse.ArgumentParser) -> None:
+        cmd.add_argument("--root", default="data/dock", help="Report root path")
+        cmd.add_argument("--source", default="", help="Report source path")
+        cmd.add_argument("--output", default="", help="Report output path")
+
+    live_report = live_sub.add_parser("report", help="Report-page live commands")
+    live_report_sub = live_report.add_subparsers(dest="report_cmd", required=True)
+
+    report_list = live_report_sub.add_parser("list", help="List report sources, receptors, outputs, and images")
+    add_report_path_flags(report_list)
+    report_list.add_argument("--linked", default="", help="Optional linked path")
+    add_live_output_flags(report_list, suppress_default=True)
+    report_list.set_defaults(func=cmd_live_report_list)
+
+    report_preview = live_report_sub.add_parser("preview", help="Resolve report preview context")
+    add_report_path_flags(report_preview)
+    report_preview.add_argument("--receptor", default="", help="Optional receptor id")
+    report_preview.add_argument("--run", default="", help="Optional run name")
+    report_preview.add_argument("--mode", default="", help="Render mode")
+    add_live_output_flags(report_preview, suppress_default=True)
+    report_preview.set_defaults(func=cmd_live_report_preview)
+
+    report_images = live_report_sub.add_parser("images", help="List report images")
+    add_report_path_flags(report_images)
+    report_images.add_argument("--images-root", default="", help="Optional images root path")
+    add_live_output_flags(report_images, suppress_default=True)
+    report_images.set_defaults(func=cmd_live_report_images)
+
+    report_metadata = live_report_sub.add_parser("metadata", help="Report source metadata commands")
+    report_metadata_sub = report_metadata.add_subparsers(dest="metadata_cmd", required=True)
+    report_metadata_get = report_metadata_sub.add_parser("get", help="Read report source metadata")
+    report_metadata_get.add_argument("--root", default="data/dock")
+    report_metadata_get.add_argument("--source", default="")
+    add_live_output_flags(report_metadata_get, suppress_default=True)
+    report_metadata_get.set_defaults(func=cmd_live_report_metadata_get)
+    report_metadata_save = report_metadata_sub.add_parser("save", help="Save report source metadata")
+    report_metadata_save.add_argument("--root", default="data/dock")
+    report_metadata_save.add_argument("--source", default="")
+    report_metadata_save.add_argument("--reset", action="store_true")
+    report_metadata_save.add_argument("--main-type", default="")
+    report_metadata_save.add_argument("--receptor-labels-json", default="{}")
+    report_metadata_save.add_argument("--ligand-labels-json", default="{}")
+    report_metadata_save.add_argument("--receptor-order", default="", help="Comma-separated receptor order")
+    report_metadata_save.add_argument("--ligand-order", default="", help="Comma-separated ligand order")
+    report_metadata_save.add_argument("--figure-start-number", type=int, default=1)
+    report_metadata_save.add_argument("--extra-sections-json", default="[]")
+    report_metadata_save.add_argument("--caption-overrides-json", default="{}")
+    add_live_output_flags(report_metadata_save, suppress_default=True)
+    report_metadata_save.set_defaults(func=cmd_live_report_metadata_save)
+
+    report_doc_config = live_report_sub.add_parser("doc-config", help="Report document configuration commands")
+    report_doc_config_sub = report_doc_config.add_subparsers(dest="doc_config_cmd", required=True)
+    report_doc_config_get = report_doc_config_sub.add_parser("get", help="Read report document config")
+    report_doc_config_get.add_argument("--root", default="data/dock")
+    report_doc_config_get.add_argument("--source", default="")
+    add_live_output_flags(report_doc_config_get, suppress_default=True)
+    report_doc_config_get.set_defaults(func=cmd_live_report_doc_config_get)
+    report_doc_config_save = report_doc_config_sub.add_parser("save", help="Save report document config")
+    report_doc_config_save.add_argument("--root", default="data/dock")
+    report_doc_config_save.add_argument("--source", default="")
+    report_doc_config_save.add_argument("--figure-start-number", type=int, default=1)
+    report_doc_config_save.add_argument("--extra-sections-json", default="[]")
+    report_doc_config_save.add_argument("--caption-overrides-json", default="{}")
+    add_live_output_flags(report_doc_config_save, suppress_default=True)
+    report_doc_config_save.set_defaults(func=cmd_live_report_doc_config_save)
+
+    report_delete_source = live_report_sub.add_parser("delete-source", help="Delete a first-level report source folder")
+    report_delete_source.add_argument("--root", default="data/dock")
+    report_delete_source.add_argument("--source", required=True)
+    add_live_output_flags(report_delete_source, suppress_default=True)
+    report_delete_source.set_defaults(func=cmd_live_report_delete_source)
+
+    report_delete_images = live_report_sub.add_parser("delete-images", help="Delete generated report images")
+    add_report_path_flags(report_delete_images)
+    report_delete_images.add_argument("--scope", default="all", choices=["all", "render", "plot", "plots", "graphs"])
+    add_live_output_flags(report_delete_images, suppress_default=True)
+    report_delete_images.set_defaults(func=cmd_live_report_delete_images)
+
+    report_delete_image = live_report_sub.add_parser("delete-image", help="Delete one generated report image")
+    add_report_path_flags(report_delete_image)
+    report_delete_image.add_argument("--images-root", default="")
+    report_delete_image.add_argument("path")
+    add_live_output_flags(report_delete_image, suppress_default=True)
+    report_delete_image.set_defaults(func=cmd_live_report_delete_image)
+
+    report_graphs = live_report_sub.add_parser("graphs", help="Generate predefined report plots")
+    add_report_path_flags(report_graphs)
+    report_graphs.add_argument("--linked", default="")
+    report_graphs.add_argument("--scripts", nargs="*", default=[], help="Optional plot ids; empty means all predefined plots")
+    add_live_output_flags(report_graphs, suppress_default=True)
+    report_graphs.set_defaults(func=cmd_live_report_graphs)
+
+    report_render = live_report_sub.add_parser("render", help="Start report image rendering")
+    add_report_path_flags(report_render)
+    report_render.add_argument("--linked", default="")
+    report_render.add_argument("--dpi", type=int, default=120)
+    report_render.add_argument("--mode", default="classic", choices=["classic", "otofigure", "multi_ligand", "multi_ligand_panel"])
+    report_render.add_argument("--receptors", nargs="*", default=[])
+    report_render.add_argument("--preview", action="store_true")
+    report_render.add_argument("--run-by-receptor-json", default="{}")
+    report_render.add_argument("--ligand-by-receptor-json", default="{}")
+    report_render.add_argument("--otofigure-style", default="balanced")
+    report_render.add_argument("--otofigure-engine", default="ray")
+    report_render.add_argument("--background", default="transparent")
+    report_render.add_argument("--no-ray-trace", action="store_true")
+    report_render.add_argument("--no-surface", action="store_true")
+    report_render.add_argument("--surface-opacity", type=float, default=0.5)
+    report_render.add_argument("--protein-color", default="bluewhite")
+    report_render.add_argument("--ligand-thickness", type=float, default=0.22)
+    add_live_output_flags(report_render, suppress_default=True)
+    report_render.set_defaults(func=cmd_live_report_render)
+
+    report_render_stop = live_report_sub.add_parser("render-stop", help="Stop active report render task")
+    add_live_output_flags(report_render_stop, suppress_default=True)
+    report_render_stop.set_defaults(func=cmd_live_report_render_stop)
+
+    report_compile = live_report_sub.add_parser("compile", help="Compile a report document")
+    add_report_path_flags(report_compile)
+    report_compile.add_argument("--images-root", default="")
+    report_compile.add_argument("--images", nargs="*", default=[])
+    report_compile.add_argument("--captions-json", default="{}")
+    report_compile.add_argument("--figure-start-number", type=int, default=1)
+    report_compile.add_argument("--extra-sections-json", default="[]")
+    add_live_output_flags(report_compile, suppress_default=True)
+    report_compile.set_defaults(func=cmd_live_report_compile)
+
+    report_status = live_report_sub.add_parser("status", help="Read report task status")
+    add_live_output_flags(report_status, suppress_default=True)
+    report_status.set_defaults(func=cmd_live_report_status)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

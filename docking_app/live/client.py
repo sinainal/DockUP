@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -60,6 +61,13 @@ class DockUPClient:
             payload.setdefault("status_code", response.status_code)
             payload.setdefault("error", payload.get("detail") or response.reason_phrase)
         return payload
+
+    @staticmethod
+    def _query_path(path: str, **params: Any) -> str:
+        clean = {key: value for key, value in params.items() if value not in {None, ""}}
+        if not clean:
+            return path
+        return f"{path}?{urlencode(clean, doseq=True)}"
 
     def get_state(self) -> dict[str, Any]:
         return self._request("GET", "/api/control/state")
@@ -150,3 +158,138 @@ class DockUPClient:
         if chain:
             path = f"{path}?chain={chain}"
         return self._request("GET", path)
+
+    def list_reports(self, *, root_path: str = "", source_path: str = "", output_path: str = "", linked_path: str = "") -> dict[str, Any]:
+        return self._request(
+            "GET",
+            self._query_path(
+                "/api/reports/list",
+                root_path=root_path,
+                source_path=source_path,
+                output_path=output_path,
+                linked_path=linked_path,
+            ),
+        )
+
+    def report_preview(
+        self,
+        *,
+        root_path: str = "",
+        source_path: str = "",
+        receptor_id: str = "",
+        run_name: str = "",
+        render_mode: str = "",
+    ) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            self._query_path(
+                "/api/reports/preview",
+                root_path=root_path,
+                source_path=source_path,
+                receptor_id=receptor_id,
+                run_name=run_name,
+                render_mode=render_mode,
+            ),
+        )
+
+    def list_report_images(
+        self,
+        *,
+        root_path: str = "",
+        source_path: str = "",
+        output_path: str = "",
+        images_root_path: str = "",
+    ) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            self._query_path(
+                "/api/reports/images",
+                root_path=root_path,
+                source_path=source_path,
+                output_path=output_path,
+                images_root_path=images_root_path,
+            ),
+        )
+
+    def get_report_root_metadata(self, *, root_path: str = "", source_path: str = "") -> dict[str, Any]:
+        return self._request("GET", self._query_path("/api/reports/root-metadata", root_path=root_path, source_path=source_path))
+
+    def save_report_root_metadata(self, **payload: Any) -> dict[str, Any]:
+        return self._request("POST", "/api/reports/root-metadata", json_payload=dict(payload))
+
+    def get_report_doc_config(self, *, root_path: str = "", source_path: str = "") -> dict[str, Any]:
+        return self._request("GET", self._query_path("/api/reports/doc-config", root_path=root_path, source_path=source_path))
+
+    def save_report_doc_config(self, **payload: Any) -> dict[str, Any]:
+        return self._request("POST", "/api/reports/doc-config", json_payload=dict(payload))
+
+    def delete_report_source(self, *, root_path: str = "", source_path: str = "") -> dict[str, Any]:
+        return self._request("POST", "/api/reports/source/delete", json_payload={"root_path": root_path, "source_path": source_path})
+
+    def delete_all_report_images(
+        self,
+        *,
+        root_path: str = "",
+        source_path: str = "",
+        output_path: str = "",
+        scope: str = "all",
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/reports/images/delete-all",
+            json_payload={"root_path": root_path, "source_path": source_path, "output_path": output_path, "scope": scope},
+        )
+
+    def delete_report_image(
+        self,
+        *,
+        root_path: str = "",
+        source_path: str = "",
+        output_path: str = "",
+        images_root_path: str = "",
+        path: str = "",
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/reports/image/delete",
+            json_payload={
+                "root_path": root_path,
+                "source_path": source_path,
+                "output_path": output_path,
+                "images_root_path": images_root_path,
+                "path": path,
+            },
+        )
+
+    def trigger_report_graphs(
+        self,
+        *,
+        root_path: str = "data/dock",
+        source_path: str = "",
+        output_path: str = "",
+        linked_path: str = "",
+        scripts: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/reports/graphs",
+            json_payload={
+                "root_path": root_path,
+                "source_path": source_path,
+                "output_path": output_path,
+                "linked_path": linked_path,
+                "scripts": list(scripts or []),
+            },
+        )
+
+    def trigger_report_render(self, **payload: Any) -> dict[str, Any]:
+        return self._request("POST", "/api/reports/render", json_payload=dict(payload))
+
+    def stop_report_render(self) -> dict[str, Any]:
+        return self._request("POST", "/api/reports/render/stop", json_payload={})
+
+    def compile_report(self, **payload: Any) -> dict[str, Any]:
+        return self._request("POST", "/api/reports/compile", json_payload=dict(payload))
+
+    def get_report_status(self) -> dict[str, Any]:
+        return self._request("GET", "/api/reports/status")

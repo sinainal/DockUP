@@ -22,7 +22,9 @@ from ..agent.agent_runtime import (
     verify_tool_effect,
     was_failed_attempt,
 )
+from ..agent.observe import observer_from_payload
 from ..agent.state_context import docking_state_context, state_system_prompt
+from ..agent.tools import CONTROL_TOOL_FUNCTIONS
 from ..config import BASE
 
 EXTENSION_ID = "ollama_agent"
@@ -1285,7 +1287,7 @@ def _execute_named_tool(
         clean_args.setdefault("replace_queue", True)
     if name in {"set_gridbox", "build_or_run_queue", "run_queue"} and progress_callback is not None:
         clean_args.setdefault("progress_callback", progress_callback)
-    func = DOCKING_FUNCTIONS.get(name)
+    func = CONTROL_TOOL_FUNCTIONS.get(name) or DOCKING_FUNCTIONS.get(name)
     if not func:
         return {"ok": False, "error": f"Unknown DockUP tool: {name}"}
     try:
@@ -1462,6 +1464,7 @@ def _run_single_agent_tool_loop(
     _reset_docking_tool_state()
     messages = list(request["messages"])
     trace: list[dict[str, Any]] = []
+    observer = observer_from_payload(payload, request)
     test_mode = _normalize_bool(payload.get("test_mode"), True)
     last_thinking = ""
     thinking_streamed = False
@@ -1472,12 +1475,22 @@ def _run_single_agent_tool_loop(
     last_thinking_signature = ""
     repeated_thinking_count = 0
     step = 0
+    def finish(result: dict[str, Any]) -> dict[str, Any]:
+        if observer is not None:
+            result.setdefault("observer_run_dir", str(observer.run_dir))
+            observer.finish(result)
+        return result
+
     while True:
         step += 1
+        if observer is not None:
+            observer.model_request(step, _build_ollama_chat_payload(request, messages))
         try:
             data = _chat_agent_step(request, messages, progress_callback=progress_callback)
         except Exception as exc:
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "trace": trace, "agent_state": dict(AGENT_STATE)}
+            return finish({"ok": False, "error": f"{type(exc).__name__}: {exc}", "trace": trace, "agent_state": dict(AGENT_STATE)})
+        if observer is not None:
+            observer.model_response(step, data if isinstance(data, dict) else {"raw": data})
         calls, message = _message_tool_calls(data)
         content = str(message.get("content") or "").strip()
         thinking = str(message.get("thinking") or "").strip()
@@ -1511,7 +1524,7 @@ def _run_single_agent_tool_loop(
         if repeated_content_count >= 3 or repeated_thinking_count >= 3:
             final_answer = content or _tool_loop_answer({"trace": trace}) or _fallback_clarification()
             _record_agent_memory(step=step, answer=final_answer)
-            return {
+            return finish({
                 "ok": True,
                 "answer": final_answer,
                 "thinking": last_thinking,
@@ -1519,11 +1532,11 @@ def _run_single_agent_tool_loop(
                 "trace": trace,
                 "agent_state": dict(AGENT_STATE),
                 "stopped_reason": "repeated_text",
-            }
+            })
         if not calls:
             final_answer = content or _fallback_clarification()
             _record_agent_memory(step=step, answer=final_answer)
-            return {
+            return finish({
                 "ok": True,
                 "answer": final_answer,
                 "answer_streamed": bool(progress_callback and final_answer),
@@ -1532,14 +1545,14 @@ def _run_single_agent_tool_loop(
                 "trace": trace,
                 "agent_state": dict(AGENT_STATE),
                 "raw": data,
-            }
+            })
         for call in calls:
             name = str(call.get("name") or "").strip()
             args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
             call_key = f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)}"
             repeated_calls[call_key] = repeated_calls.get(call_key, 0) + 1
             if repeated_calls[call_key] > 2:
-                return {
+                return finish({
                     "ok": True,
                     "answer": _tool_loop_answer({"trace": trace}),
                     "thinking": last_thinking,
@@ -1547,10 +1560,13 @@ def _run_single_agent_tool_loop(
                     "trace": trace,
                     "agent_state": dict(AGENT_STATE),
                     "stopped_reason": "repeated_tool_call",
-                }
+                })
             if progress_callback:
                 progress_callback({"type": "tool_call", "tool": name, "arguments": args, "prompt": _tool_call_label(name, args)})
+            if observer is not None:
+                observer.tool_call(step, name, args)
             before_context = docking_state_context()
+            tool_started = time.perf_counter()
             if was_failed_attempt(AGENT_STATE, name, args):
                 result = {
                     "ok": False,
@@ -1564,6 +1580,17 @@ def _run_single_agent_tool_loop(
             verification = verify_tool_effect(name, result, before_context, after_context)
             if isinstance(result, dict):
                 result["verification"] = verification
+            if observer is not None:
+                observer.tool_result(
+                    step,
+                    name,
+                    args,
+                    result if isinstance(result, dict) else {"ok": True, "result": result},
+                    seconds=round(time.perf_counter() - tool_started, 6),
+                    before_context=before_context,
+                    after_context=after_context,
+                    verification=verification,
+                )
             trace.append({"tool": name, "arguments": args, "result": result})
             _record_agent_memory(step=step, tool_name=name, result=result)
             record_attempt(

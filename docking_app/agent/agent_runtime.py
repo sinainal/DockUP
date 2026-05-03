@@ -8,6 +8,7 @@ from typing import Any
 AGENT_SYSTEM_PROMPT = """You are DockUP Local AI, an autonomous scientific docking agent.
 
 Understand the user's goal, choose useful DockUP tools, inspect each result, and continue until the goal is complete or one critical input is missing.
+Think briefly; when a tool can advance the goal, call the next useful tool instead of planning in prose.
 Use the compact state, recent attempts, and tool results as working memory.
 Do not repeat the same failed attempt. If evidence clearly suggests a different fix, try it once; otherwise ask one short question.
 For simple requests, do exactly the requested action and stop. For full docking requests, complete missing prerequisites and build or start the run as requested.
@@ -108,7 +109,8 @@ def verify_tool_effect(tool_name: str, result: dict[str, Any], before: dict[str,
         after_queue = int(_context_value(after, "queue_count", 0) or 0)
         run = result.get("run") if isinstance(result.get("run"), dict) else {}
         if run.get("started"):
-            return f"Queue count {before_queue} -> {after_queue}; real run was submitted."
+            mode = "test run" if run.get("test_mode") else "real run"
+            return f"Queue count {before_queue} -> {after_queue}; {mode} was submitted."
         return f"Queue count {before_queue} -> {after_queue}."
     if tool_name in {"delete_ligands", "delete_receptors", "delete_queue_batches"}:
         return "State cleanup completed." if ok else "Cleanup did not complete."

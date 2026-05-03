@@ -42,6 +42,33 @@ def test_live_client_reads_run_status_from_ui_endpoint() -> None:
     assert payload["data"]["total_runs"] == 0
 
 
+def test_live_client_calls_report_page_endpoints() -> None:
+    seen: list[tuple[str, str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8") or "{}") if request.content else None
+        seen.append((request.method, request.url.path, payload))
+        if request.url.path == "/api/reports/list":
+            assert request.url.params["root_path"] == "data/dock"
+            return httpx.Response(200, json={"source_path": "data/dock/run_a", "receptors": []})
+        if request.url.path == "/api/reports/render":
+            return httpx.Response(200, json={"status": "started", "expected_time": 12})
+        if request.url.path == "/api/reports/status":
+            return httpx.Response(200, json={"status": "running", "task": "render"})
+        return httpx.Response(404, json={"error": "unexpected"})
+
+    client = DockUPClient("http://dockup.local", transport=httpx.MockTransport(handler))
+
+    assert client.list_reports(root_path="data/dock")["source_path"] == "data/dock/run_a"
+    assert client.trigger_report_render(root_path="data/dock", source_path="run_a", render_mode="classic")["status"] == "started"
+    assert client.get_report_status()["task"] == "render"
+    assert seen == [
+        ("GET", "/api/reports/list", None),
+        ("POST", "/api/reports/render", {"root_path": "data/dock", "source_path": "run_a", "render_mode": "classic"}),
+        ("GET", "/api/reports/status", None),
+    ]
+
+
 def test_live_client_loads_and_selects_receptor_through_ui_endpoints() -> None:
     seen: list[tuple[str, str, object]] = []
 
@@ -182,3 +209,94 @@ def test_live_cli_queue_and_run_commands_use_control_envelopes(monkeypatch, caps
     assert code == 0
     assert output["action"] == "run.start"
     assert output["data"]["test_mode"] is True
+
+
+def test_live_cli_report_list_and_status_wrap_ui_payloads(monkeypatch, capsys) -> None:
+    class FakeClient:
+        def list_reports(self, *, root_path: str = "", source_path: str = "", output_path: str = "", linked_path: str = "") -> dict[str, object]:
+            return {
+                "root_path": root_path,
+                "source_path": source_path or "data/dock/run_a",
+                "output_path": output_path or "data/dock/run_a/report_outputs",
+                "receptors": [{"id": "6CM4", "ready": True}],
+                "images": [{"path": "plot.png"}],
+            }
+
+        def get_report_status(self) -> dict[str, object]:
+            return {"status": "idle", "task": "", "progress": 0, "total": 0}
+
+    monkeypatch.setattr(cli, "_live_client", lambda _args: FakeClient())
+
+    code = cli.run_agent_cli(["live", "report", "list", "--root", "data/dock", "--json"])
+    output = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert output["action"] == "report.list"
+    assert output["data"]["source_path"] == "data/dock/run_a"
+
+    code = cli.run_agent_cli(["live", "report", "status", "--json"])
+    output = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert output["action"] == "report.status"
+    assert output["data"]["status"] == "idle"
+
+
+def test_live_cli_report_render_and_compile_payloads(monkeypatch, capsys) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeClient:
+        def trigger_report_render(self, **payload: object) -> dict[str, object]:
+            calls.append(("render", dict(payload)))
+            return {"status": "started", "expected_time": 12}
+
+        def compile_report(self, **payload: object) -> dict[str, object]:
+            calls.append(("compile", dict(payload)))
+            return {"status": "completed", "doc_path": "data/dock/run_a/report.docx"}
+
+    monkeypatch.setattr(cli, "_live_client", lambda _args: FakeClient())
+
+    code = cli.run_agent_cli(
+        [
+            "live",
+            "report",
+            "render",
+            "--source",
+            "data/dock/run_a",
+            "--mode",
+            "otofigure",
+            "--receptors",
+            "6CM4",
+            "5MOZ",
+            "--run-by-receptor-json",
+            '{"6CM4":"run1"}',
+            "--json",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert output["action"] == "report.render"
+    assert calls[0][0] == "render"
+    assert calls[0][1]["source_path"] == "data/dock/run_a"
+    assert calls[0][1]["render_mode"] == "otofigure"
+    assert calls[0][1]["receptors"] == ["6CM4", "5MOZ"]
+    assert calls[0][1]["run_by_receptor"] == {"6CM4": "run1"}
+
+    code = cli.run_agent_cli(
+        [
+            "live",
+            "report",
+            "compile",
+            "--source",
+            "data/dock/run_a",
+            "--images",
+            "plot.png",
+            "--captions-json",
+            '{"plot.png":"Affinity plot"}',
+            "--json",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert output["action"] == "report.compile"
+    assert calls[1][0] == "compile"
+    assert calls[1][1]["selected_images"] == ["plot.png"]
+    assert calls[1][1]["figure_captions"] == {"plot.png": "Affinity plot"}

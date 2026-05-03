@@ -174,6 +174,10 @@ def run_suite(
                 "message": prompt,
                 "think_mode": case.think_mode,
                 "history": [],
+                "agent_observer": True,
+                "observer_output_root": str(logger.run_dir / "observer"),
+                "agent_run_label": f"{index:02d}_{case.case_id}",
+                "case_id": case.case_id,
             }
             request = ollama_agent._build_chat_request(payload)
             if not request.get("model"):
