@@ -159,7 +159,7 @@ def build_agent_working_memory(*, user_goal: str, state_context: dict[str, Any],
     ]
     if queue_batches:
         preview = ", ".join(
-            f"{row.get('batch_id')}:{row.get('job_count')}x{row.get('run_count')}"
+            f"{row.get('batch_id')}:{row.get('job_count')} jobs x{row.get('run_count')} {((row.get('docking_config') or {}).get('docking_engine') or '-')}/{((row.get('docking_config') or {}).get('docking_mode') or '-')}"
             for row in queue_batches[:4]
             if isinstance(row, dict)
         )
@@ -184,6 +184,7 @@ def build_agent_working_memory(*, user_goal: str, state_context: dict[str, Any],
         [
             "",
             "Choose the next useful tool freely. Avoid repeating failed attempts unless the arguments are meaningfully different.",
+            "For multi-config experiments, append new batches with replace_queue=false instead of clearing the queue.",
         ]
     )
     return "\n".join(lines)

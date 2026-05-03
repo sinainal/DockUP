@@ -951,8 +951,9 @@ def _tool_status(name: str, result: dict[str, Any]) -> str:
     if name == "build_or_run_queue":
         queue = result.get("queue") if isinstance(result.get("queue"), dict) else {}
         run = result.get("run") if isinstance(result.get("run"), dict) else {}
+        mode = "append" if result.get("replace_queue") is False or queue.get("replace_queue") is False else "replace"
         suffix = " | run started" if run.get("started") else ""
-        return f"Queue: jobs={queue.get('new_jobs', 0)} batch={queue.get('batch_id') or '-'}{suffix}"
+        return f"Queue: jobs={queue.get('new_jobs', 0)} batch={queue.get('batch_id') or '-'} mode={mode}{suffix}"
     if name == "delete_ligands":
         return f"Deleted ligands: {len(result.get('deleted') or [])}"
     if name == "delete_receptors":
@@ -1055,6 +1056,7 @@ def _tool_context_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
         compact["validation"] = result.get("validation") if isinstance(result.get("validation"), dict) else {}
     elif name == "build_or_run_queue":
         compact["queue"] = result.get("queue") if isinstance(result.get("queue"), dict) else {}
+        compact["replace_queue"] = result.get("replace_queue")
         compact["run"] = result.get("run") if isinstance(result.get("run"), dict) else {}
     elif name == "delete_ligands":
         compact["deleted"] = (result.get("deleted") or [])[:16]

@@ -193,6 +193,60 @@ def test_build_or_run_queue_syncs_batch_config_from_state(monkeypatch):
             autonomous_docking.AGENT_STATE[key] = value
 
 
+def test_build_or_run_queue_can_append_new_config_batch(monkeypatch):
+    from docking_app.agent import autonomous_docking
+
+    ligand_name = _first_ligand_name()
+    _configure_minimal_state(active_ligands=[ligand_name])
+    STATE["selection_map"] = {
+        "6CM4": {
+            "chain": "all",
+            "ligand_resname": ligand_name,
+            "ligand_resnames": [ligand_name],
+            "flex_residues": [],
+        }
+    }
+    STATE["agent_grid_data"] = {
+        "6CM4": {"cx": 1.0, "cy": 2.0, "cz": 3.0, "sx": 20.0, "sy": 20.0, "sz": 20.0}
+    }
+    STATE["docking_config"] = {
+        "docking_engine": "vina",
+        "docking_mode": "standard",
+        "ligand_binding_mode": "single",
+    }
+    STATE["runs"] = 1
+    STATE["grid_pad"] = 0.0
+    STATE["out_root_path"] = str((DOCK_DIR / "pytest_queue_validation").resolve())
+    STATE["out_root_name"] = "append_test"
+    STATE["queue"] = []
+
+    previous_agent_state = {key: autonomous_docking.AGENT_STATE.get(key) for key in ("setup_rows", "grid_data", "batch_config", "batch_id")}
+
+    calls: list[tuple[str, object]] = []
+
+    def fake_build_queue(replace_queue: bool = False):
+        calls.append(("build_queue", replace_queue))
+        return {"ok": True, "batch_id": "batch-append", "queue_count": 2, "new_jobs": 1, "job_count": 1, "total_runs": 1}
+
+    monkeypatch.setattr(autonomous_docking, "build_queue", fake_build_queue)
+
+    try:
+        autonomous_docking.AGENT_STATE["setup_rows"] = []
+        autonomous_docking.AGENT_STATE["grid_data"] = {}
+        autonomous_docking.AGENT_STATE["batch_config"] = {}
+        autonomous_docking.AGENT_STATE["batch_id"] = ""
+
+        result = autonomous_docking.build_or_run_queue(action="build_only", replace_queue=False)
+
+        assert result["ok"] is True
+        assert result["replace_queue"] is False
+        assert result["queue"]["replace_queue"] is False
+        assert calls == [("build_queue", False)]
+    finally:
+        for key, value in previous_agent_state.items():
+            autonomous_docking.AGENT_STATE[key] = value
+
+
 def test_build_queue_empty_selection_does_not_create_output_dirs():
     out_root = (DOCK_DIR / "pytest_queue_validation").resolve()
     shutil.rmtree(out_root, ignore_errors=True)

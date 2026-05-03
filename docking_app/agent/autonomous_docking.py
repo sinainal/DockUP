@@ -1880,14 +1880,16 @@ def _sync_batch_config_from_state() -> dict[str, Any]:
 
 def build_or_run_queue(
     action: str = "build_test",
+    replace_queue: bool = True,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     action_norm = str(action or "build_test").strip().lower()
+    replace_existing = bool(replace_queue)
     _emit_progress(
         progress_callback,
         type="status",
         stage="build_or_run_queue",
-        delta=f"Validating queue for {action_norm}...",
+        delta=f"Validating queue for {action_norm} ({'replace' if replace_existing else 'append'} mode)...",
     )
     batch_config = _sync_batch_config_from_state()
     if not batch_config:
@@ -1910,7 +1912,7 @@ def build_or_run_queue(
     validation = validate_batch()
     if not validation.get("ok"):
         return {"ok": False, "summary": "Batch validation failed.", "validation": validation, "allowed_next_tools": ["select_workspace", "set_gridbox", "set_docking_config"]}
-    queue_result = build_queue(replace_queue=True)
+    queue_result = build_queue(replace_queue=replace_existing)
     run_result: dict[str, Any] = {}
     if action_norm in {"build_test", "test", "run_test", "test_run", "dry_run", "log", "plan"}:
         run_result = run_queue(test_mode=True, progress_callback=progress_callback) if progress_callback is not None else run_queue(test_mode=True)
@@ -1932,7 +1934,7 @@ def build_or_run_queue(
     return {
         "ok": bool(queue_result.get("ok")) and (not run_result or bool(run_result.get("ok"))),
         "summary": (
-            f"Queue action {action_norm}: {queue_result.get('new_jobs', 0)} job(s), batch {queue_result.get('batch_id') or '-'}"
+            f"Queue action {action_norm}: {queue_result.get('new_jobs', 0)} job(s), batch {queue_result.get('batch_id') or '-'}, mode={'append' if not replace_existing else 'replace'}"
             + (f"; run error: {run_result.get('error')}" if run_result and not run_result.get("ok", True) else "")
         ),
         "queue": {
@@ -1941,7 +1943,9 @@ def build_or_run_queue(
             "queue_count": queue_result.get("queue_count"),
             "job_count": queue_result.get("job_count"),
             "total_runs": queue_result.get("total_runs"),
+            "replace_queue": replace_existing,
         },
+        "replace_queue": replace_existing,
         "run": {
             "started": bool(run_result and run_result.get("ok", True) and (run_result.get("started", True))),
             "test_mode": run_result.get("test_mode") if run_result else None,
@@ -2007,13 +2011,13 @@ def read_tool_details(topic: str = "workflow") -> dict[str, Any]:
         "queue_actions": (
             "build_or_run_queue(action) accepts build_only/build, build_test/test/dry_run, or run_full/full/run/start/real_run. "
             "build_only validates and creates queue rows. build_test materializes/plans the batch without starting a heavy docking process. "
-            "run_full starts the real DockUP queue runner."
+            "run_full starts the real DockUP queue runner. Use replace_queue=false to append a new batch for a different config instead of clearing the queue."
         ),
         "tools": (
             "Tools: get_dockup_state(), fetch_assets(receptors, ligands), inspect_assets(), "
             "show_in_viewer(receptor, chain, native_ligand), show_residues(receptor, residue, chain), "
             "select_workspace(receptor, chain, native_ligand, dock_ligands), set_gridbox(method, size, padding, center, pocket_rank, p2rank_mode), "
-            "set_docking_config(...), build_or_run_queue(action), delete_ligands(target), "
+            "set_docking_config(...), build_or_run_queue(action, replace_queue), delete_ligands(target), "
             "delete_receptors(target), delete_queue_batches(batch_id), read_tool_details(topic)."
         ),
     }
@@ -2143,11 +2147,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "build_or_run_queue",
-            "description": "Build queue only, build and test/log run, or full run. Use action='build_test' for validation-only planning, and action='run_full' for a real docking start. Use only after gridbox and set_docking_config have already succeeded.",
+            "description": "Build queue only, build and test/log run, or full run. Use action='build_test' for validation-only planning, and action='run_full' for a real docking start. Use replace_queue=false to append a new batch for multi-config experiments. Use only after gridbox and set_docking_config have already succeeded.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "description": "build_only/build, build_test/test/dry_run, or run_full/full/run/start/real_run."},
+                    "replace_queue": {"type": "boolean", "description": "true replaces the queue, false appends a new batch. Use false after the first batch for multi-config experiments."},
                 },
             },
         },

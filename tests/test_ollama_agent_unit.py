@@ -633,6 +633,24 @@ def test_fetch_assets_surfaces_retry_hint_on_failure(monkeypatch) -> None:
         STATE["active_ligands"] = previous_active
 
 
+def test_build_or_run_queue_context_includes_replace_queue_flag() -> None:
+    from docking_app.extensions import ollama_agent
+
+    compact = ollama_agent._tool_context_result(
+        "build_or_run_queue",
+        {
+            "ok": True,
+            "replace_queue": False,
+            "queue": {"batch_id": "42", "new_jobs": 1, "job_count": 1, "total_runs": 1, "replace_queue": False},
+            "run": {"started": False, "test_mode": True},
+        },
+    )
+
+    assert compact["replace_queue"] is False
+    assert compact["queue"]["replace_queue"] is False
+    assert "mode=append" in compact["summary"].lower()
+
+
 def test_agent_runtime_skips_repeated_failed_attempt(monkeypatch, tmp_path) -> None:
     from docking_app.extensions import ollama_agent
 
