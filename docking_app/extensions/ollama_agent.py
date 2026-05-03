@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -14,6 +15,12 @@ from urllib.parse import urlparse
 
 from ..agent.autonomous_docking import AGENT_STATE, AVAILABLE_FUNCTIONS as DOCKING_FUNCTIONS, TOOLS as DOCKING_TOOLS
 from ..agent.ollama_client import chat, normalize_base_url, probe_ollama, running_models, stream_chat, unload_model
+from ..agent.agent_runtime import (
+    build_agent_working_memory,
+    record_attempt,
+    verify_tool_effect,
+    was_failed_attempt,
+)
 from ..agent.state_context import docking_state_context, state_system_prompt
 from ..config import BASE
 
@@ -851,9 +858,14 @@ def _build_chat_request(payload: dict[str, Any]) -> dict[str, Any]:
     message = str(payload.get("message") or "").strip()
     history = payload.get("history") if isinstance(payload.get("history"), list) else []
     state_context = docking_state_context()
+    state_content = build_agent_working_memory(
+        user_goal=message,
+        state_context=state_context,
+        agent_state=AGENT_STATE,
+    )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": state_system_prompt()},
-        {"role": "system", "content": f"Current DockUP state JSON:\n{json.dumps(state_context, ensure_ascii=False)}"},
+        {"role": "system", "content": f"DockUP working memory:\n{state_content}"},
     ]
     for row in history[-8:]:
         if not isinstance(row, dict):
@@ -919,7 +931,9 @@ def _tool_status(name: str, result: dict[str, Any]) -> str:
     if name == "get_dockup_state":
         return f"State: {len(result.get('loaded_receptors') or [])} receptor(s), {len(result.get('loaded_ligands') or [])} ligand(s), queue={result.get('queue_jobs', 0)}"
     if name == "fetch_assets":
-        return f"Assets: {len(result.get('loaded_receptors') or [])} receptor(s), {len(result.get('saved_ligands') or [])} ligand file(s)"
+        failures = (result.get("failed_receptors") or []) + (result.get("failed_ligands") or [])
+        suffix = " | retry once with corrected names" if failures else ""
+        return f"Assets: {len(result.get('loaded_receptors') or [])} receptor(s), {len(result.get('saved_ligands') or [])} ligand file(s){suffix}"
     if name == "inspect_assets":
         inv = result.get("inventory") if isinstance(result.get("inventory"), dict) else {}
         return f"Inspection: {len(inv.get('receptors') or {})} receptor(s), {len(inv.get('ligands') or [])} ligand(s)"
@@ -936,7 +950,9 @@ def _tool_status(name: str, result: dict[str, Any]) -> str:
         return f"Config: engine={cfg.get('engine') or '-'} mode={cfg.get('mode') or '-'} run_count={cfg.get('run_count') or 1}"
     if name == "build_or_run_queue":
         queue = result.get("queue") if isinstance(result.get("queue"), dict) else {}
-        return f"Queue: jobs={queue.get('new_jobs', 0)} batch={queue.get('batch_id') or '-'}"
+        run = result.get("run") if isinstance(result.get("run"), dict) else {}
+        suffix = " | run started" if run.get("started") else ""
+        return f"Queue: jobs={queue.get('new_jobs', 0)} batch={queue.get('batch_id') or '-'}{suffix}"
     if name == "delete_ligands":
         return f"Deleted ligands: {len(result.get('deleted') or [])}"
     if name == "delete_receptors":
@@ -985,7 +1001,7 @@ def _tool_context_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
         "ok": bool(result.get("ok", True)),
         "summary": _tool_status(name, result),
     }
-    for key in ("error", "allowed_next_tools"):
+    for key in ("error", "allowed_next_tools", "verification"):
         if key in result:
             compact[key] = result.get(key)
     if name == "get_dockup_state":
@@ -1010,6 +1026,7 @@ def _tool_context_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
                 "failed_receptors": (result.get("failed_receptors") or [])[:4],
                 "failed_ligands": (result.get("failed_ligands") or [])[:4],
                 "retry_attempts": (result.get("retry_attempts") or [])[:6],
+                "retry_hint": str(result.get("retry_hint") or "").strip(),
             }
         )
     elif name == "inspect_assets":
@@ -1056,16 +1073,130 @@ def _tool_context_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def _short_text(value: Any, limit: int = 240) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[:limit]
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _fallback_clarification() -> str:
+    return "Ilerleyebilmem icin bir detay daha lazim."
+
+
+def _assistant_history_message(message: dict[str, Any]) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {
+        "role": "assistant",
+        "content": str(message.get("content") or "").strip(),
+    }
+    name = str(message.get("name") or "").strip()
+    if name:
+        sanitized["name"] = name
+    tool_calls = message.get("tool_calls") if isinstance(message.get("tool_calls"), list) else []
+    if tool_calls:
+        sanitized["tool_calls"] = tool_calls
+    return sanitized
+
+
+def _loop_text_signature(content: str, thinking: str) -> str:
+    raw = f"{content} {thinking}".strip().lower()
+    raw = re.sub(r"\s+", " ", raw).strip()
+    raw = re.sub(r"[^\w\s]+", "", raw)
+    return raw
+
+
+def _record_agent_memory(*, step: int, tool_name: str | None = None, result: dict[str, Any] | None = None, answer: str | None = None) -> None:
+    recent = list(AGENT_STATE.get("recent_actions") or [])
+    if tool_name:
+        tool_result = result or {}
+        summary = _short_text(_tool_status(tool_name, tool_result), 220)
+        recent.append(
+            {
+                "step": step,
+                "kind": "tool",
+                "tool": tool_name,
+                "summary": summary,
+                "ok": bool(tool_result.get("ok", True)),
+            }
+        )
+        AGENT_STATE["last_tool"] = tool_name
+        AGENT_STATE["last_tool_summary"] = summary
+        AGENT_STATE["last_error"] = "" if bool(tool_result.get("ok", True)) else _short_text(tool_result.get("error") or summary, 240)
+        if tool_name == "get_dockup_state":
+            AGENT_STATE["workflow_stage"] = "state_read"
+        elif tool_name == "fetch_assets":
+            AGENT_STATE["workflow_stage"] = "assets_loaded"
+        elif tool_name in {"inspect_assets", "show_in_viewer", "show_residues"}:
+            AGENT_STATE["workflow_stage"] = "inspection"
+        elif tool_name == "select_workspace":
+            AGENT_STATE["workflow_stage"] = "workspace_selected"
+        elif tool_name == "set_gridbox":
+            AGENT_STATE["workflow_stage"] = "grid_ready"
+        elif tool_name == "set_docking_config":
+            AGENT_STATE["workflow_stage"] = "configured"
+        elif tool_name in {"build_or_run_queue", "build_queue"}:
+            AGENT_STATE["workflow_stage"] = "queued"
+        elif tool_name == "run_queue":
+            AGENT_STATE["workflow_stage"] = "running" if tool_result.get("started") else "queued"
+        if not bool(tool_result.get("ok", True)):
+            AGENT_STATE["workflow_stage"] = "error"
+    elif answer is not None:
+        summary = _short_text(answer, 220)
+        if summary:
+            recent.append(
+                {
+                    "step": step,
+                    "kind": "assistant",
+                    "tool": "",
+                    "summary": summary,
+                    "ok": True,
+                }
+            )
+            AGENT_STATE["last_answer"] = _short_text(answer, 240)
+
+    recent = recent[-6:]
+    AGENT_STATE["recent_actions"] = recent
+    AGENT_STATE["memory_summary"] = " | ".join(
+        f"{str(item.get('tool') or item.get('kind') or '').strip()}: {str(item.get('summary') or '').strip()}" for item in recent[-4:]
+    ).strip(" |")
+
+
 def _reset_docking_tool_state() -> None:
-    AGENT_STATE.update({"inventory": {}, "setup_rows": [], "grid_data": {}, "batch_config": {}, "batch_id": ""})
+    AGENT_STATE.update(
+        {
+            "inventory": {},
+            "setup_rows": [],
+            "grid_data": {},
+            "batch_config": {},
+            "batch_id": "",
+            "recent_actions": [],
+            "memory_summary": "",
+            "last_tool": "",
+            "last_tool_summary": "",
+            "last_answer": "",
+            "last_error": "",
+            "workflow_stage": "idle",
+            "attempt_ledger": [],
+        }
+    )
 
 
-def _execute_named_tool(name: str, args: dict[str, Any], *, test_mode: bool) -> dict[str, Any]:
+def _execute_named_tool(
+    name: str,
+    args: dict[str, Any],
+    *,
+    test_mode: bool,
+    progress_callback=None,
+) -> dict[str, Any]:
     clean_args = dict(args or {})
     if name == "run_queue":
         clean_args.setdefault("test_mode", test_mode)
     if name == "build_queue":
         clean_args.setdefault("replace_queue", True)
+    if name in {"set_gridbox", "build_or_run_queue", "run_queue"} and progress_callback is not None:
+        clean_args.setdefault("progress_callback", progress_callback)
     func = DOCKING_FUNCTIONS.get(name)
     if not func:
         return {"ok": False, "error": f"Unknown DockUP tool: {name}"}
@@ -1076,6 +1207,24 @@ def _execute_named_tool(name: str, args: dict[str, Any], *, test_mode: bool) -> 
     if isinstance(result, dict):
         return result
     return {"ok": True, "result": result}
+
+
+def _execute_named_tool_streaming(
+    name: str,
+    args: dict[str, Any],
+    *,
+    test_mode: bool,
+    progress_callback=None,
+) -> dict[str, Any]:
+    tool_kwargs: dict[str, Any] = {"test_mode": test_mode}
+    if progress_callback is not None and name in {"set_gridbox", "build_or_run_queue", "run_queue"}:
+        tool_kwargs["progress_callback"] = progress_callback
+    try:
+        return _execute_named_tool(name, args, **tool_kwargs)
+    except TypeError as exc:
+        if progress_callback is not None and "progress_callback" in str(exc):
+            return _execute_named_tool(name, args, test_mode=test_mode)
+        raise
 
 
 def _chat_agent_step(
@@ -1231,6 +1380,10 @@ def _run_single_agent_tool_loop(
     thinking_streamed = False
     repeated_calls: dict[str, int] = {}
     repeated_failures: set[str] = set()
+    last_content_signature = ""
+    repeated_content_count = 0
+    last_thinking_signature = ""
+    repeated_thinking_count = 0
     for step in range(max_steps):
         try:
             data = _chat_agent_step(request, messages, progress_callback=progress_callback)
@@ -1243,13 +1396,48 @@ def _run_single_agent_tool_loop(
             last_thinking += thinking
             if progress_callback:
                 thinking_streamed = True
-        trace.append({"step": step + 1, "assistant": message})
-        messages.append(message)
-        if not calls:
+        assistant_message = _assistant_history_message(message)
+        trace.append({"step": step + 1, "assistant": assistant_message})
+        messages.append(assistant_message)
+        content_signature = _loop_text_signature(content, "")
+        thinking_signature = _loop_text_signature("", thinking)
+        if content_signature:
+            if content_signature == last_content_signature:
+                repeated_content_count += 1
+            else:
+                last_content_signature = content_signature
+                repeated_content_count = 1
+        else:
+            last_content_signature = ""
+            repeated_content_count = 0
+        if thinking_signature:
+            if thinking_signature == last_thinking_signature:
+                repeated_thinking_count += 1
+            else:
+                last_thinking_signature = thinking_signature
+                repeated_thinking_count = 1
+        else:
+            last_thinking_signature = ""
+            repeated_thinking_count = 0
+        if repeated_content_count >= 3 or repeated_thinking_count >= 3:
+            final_answer = content or _tool_loop_answer({"trace": trace}) or _fallback_clarification()
+            _record_agent_memory(step=step + 1, answer=final_answer)
             return {
                 "ok": True,
-                "answer": content,
-                "answer_streamed": bool(progress_callback and content),
+                "answer": final_answer,
+                "thinking": last_thinking,
+                "thinking_streamed": thinking_streamed,
+                "trace": trace,
+                "agent_state": dict(AGENT_STATE),
+                "stopped_reason": "repeated_text",
+            }
+        if not calls:
+            final_answer = content or _fallback_clarification()
+            _record_agent_memory(step=step + 1, answer=final_answer)
+            return {
+                "ok": True,
+                "answer": final_answer,
+                "answer_streamed": bool(progress_callback and final_answer),
                 "thinking": last_thinking,
                 "thinking_streamed": thinking_streamed,
                 "trace": trace,
@@ -1261,7 +1449,7 @@ def _run_single_agent_tool_loop(
             args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
             call_key = f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)}"
             repeated_calls[call_key] = repeated_calls.get(call_key, 0) + 1
-            if repeated_calls[call_key] > 2 or call_key in repeated_failures:
+            if repeated_calls[call_key] > 2:
                 return {
                     "ok": True,
                     "answer": _tool_loop_answer({"trace": trace}),
@@ -1273,8 +1461,31 @@ def _run_single_agent_tool_loop(
                 }
             if progress_callback:
                 progress_callback({"type": "tool_call", "tool": name, "arguments": args, "prompt": _tool_call_label(name, args)})
-            result = _execute_named_tool(name, args, test_mode=test_mode)
+            before_context = docking_state_context()
+            if was_failed_attempt(AGENT_STATE, name, args):
+                result = {
+                    "ok": False,
+                    "error": "This failed attempt was already tried. Choose meaningfully different arguments or ask the user.",
+                    "summary": f"{name} skipped: repeated failed attempt.",
+                    "allowed_next_tools": ["get_dockup_state", "read_tool_details"],
+                }
+            else:
+                result = _execute_named_tool_streaming(name, args, test_mode=test_mode, progress_callback=progress_callback)
+            after_context = docking_state_context()
+            verification = verify_tool_effect(name, result, before_context, after_context)
+            if isinstance(result, dict):
+                result["verification"] = verification
             trace.append({"tool": name, "arguments": args, "result": result})
+            _record_agent_memory(step=step + 1, tool_name=name, result=result)
+            record_attempt(
+                AGENT_STATE,
+                step=step + 1,
+                tool_name=name,
+                arguments=args,
+                result=result,
+                verification=verification,
+                summary=_tool_status(name, result),
+            )
             if not result.get("ok", True):
                 repeated_failures.add(call_key)
             if progress_callback:

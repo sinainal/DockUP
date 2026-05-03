@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .autonomous_docking import AGENT_STATE
 from ..helpers import normalize_docking_config
 from ..state import RUN_STATE, STATE
 
@@ -54,8 +55,54 @@ def docking_state_context() -> dict[str, Any]:
         run_count = max(1, int(run_source or 1))
     except (TypeError, ValueError):
         run_count = 1
+
+    recent_actions_raw = list(AGENT_STATE.get("recent_actions") or [])
+    recent_actions: list[dict[str, Any]] = []
+    for row in recent_actions_raw[-4:]:
+        if not isinstance(row, dict):
+            continue
+        recent_actions.append(
+            {
+                "step": row.get("step"),
+                "kind": str(row.get("kind") or "").strip(),
+                "tool": str(row.get("tool") or "").strip(),
+                "summary": str(row.get("summary") or "").strip(),
+                "ok": bool(row.get("ok", True)),
+            }
+        )
+
+    workflow_stage = str(AGENT_STATE.get("workflow_stage") or "").strip()
+    if not workflow_stage:
+        if str(RUN_STATE.get("status") or "").strip() not in {"", "idle"}:
+            workflow_stage = "running"
+        elif AGENT_STATE.get("batch_id"):
+            workflow_stage = "queued"
+        elif AGENT_STATE.get("batch_config"):
+            workflow_stage = "batch_configured"
+        elif AGENT_STATE.get("grid_data"):
+            workflow_stage = "grid_ready"
+        elif AGENT_STATE.get("setup_rows"):
+            workflow_stage = "workspace_selected"
+        elif AGENT_STATE.get("inventory"):
+            workflow_stage = "assets_loaded"
+        else:
+            workflow_stage = "idle"
+
+    active_preview = ", ".join(str(name) for name in list(STATE.get("active_ligands") or [])[:3] if str(name or "").strip()) or "-"
+    state_summary = (
+        f"stage={workflow_stage}; "
+        f"receptor={str(STATE.get('selected_receptor') or '-').strip() or '-'}; "
+        f"chain={str(STATE.get('selected_chain') or 'all').strip() or 'all'}; "
+        f"ligand={str(STATE.get('selected_ligand') or '-').strip() or '-'}; "
+        f"active_ligands={len(list(STATE.get('active_ligands') or []))}[{active_preview}]; "
+        f"queue={len(queue)}; "
+        f"run={str(RUN_STATE.get('status') or 'idle').strip() or 'idle'}"
+    )
+
     return {
         "mode": STATE.get("mode", "Docking"),
+        "workflow_stage": workflow_stage,
+        "state_summary": state_summary,
         "selected_receptor": STATE.get("selected_receptor", ""),
         "selected_chain": STATE.get("selected_chain", "all"),
         "selected_ligand": STATE.get("selected_ligand", ""),
@@ -68,27 +115,19 @@ def docking_state_context() -> dict[str, Any]:
         "run_status": RUN_STATE.get("status", "idle"),
         "run_out_root": RUN_STATE.get("out_root", ""),
         "docking_config": docking_config,
+        "agent_memory": {
+            "workflow_stage": workflow_stage,
+            "last_tool": str(AGENT_STATE.get("last_tool") or "").strip(),
+            "last_tool_summary": str(AGENT_STATE.get("last_tool_summary") or "").strip(),
+            "last_answer": str(AGENT_STATE.get("last_answer") or "").strip(),
+            "last_error": str(AGENT_STATE.get("last_error") or "").strip(),
+            "memory_summary": str(AGENT_STATE.get("memory_summary") or "").strip(),
+            "recent_actions": recent_actions,
+        },
     }
 
 
 def state_system_prompt() -> str:
-    return (
-        "You are DockUP Local AI, an autonomous DockUP operation agent inside DockUP. "
-        "Your job is to understand the user's intent and either answer directly or operate the real DockUP workflow through function tools. "
-        "Use the available tools directly: get_dockup_state, fetch_assets, inspect_assets, show_in_viewer, show_residues, select_workspace, set_gridbox, set_docking_config, build_or_run_queue, delete_ligands, delete_receptors, delete_queue_batches, read_tool_details. "
-        "Use tools only when they are needed to read or change DockUP state. For ordinary questions, answer normally. For asset-only requests, use asset tools and stop after the relevant result. For true docking requests, proceed through state/assets, inspection, workspace selection, gridbox creation, docking config, validation, queue build, and optional run. "
-        "Prefer one tool call at a time and let each returned state determine the next tool. Do not claim progress in prose before the matching tool has returned. "
-        "Normal tool results are compact; use read_tool_details only when you need detailed instructions for settings, ligand ranges, counts, tools, or workflow. "
-        "Preserve user-provided receptor, ligand, file, and setting names unless the user explicitly asks for a transformation or alternative. If a tool cannot fetch or resolve an item, report the returned failure clearly and ask for or suggest an explicit next input instead of silently substituting another molecule. "
-        "fetch_assets accepts semicolon-separated ligand specs and supports explicit ligand count forms like name[1,3,4] when the user requests generated forms. "
-        "Keep user intent separate from queue rows: job_count/queue_job_count means receptor-ligand combinations, run_count means repeated runs per job, and total_runs means job_count multiplied by run_count. "
-        "Never infer run_count from phrases like total dockings, combinations, jobs, or 3x2=6; only set run_count when the user explicitly asks for repeated runs per job. "
-        "For ordinary multi-receptor or multi-ligand docking, select_workspace should keep dock_ligands='all' unless the user explicitly restricts the ligand set; DockUP expands this to every active ligand file during queue validation. "
-        "Gridboxes should be derived from receptor evidence. After inspect_assets, choose chain='auto' and native_ligand='auto' unless the user named a specific chain/native ligand; then call set_gridbox with method='native_ligand' or 'current_selection' and one cubic size value. Let the backend compute the ligand centroid; do not invent x/y/z coordinates unless the user explicitly gives a manual center. "
-        "For docking queue creation, call set_docking_config before build_or_run_queue, even when using defaults. Defaults are engine=vina_gpu_21, mode=standard, run_count=1, padding=0, ligand_binding_mode=single, and test/log mode unless the user explicitly requests a full run. "
-        "Manage docking settings through set_docking_config when requested: engine, standard/flexible mode, PDB2PQR pH, Vina exhaustiveness, num modes, energy range, CPU, seed, padding, run_count, output folder, and advanced key=value settings. "
-        "When the user explicitly asks to delete data, use the delete tools directly: target='all' or batch_id='all' for everything, otherwise pass the exact ligand filenames/names, receptor PDB IDs, or batch IDs the user named. "
-        "You do not have general shell, web browsing, or arbitrary file-editing tools in this chat UI; only the DockUP docking workflow tools are exposed. "
-        "If required receptor or ligand values are missing, ask a short clarification instead of guessing. "
-        "After build_or_run_queue returns, summarize receptors, ligands, job_count, run_count, total_runs, batch id, gridboxes, and whether the run was test/log or full."
-    )
+    from .agent_runtime import AGENT_SYSTEM_PROMPT
+
+    return AGENT_SYSTEM_PROMPT

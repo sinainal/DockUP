@@ -1739,6 +1739,7 @@ function dockupAgentProgressLabel(entry) {
     show_residues: "Residues",
     select_workspace: "Workspace",
     set_gridbox: "Gridbox",
+    p2rank: "P2Rank",
     set_docking_config: "Config",
     build_or_run_queue: "Queue",
     delete_ligands: "Delete Ligands",
@@ -1772,6 +1773,7 @@ function dockupAgentProgressStageLabel(entry) {
     show_residues: "Residues",
     select_workspace: "Select",
     set_gridbox: "Gridbox",
+    p2rank: "P2Rank",
     set_docking_config: "Config",
     build_or_run_queue: "Queue",
     delete_ligands: "Delete Ligands",
@@ -1794,6 +1796,7 @@ function dockupAgentToolIcon(entry) {
     show_residues: "⋯",
     select_workspace: "⌖",
     set_gridbox: "□",
+    p2rank: "◌",
     set_docking_config: "⚙",
     build_or_run_queue: "▶",
     delete_ligands: "×",
@@ -1920,6 +1923,28 @@ function appendDockupAssistantProgress(entry, { render = true } = {}) {
   if (render && !appendDockupProgressDom(nextEntry)) renderDockupAgentMessages();
 }
 
+async function refreshRunPanelFromBackend({ startPolling = false } = {}) {
+  const data = await fetchJSON("/api/run/status");
+  const nextStatus = data.status || "idle";
+  appState.runStatus = nextStatus;
+  appState.activeRunOutRoot = String(data.out_root || extractOutRootFromCommand(data.command || "") || appState.activeRunOutRoot || "").trim();
+  await syncLatestDockingRootSelection({ forceSelection: isRunActiveStatus(nextStatus), refreshVisible: false });
+  appState.runElapsedSeconds = Number(data.elapsed_seconds || 0);
+  if (els.runLog) els.runLog.textContent = data.log || "";
+  setRunStatus(nextStatus);
+  updateRunMetrics({
+    command: data.command || "",
+    totalRuns: data.total_runs || 0,
+    completedRuns: data.completed_runs || 0,
+    elapsedSeconds: data.elapsed_seconds || 0,
+    status: nextStatus,
+  });
+  if (startPolling && isRunActiveStatus(nextStatus)) {
+    pollRunStatus();
+    refreshRecentDockings().catch((err) => console.error("Recent docking refresh failed:", err));
+  }
+}
+
 async function refreshDockupAgentWorkflowState(stage = "", result = {}) {
   const normalized = String(stage || "").trim();
   try {
@@ -1962,6 +1987,11 @@ async function refreshDockupAgentWorkflowState(stage = "", result = {}) {
       if (selection && window.DockUPGridSelectionSearchBridge?.setResidueSelection) {
         window.DockUPGridSelectionSearchBridge.setResidueSelection(selection, { refreshUI: true, reason: "agent" });
       }
+    }
+    const runResult = result?.run && typeof result.run === "object" ? result.run : {};
+    const agentStartedRun = normalized === "run_queue" || (normalized === "build_or_run_queue" && !!runResult.started);
+    if (agentStartedRun) {
+      await refreshRunPanelFromBackend({ startPolling: true });
     }
   } catch (err) {
     console.warn("DockUP agent live refresh failed:", err);

@@ -65,9 +65,19 @@ def _patch_direct_tool_sequence(monkeypatch, ollama_agent, tool_calls: list[tupl
 
     monkeypatch.setattr(ollama_agent, "stream_chat", fake_stream_chat)
 
-    def fake_execute(name, args, *, test_mode):
+    def fake_execute(name, args, *, test_mode, progress_callback=None):
         executed.append((name, args, test_mode))
         if name == "build_or_run_queue":
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "type": "status",
+                        "stage": "build_or_run_queue",
+                        "delta": f"Queue built; starting real run for batch {batch_id}..." if args.get("action") in {"run_full", "full", "run", "start", "start_run", "real", "real_run", "start_full", "full_run", "production"} else f"Queue action {args.get('action', 'build_test')} ready.",
+                    }
+                )
+                if args.get("action") in {"run_full", "full", "run", "start", "start_run", "real", "real_run", "start_full", "full_run", "production"}:
+                    progress_callback({"type": "status", "stage": "run_queue", "delta": f"Run started for batch {batch_id}."})
             return {
                 "ok": True,
                 "summary": f"Queue action {args.get('action', 'build_test')}: {job_count} job(s), batch {batch_id}",
@@ -120,10 +130,32 @@ def test_ollama_status_lists_models_as_cards_payload(monkeypatch, tmp_path) -> N
 def test_state_system_prompt_advertises_autonomous_docking_tools() -> None:
     prompt = state_system_prompt()
 
-    assert "autonomous dockup operation agent" in prompt.lower()
+    assert "dockup local ai" in prompt.lower()
+    assert "autonomous scientific docking agent" in prompt.lower()
     assert "tool calling is unavailable" not in prompt.lower()
     assert "you cannot run tools" not in prompt.lower()
-    assert "never infer run_count" in prompt.lower()
+    assert "do not repeat the same failed attempt" in prompt.lower()
+    assert len(prompt) < 900
+
+
+def test_chat_request_uses_compact_working_memory(monkeypatch, tmp_path) -> None:
+    from docking_app.extensions import ollama_agent
+
+    monkeypatch.setattr(ollama_agent, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(ollama_agent, "ROOT_DIR", tmp_path)
+    (tmp_path / "state.json").write_text(
+        '{"base_url":"http://localhost:11434","model":"qwen36-merged:latest","connected":true,"last_error":""}',
+        encoding="utf-8",
+    )
+
+    request = ollama_agent._build_chat_request({"message": "6CM4 aspirin docking başlat"})
+    system_memory = request["messages"][1]["content"]
+
+    assert "DockUP working memory:" in system_memory
+    assert "Goal:" in system_memory
+    assert "Current state:" in system_memory
+    assert "Recent attempts:" in system_memory
+    assert "Current DockUP state JSON" not in system_memory
 
 
 def test_agent_state_context_includes_compact_queue_batch_configs() -> None:
@@ -206,6 +238,47 @@ def test_agent_state_context_includes_compact_queue_batch_configs() -> None:
         STATE["runs"] = previous_runs
 
 
+def test_agent_state_context_includes_compact_agent_memory() -> None:
+    from docking_app.agent.autonomous_docking import AGENT_STATE
+
+    previous_memory = {key: AGENT_STATE.get(key) for key in ("recent_actions", "memory_summary", "last_tool", "last_tool_summary", "last_answer", "last_error", "workflow_stage")}
+    try:
+        AGENT_STATE["workflow_stage"] = "grid_ready"
+        AGENT_STATE["last_tool"] = "set_gridbox"
+        AGENT_STATE["last_tool_summary"] = "Gridbox: 1 receptor(s)"
+        AGENT_STATE["last_answer"] = "Gridbox placed."
+        AGENT_STATE["last_error"] = ""
+        AGENT_STATE["memory_summary"] = "set_gridbox: Gridbox: 1 receptor(s)"
+        AGENT_STATE["recent_actions"] = [
+            {
+                "step": 2,
+                "kind": "tool",
+                "tool": "set_gridbox",
+                "summary": "Gridbox: 1 receptor(s)",
+                "ok": True,
+            }
+        ]
+
+        context = docking_state_context()
+
+        assert context["workflow_stage"] == "grid_ready"
+        assert "stage=grid_ready" in context["state_summary"]
+        assert context["agent_memory"]["workflow_stage"] == "grid_ready"
+        assert context["agent_memory"]["last_tool"] == "set_gridbox"
+        assert context["agent_memory"]["recent_actions"] == [
+            {
+                "step": 2,
+                "kind": "tool",
+                "tool": "set_gridbox",
+                "summary": "Gridbox: 1 receptor(s)",
+                "ok": True,
+            }
+        ]
+    finally:
+        for key, value in previous_memory.items():
+            AGENT_STATE[key] = value
+
+
 def test_ollama_chat_includes_state_context(monkeypatch, tmp_path) -> None:
     from docking_app.extensions import ollama_agent
 
@@ -235,7 +308,8 @@ def test_ollama_chat_includes_state_context(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     assert payload["ok"] is True
     assert "DockUP" in captured["kwargs"]["messages"][0]["content"]
-    assert "Current DockUP state JSON" in captured["kwargs"]["messages"][1]["content"]
+    assert "DockUP working memory" in captured["kwargs"]["messages"][1]["content"]
+    assert "Current DockUP state JSON" not in captured["kwargs"]["messages"][1]["content"]
     assert captured["kwargs"]["keep_alive"] == -1
     assert captured["kwargs"]["think"] is False
     assert captured["kwargs"]["options"]["num_ctx"] == 2048
@@ -244,6 +318,88 @@ def test_ollama_chat_includes_state_context(monkeypatch, tmp_path) -> None:
     assert captured["kwargs"]["options"]["num_predict"] == 4096
     assert payload["think_mode"] == "no_think"
     assert payload["thinking"] == "We should inspect the current run state."
+
+
+def test_ollama_chat_strips_thinking_from_followup_history(monkeypatch, tmp_path) -> None:
+    from docking_app.extensions import ollama_agent
+
+    captured = []
+    monkeypatch.setattr(ollama_agent, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(ollama_agent, "ROOT_DIR", tmp_path)
+    (tmp_path / "state.json").write_text(
+        '{"base_url":"http://localhost:11434","model":"qwen36-merged:latest","connected":true,"last_error":""}',
+        encoding="utf-8",
+    )
+
+    responses = iter(
+        [
+            {
+                "message": {
+                    "thinking": "Long internal trace that should stay out of history.",
+                    "content": "",
+                    "tool_calls": [{"function": {"name": "get_dockup_state", "arguments": {}}}],
+                }
+            },
+            {"message": {"content": "Done."}},
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        captured.append(kwargs["messages"])
+        return next(responses)
+
+    monkeypatch.setattr(ollama_agent, "chat", fake_chat)
+    monkeypatch.setattr(ollama_agent, "_execute_named_tool", lambda name, args, *, test_mode: {"ok": True, "summary": f"{name} ok"})
+
+    response = TestClient(create_app()).post(
+        "/api/extensions/ollama/chat",
+        json={"message": "state?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["ok"] is True
+    assert len(captured) == 2
+    assert "thinking" not in captured[1][3]
+    assert captured[1][3]["content"] == ""
+
+
+def test_ollama_chat_stops_on_repeated_text_loop(monkeypatch, tmp_path) -> None:
+    from docking_app.extensions import ollama_agent
+
+    executed = []
+    monkeypatch.setattr(ollama_agent, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(ollama_agent, "ROOT_DIR", tmp_path)
+    (tmp_path / "state.json").write_text(
+        '{"base_url":"http://localhost:11434","model":"qwen36-merged:latest","connected":true,"last_error":""}',
+        encoding="utf-8",
+    )
+
+    repeated_response = {
+        "message": {
+            "content": "I should inspect the current state.",
+            "tool_calls": [{"function": {"name": "get_dockup_state", "arguments": {}}}],
+        }
+    }
+    responses = iter([repeated_response, repeated_response, repeated_response])
+    monkeypatch.setattr(ollama_agent, "chat", lambda **_kwargs: next(responses))
+
+    def fake_execute(name, args, *, test_mode):
+        executed.append((name, args, test_mode))
+        return {"ok": True, "summary": f"{name} ok"}
+
+    monkeypatch.setattr(ollama_agent, "_execute_named_tool", fake_execute)
+
+    response = TestClient(create_app()).post(
+        "/api/extensions/ollama/chat",
+        json={"message": "state?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["ok"] is True
+    assert payload["raw"]["stopped_reason"] == "repeated_text"
+    assert len(executed) == 2
 
 
 def test_ollama_chat_routes_docking_action_to_direct_tools(monkeypatch, tmp_path) -> None:
@@ -452,6 +608,86 @@ def test_fetch_assets_supports_ligand_polymer_ranges(monkeypatch) -> None:
         STATE["active_ligands"] = previous_active
 
 
+def test_fetch_assets_surfaces_retry_hint_on_failure(monkeypatch) -> None:
+    from docking_app.agent import autonomous_docking
+    from docking_app.extensions import ollama_agent
+
+    previous_active = list(STATE.get("active_ligands") or [])
+    try:
+        STATE["active_ligands"] = []
+        monkeypatch.setattr(
+            autonomous_docking,
+            "_fetch_ligand_with_retries",
+            lambda name: ("", f"{name}: not found", [name, name.replace("_", " ")]),
+        )
+
+        result = autonomous_docking.fetch_assets(receptors="", ligands="Asprin")
+        compact = ollama_agent._tool_context_result("fetch_assets", result)
+
+        assert result["ok"] is False
+        assert "Retry once" in result["retry_hint"]
+        assert "retry once" in result["summary"].lower()
+        assert compact["retry_hint"] == result["retry_hint"]
+        assert "retry once" in compact["summary"].lower()
+    finally:
+        STATE["active_ligands"] = previous_active
+
+
+def test_agent_runtime_skips_repeated_failed_attempt(monkeypatch, tmp_path) -> None:
+    from docking_app.extensions import ollama_agent
+
+    executed: list[tuple[str, dict[str, object], bool]] = []
+    monkeypatch.setattr(ollama_agent, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(ollama_agent, "ROOT_DIR", tmp_path)
+    (tmp_path / "state.json").write_text(
+        '{"base_url":"http://localhost:11434","model":"qwen36-merged:latest","connected":true,"last_error":""}',
+        encoding="utf-8",
+    )
+    responses = iter(
+        [
+            {
+                "message": {
+                    "content": "",
+                    "tool_calls": [{"function": {"name": "fetch_assets", "arguments": {"receptors": "", "ligands": "asprin"}}}],
+                }
+            },
+            {
+                "message": {
+                    "content": "",
+                    "tool_calls": [{"function": {"name": "fetch_assets", "arguments": {"receptors": "", "ligands": "asprin"}}}],
+                }
+            },
+            {"message": {"content": "Hangi ligand adını denememi istersin?"}},
+        ]
+    )
+    monkeypatch.setattr(ollama_agent, "chat", lambda **_kwargs: next(responses))
+
+    def fake_execute(name, args, *, test_mode):
+        executed.append((name, args, test_mode))
+        return {
+            "ok": False,
+            "summary": "Loaded 0 receptor(s), saved 0 ligand file(s). Failed 0 receptor(s), 1 ligand(s).",
+            "error": "asprin: not found",
+            "failed_ligands": ["asprin: not found"],
+            "retry_attempts": ["asprin"],
+        }
+
+    monkeypatch.setattr(ollama_agent, "_execute_named_tool", fake_execute)
+
+    response = TestClient(create_app()).post(
+        "/api/extensions/ollama/chat",
+        json={"message": "asprin çek"},
+    )
+    payload = response.json()
+    fetch_rows = [row for row in payload["raw"]["trace"] if row.get("tool") == "fetch_assets"]
+
+    assert response.status_code == 200
+    assert payload["ok"] is True
+    assert len(executed) == 1
+    assert len(fetch_rows) == 2
+    assert fetch_rows[1]["result"]["summary"] == "fetch_assets skipped: repeated failed attempt."
+
+
 def test_show_residues_selects_viewer_and_returns_ngl_selection() -> None:
     from docking_app.agent import autonomous_docking
 
@@ -585,6 +821,43 @@ def test_ollama_stream_forwards_direct_tool_results(monkeypatch, tmp_path) -> No
     assert '"type":"status","delta":"fetch_assets ok","stage":"fetch_assets"' in body
     assert '"type":"answer","delta":"Done."' in body
     assert "Docking workflow completed through direct Ollama function calls" not in body
+
+
+def test_ollama_stream_surfaces_run_start_status(monkeypatch, tmp_path) -> None:
+    from docking_app.extensions import ollama_agent
+
+    monkeypatch.setattr(ollama_agent, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(ollama_agent, "ROOT_DIR", tmp_path)
+    (tmp_path / "state.json").write_text(
+        '{"base_url":"http://localhost:11434","model":"qwen36-merged:latest","connected":true,"last_error":""}',
+        encoding="utf-8",
+    )
+    _patch_direct_tool_sequence(
+        monkeypatch,
+        ollama_agent,
+        [
+            ("fetch_assets", {"receptors": "5MOZ", "ligands": "aspirin"}),
+            ("build_or_run_queue", {"action": "run_full"}),
+        ],
+        job_count=1,
+        total_runs=1,
+        batch_id="202",
+    )
+
+    body = _stream_body(
+        ollama_agent.stream_ask(
+            {
+                "model": "qwen36-merged:latest",
+                "message": "5moz ve aspirin için gerçek docking run başlat",
+            }
+        )
+    )
+
+    assert '"type":"tool_call","tool":"build_or_run_queue"' in body
+    assert '"type":"status"' in body
+    assert '"stage":"build_or_run_queue"' in body
+    assert '"stage":"run_queue"' in body
+    assert '"Run started for batch 202."' in body
 
 
 def test_ollama_stream_routes_confirmation_when_history_has_docking_action(monkeypatch, tmp_path) -> None:

@@ -15,17 +15,23 @@ from fastapi import HTTPException
 from ..config import DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR
 from ..helpers import normalize_docking_config, normalize_ligand_db_filename, resolve_dock_directory, to_display_path
 from ..manifest import materialize_queue_runs
+from ..pocket_finder import compute_gridbox_for_pocket, get_runtime_state, latest_output_dir, run_p2rank_async
 from ..services import _build_queue, _existing_files, _init_selection_map, _load_receptor_meta, _normalize_receptor_id
-from ..state import RUN_STATE, STATE, save_state_cache
+from ..state import RUN_STATE, STATE, _normalize_selection_map, save_state_cache
 
 
 SYSTEM_PROMPT = """You are DockUP Docking Agent.
-Understand the user's goal, answer normally when no DockUP state change is needed, and use the available DockUP tools when the user asks you to operate the workflow.
+Be concise, direct, and outcome-focused. Do not narrate internal reasoning.
 Use returned tool state as evidence. Preserve user-provided receptor, ligand, file, and setting names; if a required value is missing or a tool cannot resolve it, ask briefly instead of inventing data.
-For docking work, keep the workflow explicit: assets, inspection, workspace selection, gridbox from receptor evidence, docking configuration, queue build, and optional run.
+If the request is about state, queue, run status, or gridbox summary, inspect state first instead of guessing.
+For docking work, keep the workflow short and purposeful: use the minimal missing prerequisites, avoid repeating a satisfied stage, and move from assets to workspace to gridbox to configuration to queue/run only as needed.
 For multi-ligand work, keep dock_ligands as "all" unless the user restricts the ligand set; DockUP expands active ligand files during validation.
-For gridboxes, let backend tools compute centers from native ligand/current selection unless the user gives manual coordinates.
+For gridboxes, prefer the main native ligand first and ignore helper ions or solvent-like residues such as CL, NA, HOH, WAT, SO4, PO4, GOL, PEG, or EDO when a better native ligand exists.
+If no usable native ligand exists, switch to P2Rank/gridfinder mode and keep the user informed with a short live status message.
+If fetch_assets fails, retry once with the cleanest obvious alternative from retry_attempts or a corrected spelling; keep the successful assets and do not repeat the same failing name.
 Treat run_count as repeated runs per job, not receptor-ligand combinations or total dockings.
+For a full docking task, complete the missing prerequisites in a sensible order and do not repeat a satisfied step. Do not call build_or_run_queue before gridbox and docking config exist.
+Never return an empty answer. If you cannot act yet, ask a short clarifying question or state the missing input in one sentence.
 """
 
 AGENT_STATE: dict[str, Any] = {
@@ -36,7 +42,30 @@ AGENT_STATE: dict[str, Any] = {
     "batch_id": "",
 }
 
-COMMON_NATIVE_LIGANDS = {"HOH", "WAT", "GOL", "PEG", "CL", "NA", "IOD", "SO4", "PO4", "EDO"}
+COMMON_NATIVE_LIGANDS = {
+    "ACT",
+    "CA",
+    "CL",
+    "CO",
+    "CU",
+    "DOD",
+    "EDO",
+    "FE",
+    "FMT",
+    "GOL",
+    "HOH",
+    "IOD",
+    "K",
+    "MG",
+    "MN",
+    "NA",
+    "NI",
+    "PEG",
+    "PO4",
+    "SO4",
+    "WAT",
+    "ZN",
+}
 PDB_ID_RE = r"\b[0-9][A-Za-z0-9]{3}\b"
 LIGAND_WORDS_TO_DROP = {
     "a",
@@ -131,7 +160,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "make_gridboxes",
-            "description": "Compute grid centers from native ligands and box sizes from setup rows.",
+            "description": "Compute grid centers from main native ligands or P2Rank/gridfinder fallback using setup rows.",
             "parameters": {
                 "type": "object",
                 "required": ["rows"],
@@ -139,7 +168,10 @@ TOOLS: list[dict[str, Any]] = [
                     "rows": {
                         "type": "string",
                         "description": "Semicolon-separated rows: receptor,chain,native_ligand,box_size,dock_ligands",
-                    }
+                    },
+                    "method": {"type": "string", "description": "native_ligand, current_selection, p2rank, gridfinder, or auto."},
+                    "pocket_rank": {"type": "integer", "description": "Pocket rank to use when method falls back to P2Rank."},
+                    "p2rank_mode": {"type": "string", "description": "P2Rank box mode: fit or fixed."},
                 },
             },
         },
@@ -473,13 +505,7 @@ def _compact_inventory(inventory: dict[str, Any]) -> dict[str, Any]:
         compact_ligs: dict[str, list[str]] = {}
         for chain in chains[:4]:
             ligands = list(by_chain.get(chain) or [])
-            ranked = sorted(
-                ligands,
-                key=lambda item: (
-                    str(item).split()[0].upper() in COMMON_NATIVE_LIGANDS,
-                    str(item),
-                ),
-            )
+            ranked = sorted(ligands, key=lambda item: _native_ligand_sort_key(pdb_id, chain, item))
             compact_ligs[chain] = ranked[:4]
         compact["receptors"][pdb_id] = {"chains": chains[:4] or ["all"], "native_ligands": compact_ligs}
     return compact
@@ -492,12 +518,11 @@ def _suggest_setup_rows(inventory: dict[str, Any], box_size: float = 20.0) -> st
         by_chain = receptor.get("native_ligands") or {}
         best_chain = chains[0]
         best_ligand = ""
-        best_score = (True, "ZZZ")
+        best_score = (True, True, 0, True, "ZZZ", 0, "ZZZ")
         for chain in chains:
             ligands = list(by_chain.get(chain) or by_chain.get("all") or [])
             for ligand in ligands:
-                resname = str(ligand).split()[0].upper()
-                score = (resname in COMMON_NATIVE_LIGANDS, str(ligand))
+                score = _native_ligand_sort_key(pdb_id, chain, ligand)
                 if score < best_score:
                     best_score = score
                     best_chain = chain
@@ -665,18 +690,180 @@ def _ligand_centroid(pdb_id: str, chain: str, native_ligand: str) -> tuple[dict[
     }, ""
 
 
+def _native_ligand_resname(native_ligand: str) -> str:
+    return str(native_ligand or "").strip().split()[0].upper()
+
+
+def _is_helper_native_ligand(native_ligand: str) -> bool:
+    return _native_ligand_resname(native_ligand) in COMMON_NATIVE_LIGANDS
+
+
+def _ligand_atom_count(pdb_id: str, chain: str, native_ligand: str) -> int:
+    target_id = _normalize_receptor_id(pdb_id)
+    target_chain = str(chain or "all").strip()
+    if target_chain.lower() in {"", "all", "auto"}:
+        target_chain = "all"
+    target_lig = str(native_ligand or "").strip().upper()
+    target_resname = target_lig.split()[0] if target_lig else ""
+    target_resid = target_lig.split()[1] if len(target_lig.split()) > 1 else ""
+    pdb_text = _receptor_pdb_text(target_id)
+    count = 0
+    for line in pdb_text.splitlines():
+        if not line.startswith("HETATM"):
+            continue
+        resname = line[17:20].strip().upper()
+        line_chain = line[21].strip() or "_"
+        resid = line[22:26].strip()
+        if target_chain not in {"", "all"} and line_chain != target_chain:
+            continue
+        if target_resname and resname != target_resname:
+            continue
+        if target_resid and resid != target_resid:
+            continue
+        count += 1
+    return count
+
+
+def _native_ligand_sort_key(pdb_id: str, chain: str, native_ligand: str) -> tuple[Any, ...]:
+    normalized_chain = str(chain or "all").strip()
+    if normalized_chain.lower() in {"", "all", "auto"}:
+        normalized_chain = "all"
+    lig = str(native_ligand or "").strip()
+    resname = _native_ligand_resname(lig)
+    resid = lig.split()[1] if len(lig.split()) > 1 else ""
+    try:
+        resid_num: Any = int(resid)
+    except (TypeError, ValueError):
+        resid_num = resid or 0
+    atom_count = _ligand_atom_count(pdb_id, normalized_chain, lig)
+    return (
+        resname in COMMON_NATIVE_LIGANDS,
+        atom_count <= 0,
+        -atom_count,
+        len(resname) <= 2,
+        str(resname),
+        resid_num,
+        lig,
+    )
+
+
+def _receptor_file_for_meta(pdb_id: str) -> Path | None:
+    meta = _receptor_meta(pdb_id)
+    if not meta:
+        return None
+    pdb_file = str(meta.get("pdb_file") or "").strip()
+    if pdb_file:
+        candidate = Path(pdb_file).expanduser()
+        if candidate.exists():
+            return candidate.resolve()
+    fallback = RECEPTOR_DIR / f"{_normalize_receptor_id(pdb_id)}.pdb"
+    return fallback if fallback.exists() else None
+
+
+def _wait_for_p2rank_gridbox(
+    pdb_id: str,
+    chain: str,
+    *,
+    pocket_rank: int,
+    mode: str,
+    fixed_size: float,
+    padding: float,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    timeout_seconds: float = 120.0,
+) -> tuple[dict[str, float], list[str]]:
+    target_id = _normalize_receptor_id(pdb_id)
+    target_chain = str(chain or "all").strip() or "all"
+    receptor_file = _receptor_file_for_meta(target_id)
+    if not receptor_file:
+        raise RuntimeError(f"{target_id}: receptor file missing for P2Rank gridbox.")
+
+    cached_output = latest_output_dir(target_id, target_chain)
+    pocket_index = max(1, int(pocket_rank or 1))
+    if cached_output and cached_output.exists():
+        grid = compute_gridbox_for_pocket(
+            cached_output,
+            pocket_rank=pocket_index,
+            mode=mode,
+            fixed_size=fixed_size,
+            padding=padding,
+        )
+        _emit_progress(
+            progress_callback,
+            type="status",
+            stage="p2rank",
+            delta=f"P2Rank pocket grid ready for {target_id} ({target_chain}).",
+        )
+        return grid, [f"{target_id}: reused cached P2Rank pocket"]
+
+    _emit_progress(
+        progress_callback,
+        type="status",
+        stage="p2rank",
+        delta=f"Running P2Rank for {target_id} ({target_chain})...",
+    )
+    try:
+        run_p2rank_async(target_id, receptor_file, chain=target_chain)
+    except RuntimeError:
+        # Another prediction for the same receptor/chain can already be running.
+        pass
+    except FileNotFoundError:
+        raise
+
+    deadline = time.time() + max(10.0, float(timeout_seconds or 120.0))
+    last_message = ""
+    while time.time() < deadline:
+        runtime = get_runtime_state()
+        status = str(runtime.get("status") or "").strip().lower()
+        message = str(runtime.get("message") or "").strip()
+        error = str(runtime.get("error") or "").strip()
+        if message and message != last_message:
+            _emit_progress(progress_callback, type="status", stage="p2rank", delta=message)
+            last_message = message
+        if status == "done":
+            output_dir = latest_output_dir(target_id, target_chain)
+            if output_dir and output_dir.exists():
+                grid = compute_gridbox_for_pocket(
+                    output_dir,
+                    pocket_rank=pocket_index,
+                    mode=mode,
+                    fixed_size=fixed_size,
+                    padding=padding,
+                )
+                _emit_progress(
+                    progress_callback,
+                    type="status",
+                    stage="p2rank",
+                    delta=f"P2Rank pocket {pocket_index} ready for {target_id}.",
+                )
+                return grid, []
+        if status == "error":
+            raise RuntimeError(error or message or f"{target_id}: P2Rank failed")
+        time.sleep(0.4)
+    raise TimeoutError(f"{target_id}: P2Rank timed out after {int(timeout_seconds)}s")
+
+
 def _resolve_chain_native(pdb_id: str, chain: str, native: str) -> tuple[str, str]:
     inv = AGENT_STATE.get("inventory") or {}
     receptor = (inv.get("receptors") or {}).get(_normalize_receptor_id(pdb_id)) or {}
     by_chain = receptor.get("native_ligands") or {}
-    candidates = list(by_chain.get(chain) or []) or list(by_chain.get("all") or [])
+    requested_chain = str(chain or "all").strip() or "all"
+    if requested_chain.lower() not in {"", "all", "auto"}:
+        requested_chain = requested_chain.upper()
+    candidates = list(by_chain.get(requested_chain) or []) or list(by_chain.get("all") or [])
     if not candidates:
-        return str(chain or "all").strip() or "all", str(native or "").strip()
+        fallback_chain = requested_chain
+        if fallback_chain in {"", "all", "auto"}:
+            meta = _receptor_meta(_normalize_receptor_id(pdb_id)) or {}
+            meta_chains = [str(item).strip() for item in (meta.get("chains") or []) if str(item).strip().lower() not in {"", "all"}]
+            if not meta_chains:
+                meta_chains = [str(item).strip() for item in by_chain.keys() if str(item).strip().lower() not in {"", "all"}]
+            fallback_chain = meta_chains[0] if meta_chains else "all"
+        return (fallback_chain or "all").upper() if str(fallback_chain or "").strip().lower() not in {"all", ""} else (fallback_chain or "all"), str(native or "").strip()
     wanted = str(native or "").strip().upper()
     if not wanted or wanted in {"?", "UNKNOWN", "AUTO", "NATIVE"}:
-        chosen = candidates[0]
+        chosen = sorted(candidates, key=lambda item: _native_ligand_sort_key(pdb_id, requested_chain, item))[0]
     else:
-        chosen = candidates[0]
+        chosen = sorted(candidates, key=lambda item: _native_ligand_sort_key(pdb_id, requested_chain, item))[0]
         for item in candidates:
             if str(item).upper() == wanted or str(item).upper().startswith(wanted + " "):
                 chosen = str(item)
@@ -686,7 +873,7 @@ def _resolve_chain_native(pdb_id: str, chain: str, native: str) -> tuple[str, st
             continue
         if chosen in ligands:
             return str(chain_name), str(chosen)
-    return str(chain or "all").strip() or "all", str(chosen)
+    return requested_chain or "all", str(chosen)
 
 
 def plan_assets(receptors: str, ligands: str) -> dict[str, Any]:
@@ -783,19 +970,54 @@ def setup_docking(rows: Any) -> dict[str, Any]:
     return {"rows": cleaned}
 
 
-def make_gridboxes(rows: Any) -> dict[str, Any]:
+def make_gridboxes(
+    rows: Any,
+    method: str = "native_ligand",
+    pocket_rank: int = 1,
+    p2rank_mode: str = "fit",
+    fixed_size: float = 20.0,
+    padding: float = 0.0,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     setup_docking(rows)
     grid_data: dict[str, dict[str, float]] = {}
     warnings: list[str] = []
+    p2rank_used = False
+    method_norm = str(method or "native_ligand").strip().lower()
     for pdb_id, chain, native, box_size, _dock_ligands in AGENT_STATE.get("setup_rows", []):
-        center, error = _ligand_centroid(pdb_id, chain, native)
-        if error or center is None:
-            warnings.append(error)
+        use_p2rank = method_norm in {"auto", "p2rank", "gridfinder"}
+        center = None
+        error = ""
+        native_label = str(native or "").strip()
+        usable_native = bool(native_label) and not _is_helper_native_ligand(native_label)
+        if method_norm not in {"p2rank", "gridfinder"} and usable_native:
+            center, error = _ligand_centroid(pdb_id, chain, native)
+            if center is None or error:
+                warnings.append(error or f"{pdb_id}: native ligand not found")
+                use_p2rank = method_norm in {"auto", "native_ligand", "current_selection"}
+        elif method_norm in {"native_ligand", "current_selection", "auto"} and not usable_native:
+            warnings.append(f"{pdb_id}: no usable native ligand; using P2Rank/gridfinder")
+            use_p2rank = True
+        if center is not None and not use_p2rank:
+            size = max(1.0, float(box_size))
+            grid_data[pdb_id] = {**center, "sx": size, "sy": size, "sz": size}
             continue
-        size = max(1.0, float(box_size))
-        grid_data[pdb_id] = {**center, "sx": size, "sy": size, "sz": size}
+        try:
+            grid = _wait_for_p2rank_gridbox(
+                pdb_id,
+                chain,
+                pocket_rank=max(1, int(pocket_rank or 1)),
+                mode=p2rank_mode,
+                fixed_size=max(1.0, float(fixed_size or box_size or 20.0)),
+                padding=0.0,
+                progress_callback=progress_callback,
+            )[0]
+            grid_data[pdb_id] = grid
+            p2rank_used = True
+        except Exception as exc:
+            warnings.append(f"{pdb_id}: {exc}")
     _persist_agent_grid_data(grid_data)
-    return {"grid_data": grid_data, "warnings": warnings}
+    return {"grid_data": grid_data, "warnings": warnings, "p2rank_used": p2rank_used}
 
 
 def _selection_for_rows() -> dict[str, dict[str, Any]]:
@@ -803,13 +1025,15 @@ def _selection_for_rows() -> dict[str, dict[str, Any]]:
     session_ligands = [str(name) for name in ((AGENT_STATE.get("inventory") or {}).get("ligands") or [])]
     active_ligands = session_ligands or [str(name) for name in STATE.get("active_ligands", [])]
     for pdb_id, chain, _native, _box_size, dock_ligands in AGENT_STATE.get("setup_rows", []):
-        if str(dock_ligands).lower() == "all":
+        raw_dock = str(dock_ligands or "").strip().lower()
+        use_all_ligands = raw_dock in {"all", "*", "all_set", "dock_all", "all ligands", "all_ligands"}
+        if use_all_ligands:
             ligand_names = list(active_ligands)
         else:
             ligand_names = [item.strip() for item in str(dock_ligands).split(",") if item.strip()]
         selection[pdb_id] = {
             "chain": chain,
-            "ligand_resname": "all_set" if len(ligand_names) != 1 else ligand_names[0],
+            "ligand_resname": "all_set" if use_all_ligands or len(ligand_names) != 1 else ligand_names[0],
             "ligand_resnames": ligand_names,
             "flex_residues": [],
         }
@@ -933,7 +1157,10 @@ def build_queue(replace_queue: bool = False) -> dict[str, Any]:
     return {"ok": True, "batch_id": batch_id, "queue_count": len(STATE["queue"]), "new_jobs": len(batch_entries), **validation}
 
 
-def run_queue(test_mode: bool = True) -> dict[str, Any]:
+def run_queue(
+    test_mode: bool = True,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     batch_id = str(AGENT_STATE.get("batch_id") or "")
     rows = [row for row in STATE.get("queue", []) if str(row.get("batch_id")) == batch_id] if batch_id else list(STATE.get("queue", []))
     if not rows:
@@ -946,7 +1173,19 @@ def run_queue(test_mode: bool = True) -> dict[str, Any]:
     job_count = len(rows)
     out_root = str(rows[0].get("out_root") or STATE.get("out_root") or DOCK_DIR)
     planned = materialize_queue_runs(rows, out_root)
+    _emit_progress(
+        progress_callback,
+        type="status",
+        stage="run_queue",
+        delta=f"Queue ready for {'test/log' if test_mode else 'real'} run; batch {batch_id or '-'}.",
+    )
     if test_mode:
+        _emit_progress(
+            progress_callback,
+            type="status",
+            stage="run_queue",
+            delta=f"Planned {len(planned)} run(s); no heavy docking process was started.",
+        )
         return {
             "ok": True,
             "test_mode": True,
@@ -967,12 +1206,25 @@ def run_queue(test_mode: bool = True) -> dict[str, Any]:
                 selected_batch_id = int(batch_id)
             except (TypeError, ValueError):
                 selected_batch_id = None
+        _emit_progress(
+            progress_callback,
+            type="status",
+            stage="run_queue",
+            delta=f"Submitting real run for batch {selected_batch_id if selected_batch_id is not None else (batch_id or '-')}...",
+        )
         response = run_start(RunStartPayload(is_test_mode=False, batch_id=selected_batch_id))
         response_payload = json.loads(response.body.decode("utf-8"))
         if int(getattr(response, "status_code", 200) or 200) >= 400:
+            error_message = str(response_payload.get("error") or response_payload.get("detail") or "run_start failed")
+            _emit_progress(
+                progress_callback,
+                type="status",
+                stage="run_queue",
+                delta=f"Run start failed: {error_message}",
+            )
             return {
                 "ok": False,
-                "error": str(response_payload.get("error") or response_payload.get("detail") or "run_start failed"),
+                "error": error_message,
                 "response": response_payload,
                 "batch_id": batch_id,
                 "queue_jobs": job_count,
@@ -982,6 +1234,12 @@ def run_queue(test_mode: bool = True) -> dict[str, Any]:
                 "total_runs": len(planned),
                 "out_root": out_root,
             }
+        _emit_progress(
+            progress_callback,
+            type="status",
+            stage="run_queue",
+            delta=f"Run started for batch {selected_batch_id if selected_batch_id is not None else (batch_id or '-')}.",
+        )
         return {
             "ok": True,
             "test_mode": False,
@@ -996,8 +1254,20 @@ def run_queue(test_mode: bool = True) -> dict[str, Any]:
             "out_root": out_root,
         }
     except HTTPException as exc:
+        _emit_progress(
+            progress_callback,
+            type="status",
+            stage="run_queue",
+            delta=f"Run start failed: {exc.detail}",
+        )
         return {"ok": False, "error": str(exc.detail)}
     except Exception as exc:
+        _emit_progress(
+            progress_callback,
+            type="status",
+            stage="run_queue",
+            delta=f"Run start failed: {type(exc).__name__}: {exc}",
+        )
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
@@ -1045,11 +1315,14 @@ def fetch_assets(receptors: str = "", ligands: str = "") -> dict[str, Any]:
     save_state_cache()
     AGENT_STATE["inventory"] = _inventory_for(loaded_receptors or pdb_ids, saved_ligands or current)
     summary = f"Loaded {len(loaded_receptors)} receptor(s), saved {len(saved_ligands)} ligand file(s)."
+    retry_hint = ""
     if failed_receptors or failed_ligands:
-        summary += f" Failed {len(failed_receptors)} receptor(s), {len(failed_ligands)} ligand(s)."
+        retry_hint = "Retry once with the cleanest obvious alternative from retry_attempts or a corrected spelling, then keep the assets that already loaded."
+        summary += f" Failed {len(failed_receptors)} receptor(s), {len(failed_ligands)} ligand(s). {retry_hint}"
     return {
         "ok": not failed_receptors and not failed_ligands,
         "summary": summary,
+        "retry_hint": retry_hint,
         "loaded_receptors": loaded_receptors,
         "saved_ligands": saved_ligands,
         "failed_receptors": failed_receptors[:6],
@@ -1433,7 +1706,15 @@ def select_workspace(receptor: str = "all", chain: str = "auto", native_ligand: 
     }
 
 
-def set_gridbox(method: str = "native_ligand", size: float = 20.0, padding: float = 0.0, center: str = "") -> dict[str, Any]:
+def set_gridbox(
+    method: str = "native_ligand",
+    size: float = 20.0,
+    padding: float = 0.0,
+    center: str = "",
+    pocket_rank: int = 1,
+    p2rank_mode: str = "fit",
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     if not AGENT_STATE.get("setup_rows"):
         select_workspace("all", "auto", "auto", "all")
     method_norm = str(method or "native_ligand").strip().lower()
@@ -1452,7 +1733,15 @@ def set_gridbox(method: str = "native_ligand", size: float = 20.0, padding: floa
     else:
         rows = AGENT_STATE.get("setup_rows") or []
         rows_text = ";".join(",".join(str(part) for part in [row[0], row[1], row[2], size, row[4]]) for row in rows)
-        result = make_gridboxes(rows_text)
+        result = make_gridboxes(
+            rows_text,
+            method=method_norm,
+            pocket_rank=pocket_rank,
+            p2rank_mode=p2rank_mode,
+            fixed_size=size,
+            padding=padding,
+            progress_callback=progress_callback,
+        )
         grid_data = result.get("grid_data") or {}
         warnings = result.get("warnings") or []
     if padding:
@@ -1468,6 +1757,7 @@ def set_gridbox(method: str = "native_ligand", size: float = 20.0, padding: floa
         "ok": bool(grid_data),
         "summary": f"Gridbox ready for {len(grid_data)} receptor(s).",
         "grid_data": dict(grid_data),
+        "resolved_gridbox_mode": "p2rank" if (method_norm != "manual" and any("P2Rank" in str(w) or "p2rank" in str(w).lower() for w in warnings)) else method_norm,
         "gridboxes": {
             pdb_id: {
                 "center": [grid.get("cx"), grid.get("cy"), grid.get("cz")],
@@ -1475,6 +1765,7 @@ def set_gridbox(method: str = "native_ligand", size: float = 20.0, padding: floa
             }
             for pdb_id, grid in list(grid_data.items())[:8]
         },
+        "gridbox_mode": method_norm if method_norm != "manual" else "manual",
         "warnings": warnings[:6],
         "allowed_next_tools": ["set_docking_config", "set_gridbox", "read_tool_details"],
     }
@@ -1550,9 +1841,56 @@ def set_docking_config(
     }
 
 
-def build_or_run_queue(action: str = "build_test") -> dict[str, Any]:
+def _sync_batch_config_from_state() -> dict[str, Any]:
+    batch_config = AGENT_STATE.get("batch_config")
+    if isinstance(batch_config, dict) and batch_config:
+        return batch_config
+
+    docking_config = normalize_docking_config(STATE.get("docking_config") or {})
+    selection_map = _normalize_selection_map(STATE.get("selection_map") or {})
+    grid_source = STATE.get("agent_grid_data") if isinstance(STATE.get("agent_grid_data"), dict) else {}
+    grid_data = {str(key): value for key, value in dict(grid_source or {}).items() if str(key).strip()}
+    if not docking_config or not selection_map:
+        return {}
+
+    try:
+        run_count = max(1, int(STATE.get("runs") or 1))
+    except (TypeError, ValueError):
+        run_count = 1
+
+    try:
+        padding = float(STATE.get("grid_pad") or 0.0)
+    except (TypeError, ValueError):
+        padding = 0.0
+
+    batch_config = {
+        "schema": "dockup.config.v1",
+        "mode": str(STATE.get("mode") or "Docking"),
+        "run_count": run_count,
+        "padding": padding,
+        "out_root_path": str(STATE.get("out_root_path") or "data/dock"),
+        "out_root_name": str(STATE.get("out_root_name") or f"agent_{time.strftime('%Y%m%d_%H%M%S')}"),
+        "docking_config": docking_config,
+        "selection_map": selection_map,
+        "grid_data": grid_data,
+    }
+    AGENT_STATE["batch_config"] = batch_config
+    return batch_config
+
+
+def build_or_run_queue(
+    action: str = "build_test",
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     action_norm = str(action or "build_test").strip().lower()
-    if not AGENT_STATE.get("batch_config"):
+    _emit_progress(
+        progress_callback,
+        type="status",
+        stage="build_or_run_queue",
+        delta=f"Validating queue for {action_norm}...",
+    )
+    batch_config = _sync_batch_config_from_state()
+    if not batch_config:
         return {
             "ok": False,
             "summary": "Docking config is not set yet.",
@@ -1565,17 +1903,25 @@ def build_or_run_queue(action: str = "build_test") -> dict[str, Any]:
             "allowed_next_tools": ["set_docking_config", "select_workspace", "set_gridbox", "read_tool_details"],
         }
     elif isinstance(AGENT_STATE.get("batch_config"), dict):
-        AGENT_STATE["batch_config"]["grid_data"] = dict(AGENT_STATE.get("grid_data") or STATE.get("agent_grid_data") or {})
-        AGENT_STATE["batch_config"]["selection_map"] = _selection_for_rows()
+        if isinstance(AGENT_STATE.get("grid_data"), dict) and AGENT_STATE.get("grid_data"):
+            AGENT_STATE["batch_config"]["grid_data"] = dict(AGENT_STATE.get("grid_data") or {})
+        if AGENT_STATE.get("setup_rows"):
+            AGENT_STATE["batch_config"]["selection_map"] = _selection_for_rows()
     validation = validate_batch()
     if not validation.get("ok"):
         return {"ok": False, "summary": "Batch validation failed.", "validation": validation, "allowed_next_tools": ["select_workspace", "set_gridbox", "set_docking_config"]}
     queue_result = build_queue(replace_queue=True)
     run_result: dict[str, Any] = {}
     if action_norm in {"build_test", "test", "run_test", "test_run", "dry_run", "log", "plan"}:
-        run_result = run_queue(test_mode=True)
+        run_result = run_queue(test_mode=True, progress_callback=progress_callback) if progress_callback is not None else run_queue(test_mode=True)
     elif action_norm in {"run_full", "full", "run", "start", "start_run", "real", "real_run", "start_full", "full_run", "production"}:
-        run_result = run_queue(test_mode=False)
+        _emit_progress(
+            progress_callback,
+            type="status",
+            stage="build_or_run_queue",
+            delta=f"Queue built; starting real run for batch {queue_result.get('batch_id') or '-'}...",
+        )
+        run_result = run_queue(test_mode=False, progress_callback=progress_callback) if progress_callback is not None else run_queue(test_mode=False)
     elif action_norm not in {"build_only", "build"}:
         return {
             "ok": False,
@@ -1612,10 +1958,11 @@ def read_tool_details(topic: str = "workflow") -> dict[str, Any]:
     topic_norm = str(topic or "workflow").strip().lower()
     details = {
         "workflow": (
-            "Recommended order: get_dockup_state -> fetch_assets -> inspect_assets -> "
-            "select_workspace -> set_gridbox -> set_docking_config -> build_or_run_queue. "
+            "Recommended order is a guide, not a script: inspect state when needed, then use the minimal next tool. "
             "Use one tool at a time unless the next step is obvious from the previous tool result. "
-            "Do not invent loaded assets, chains, native ligands, gridboxes, queue rows, or run status."
+            "Do not invent loaded assets, chains, native ligands, gridboxes, queue rows, or run status. "
+            "If the receptor has a clear native ligand, use it for the grid center. If the best native ligand is missing or only helper ions are present, switch the gridbox tool to P2Rank/gridfinder mode. "
+            "If fetch_assets fails, keep the successful assets and retry once with the cleanest obvious alternative from retry_attempts before asking the user."
         ),
         "ligand_ranges": (
             "fetch_assets supports explicit ligand forms with name[count,count]. Example: ethylene[1,3,4] "
@@ -1627,7 +1974,7 @@ def read_tool_details(topic: str = "workflow") -> dict[str, Any]:
         "asset_resolution": (
             "fetch_assets(receptors, ligands) accepts comma-separated PDB IDs and semicolon-separated ligand specs. "
             "Receptors are normalized as PDB IDs. Ligands first resolve local .sdf files by exact/fuzzy name, then PubChem by CID/name. "
-            "Name retries include raw text, underscore/space/dash variants. Failed assets are returned compactly; call fetch_assets again with corrected names."
+            "Name retries include raw text, underscore/space/dash variants. Failed assets are returned compactly; keep successful assets and retry once with the cleanest corrected names from retry_attempts."
         ),
         "workspace": (
             "select_workspace(receptor, chain, native_ligand, dock_ligands) updates DockUP state and viewer-facing selection. "
@@ -1635,8 +1982,9 @@ def read_tool_details(topic: str = "workflow") -> dict[str, Any]:
             "dock_ligands='all' means all active ligand files; otherwise pass comma-separated saved SDF filenames."
         ),
         "gridbox": (
-            "set_gridbox(method, size, padding, center) supports method=native_ligand, current_selection, or manual. "
-            "For native_ligand/current_selection the backend computes coordinates from the selected native ligand; the model should not calculate coordinates. "
+            "set_gridbox(method, size, padding, center, pocket_rank, p2rank_mode) supports method=native_ligand, current_selection, p2rank, gridfinder, auto, or manual. "
+            "For native_ligand/current_selection the backend computes coordinates from the selected main native ligand; the model should not calculate coordinates. "
+            "If no usable native ligand exists, use p2rank/gridfinder and wait for the short P2Rank status message before continuing. "
             "For manual, center must be 'x,y,z'. size is the base cubic box size; padding adds to each dimension."
         ),
         "settings": (
@@ -1664,7 +2012,7 @@ def read_tool_details(topic: str = "workflow") -> dict[str, Any]:
         "tools": (
             "Tools: get_dockup_state(), fetch_assets(receptors, ligands), inspect_assets(), "
             "show_in_viewer(receptor, chain, native_ligand), show_residues(receptor, residue, chain), "
-            "select_workspace(receptor, chain, native_ligand, dock_ligands), set_gridbox(method, size, padding, center), "
+            "select_workspace(receptor, chain, native_ligand, dock_ligands), set_gridbox(method, size, padding, center, pocket_rank, p2rank_mode), "
             "set_docking_config(...), build_or_run_queue(action), delete_ligands(target), "
             "delete_receptors(target), delete_queue_batches(batch_id), read_tool_details(topic)."
         ),
@@ -1753,14 +2101,16 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "set_gridbox",
-            "description": "Set gridbox from native ligand/current selection or manual center. Backend computes coordinates.",
+            "description": "Set gridbox from the main native ligand, current selection, P2Rank/gridfinder fallback, or manual center. Backend computes coordinates. Use this before set_docking_config and build_or_run_queue when preparing a full docking task.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "method": {"type": "string", "description": "native_ligand, current_selection, or manual."},
+                    "method": {"type": "string", "description": "native_ligand, current_selection, p2rank, gridfinder, auto, or manual."},
                     "size": {"type": "number", "description": "Gridbox size in Angstrom, default 20."},
                     "padding": {"type": "number", "description": "Extra size padding, default 0."},
                     "center": {"type": "string", "description": "Manual x,y,z center only when method=manual."},
+                    "pocket_rank": {"type": "integer", "description": "Pocket rank when using P2Rank/gridfinder fallback."},
+                    "p2rank_mode": {"type": "string", "description": "P2Rank box mode: fit or fixed."},
                 },
             },
         },
@@ -1769,7 +2119,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "set_docking_config",
-            "description": "Set docking settings compactly. Use advanced only after read_tool_details('settings').",
+            "description": "Set docking settings compactly. Use advanced only after read_tool_details('settings'). Call this before build_or_run_queue when preparing a full docking task.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1793,7 +2143,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "build_or_run_queue",
-            "description": "Build queue only, build and test/log run, or full run.",
+            "description": "Build queue only, build and test/log run, or full run. Use action='build_test' for validation-only planning, and action='run_full' for a real docking start. Use only after gridbox and set_docking_config have already succeeded.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1888,128 +2238,4 @@ def run_agent(
     max_steps: int = 12,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    AGENT_STATE.update({"inventory": {}, "setup_rows": [], "grid_data": {}, "batch_config": {}, "batch_id": ""})
-    trace: list[dict[str, Any]] = []
-    planned = _assets_from_direct_prompt(prompt)
-    planned = plan_assets(planned["receptors"], planned["ligands"])
-    trace.append({"tool": "plan_assets", "arguments": {"prompt": prompt}, "result": planned})
-    _emit_progress(progress_callback, type="status", stage="plan_assets", delta=f"Planning assets: receptors={planned.get('receptors') or '-'} ligands={planned.get('ligands') or '-'}")
-    if not planned.get("receptors") or not planned.get("ligands"):
-        return {
-            "ok": False,
-            "error": "Could not parse receptor IDs and ligand names from the docking-agent prompt.",
-            "planned": planned,
-            "trace": trace,
-            "agent_state": dict(AGENT_STATE),
-    }
-
-    downloaded = download_assets(planned["receptors"], planned["ligands"])
-    trace.append({"tool": "download_assets", "arguments": planned, "result": downloaded})
-    _emit_progress(
-        progress_callback,
-        type="status",
-        stage="download_assets",
-        delta=(
-            "Receptors loaded: "
-            + (", ".join(downloaded.get("loaded_receptors") or []) or "-")
-            + " | Ligands saved: "
-            + (", ".join(downloaded.get("saved_ligands") or []) or "-")
-        ),
-    )
-    if downloaded.get("failed_receptors") or downloaded.get("failed_ligands"):
-        return {
-            "ok": False,
-            "error": "asset download failed",
-            "download": downloaded,
-            "trace": trace,
-            "agent_state": dict(AGENT_STATE),
-        }
-
-    inventory = downloaded.get("inventory") or AGENT_STATE.get("inventory") or {}
-    suggested_rows = _suggest_setup_rows(inventory, 20.0)
-    if not suggested_rows:
-        return {"ok": False, "error": "could not choose setup rows from receptor native ligands", "trace": trace, "agent_state": dict(AGENT_STATE)}
-    setup = setup_docking(suggested_rows)
-    trace.append({"tool": "submit_setup_rows", "arguments": {"rows": suggested_rows}, "result": setup})
-    _emit_progress(
-        progress_callback,
-        type="status",
-        stage="submit_setup_rows",
-        delta=f"Setup rows selected: {len(setup.get('rows') or [])} receptor(s)",
-    )
-
-    rows = setup.get("rows") or AGENT_STATE.get("setup_rows") or []
-    rows_text = ";".join(",".join(str(part) for part in row) for row in rows)
-    grid_result = make_gridboxes(rows_text)
-    trace.append({"tool": "make_gridboxes", "arguments": {"rows": rows_text}, "result": grid_result})
-    _emit_progress(
-        progress_callback,
-        type="status",
-        stage="make_gridboxes",
-        delta=f"Gridboxes computed for {len(grid_result.get('grid_data') or {})} receptor(s)",
-    )
-    if grid_result.get("warnings") and not grid_result.get("grid_data"):
-        return {"ok": False, "error": "gridbox creation failed", "gridboxes": grid_result, "trace": trace, "agent_state": dict(AGENT_STATE)}
-
-    batch_defaults = _batch_defaults_from_prompt(prompt)
-    batch = prepare_batch(**batch_defaults)
-    trace.append({"tool": "submit_batch_config", "arguments": batch_defaults, "result": batch})
-    _emit_progress(
-        progress_callback,
-        type="status",
-        stage="submit_batch_config",
-        delta=(
-            "Batch config set: "
-            + f"run_count={batch_defaults.get('run_count', 1)}, "
-            + f"padding={batch_defaults.get('padding', 0)}, "
-            + f"out_root_name={batch_defaults.get('out_root_name', '')}"
-        ),
-    )
-
-    validation_result = validate_batch()
-    trace.append({"tool": "validate_batch", "arguments": {}, "result": validation_result})
-    _emit_progress(
-        progress_callback,
-        type="status",
-        stage="validate_batch",
-        delta=(
-            "Validated batch: "
-            + f"{validation_result.get('job_count', 0)} job(s), "
-            + f"{validation_result.get('total_runs', 0)} total run(s)"
-        ),
-    )
-    if not validation_result.get("ok"):
-        return {"ok": False, "error": "batch validation failed", "validation": validation_result, "trace": trace, "agent_state": dict(AGENT_STATE)}
-
-    queue_result = build_queue(replace_queue=True)
-    trace.append({"tool": "build_queue", "arguments": {"replace_queue": True}, "result": queue_result})
-    _emit_progress(
-        progress_callback,
-        type="status",
-        stage="build_queue",
-        delta=(
-            "Queue built: "
-            + f"{queue_result.get('new_jobs', 0)} new job(s), "
-            + f"queue now {queue_result.get('queue_count', 0)} row(s)"
-        ),
-    )
-    if not queue_result.get("ok"):
-        return {"ok": False, "error": "queue build failed", "queue": queue_result, "trace": trace, "agent_state": dict(AGENT_STATE)}
-
-    run_result = run_queue(test_mode=test_mode)
-    trace.append({"tool": "run_queue", "arguments": {"test_mode": test_mode}, "result": run_result})
-    _emit_progress(
-        progress_callback,
-        type="status",
-        stage="run_queue",
-        delta="Running queue in test/log mode" if test_mode else "Starting real docking run",
-    )
-    return {
-        "ok": bool(run_result.get("ok")),
-        "done": True,
-        "trace": trace,
-        "result": run_result,
-        "validation": validation_result,
-        "queue": queue_result,
-        "agent_state": dict(AGENT_STATE),
-    }
+    raise RuntimeError("run_agent has been retired. Use the interactive DockUP agent loop instead.")

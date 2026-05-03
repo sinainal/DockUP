@@ -38,3 +38,16 @@ def test_queue_batch_editor_is_the_only_frontend_update_batch_flow() -> None:
 
     assert "update_batch_id" in body
     assert "queueBatchModalDraft.batchId" in body
+
+
+def test_agent_run_status_refresh_uses_active_run_panel_polling() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    refresh_body = _function_body(source, "refreshDockupAgentWorkflowState")
+    run_panel_body = _function_body(source, "refreshRunPanelFromBackend")
+
+    assert 'normalized === "run_queue"' in refresh_body
+    assert 'normalized === "build_or_run_queue" && !!runResult.started' in refresh_body
+    assert "refreshRunPanelFromBackend({ startPolling: true })" in refresh_body
+    assert 'fetchJSON("/api/run/status")' in run_panel_body
+    assert "updateRunMetrics" in run_panel_body
+    assert "pollRunStatus()" in run_panel_body
