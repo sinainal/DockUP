@@ -330,8 +330,10 @@ def _case_p2rank(result: dict[str, Any], events: list[dict[str, Any]], _bundle: 
     tools = _tools_used(result)
     if "set_gridbox" not in tools:
         return False, f"set_gridbox not used: {tools}"
-    if not any(str(event.get("stage")) == "p2rank" for event in events if isinstance(event, dict)):
-        return False, "missing p2rank status events"
+    grid_result = _last_trace_tool_result(result, "set_gridbox")
+    mode = str(grid_result.get("gridbox_mode") or grid_result.get("resolved_gridbox_mode") or "").lower()
+    if "p2rank" not in mode and not any(str(event.get("stage")) == "p2rank" for event in events if isinstance(event, dict)):
+        return False, "missing p2rank status events or p2rank gridbox result"
     return _case_ok_default(result, events, _bundle)
 
 
@@ -471,6 +473,79 @@ def _case_requires_build_only() -> Callable[[dict[str, Any], list[dict[str, Any]
         return _case_ok_default(result, _events, _bundle)
 
     return _check
+
+
+def _tool_call_count(result: dict[str, Any], tool_name: str) -> int:
+    return sum(1 for row in result.get("trace") or [] if isinstance(row, dict) and row.get("tool") == tool_name)
+
+
+def _case_requires_repeated_tools(**minimums: int) -> Callable[[dict[str, Any], list[dict[str, Any]], SeedBundle], tuple[bool, str]]:
+    def _check(result: dict[str, Any], events: list[dict[str, Any]], bundle: SeedBundle) -> tuple[bool, str]:
+        for tool_name, minimum in minimums.items():
+            count = _tool_call_count(result, tool_name)
+            if count < minimum:
+                return False, f"expected at least {minimum} {tool_name} call(s), saw {count}"
+        return _case_ok_default(result, events, bundle)
+
+    return _check
+
+
+def _case_requires_append_queue(result: dict[str, Any], events: list[dict[str, Any]], bundle: SeedBundle) -> tuple[bool, str]:
+    tools = _tools_used(result)
+    if "build_or_run_queue" not in tools:
+        return False, f"missing build_or_run_queue tool call: {tools}"
+    seen_append = False
+    seen_non_real = False
+    for row in result.get("trace") or []:
+        if not isinstance(row, dict) or row.get("tool") != "build_or_run_queue":
+            continue
+        tool_result = row.get("result")
+        if not isinstance(tool_result, dict):
+            continue
+        if tool_result.get("replace_queue") is False or (tool_result.get("queue") or {}).get("replace_queue") is False:
+            seen_append = True
+        run = tool_result.get("run")
+        if not isinstance(run, dict) or run.get("test_mode") is not False:
+            seen_non_real = True
+    if not seen_append:
+        return False, "expected at least one append queue build (replace_queue=false)"
+    if not seen_non_real:
+        return False, "expected build/test behavior without real docking"
+    return _case_ok_default(result, events, bundle)
+
+
+def _case_requires_no_real_run(result: dict[str, Any], events: list[dict[str, Any]], bundle: SeedBundle) -> tuple[bool, str]:
+    tools = _tools_used(result)
+    if "build_or_run_queue" not in tools:
+        return False, f"missing build_or_run_queue tool call: {tools}"
+    for row in result.get("trace") or []:
+        if not isinstance(row, dict) or row.get("tool") != "build_or_run_queue":
+            continue
+        tool_result = row.get("result")
+        run = tool_result.get("run", {}) if isinstance(tool_result, dict) else {}
+        if isinstance(run, dict) and run.get("test_mode") is False:
+            return False, "started or requested a real docking run despite test-only instruction"
+    return _case_ok_default(result, events, bundle)
+
+
+def _case_state_read_only(result: dict[str, Any], events: list[dict[str, Any]], bundle: SeedBundle) -> tuple[bool, str]:
+    tools = _tools_used(result)
+    if "get_dockup_state" not in tools:
+        return False, f"missing get_dockup_state tool call: {tools}"
+    mutating_tools = {
+        "fetch_assets",
+        "select_workspace",
+        "set_gridbox",
+        "set_docking_config",
+        "build_or_run_queue",
+        "delete_ligands",
+        "delete_receptors",
+        "delete_queue_batches",
+    }
+    used_mutating = [tool for tool in tools if tool in mutating_tools]
+    if used_mutating:
+        return False, f"state question should not mutate app state; used {used_mutating}"
+    return _case_ok_default(result, events, bundle)
 
 
 def _prepare_active_ligands(*ligand_labels: str) -> Callable[[SeedBundle], None]:
@@ -861,6 +936,87 @@ def build_hard30_cases() -> list[CaseSpec]:
                 prepare=_prepare_multi_target_bundle("MNA1", "P2R1", "RUN1"),
                 check=_multi_target_full_run,
                 notes="Üç hedefli tam run.",
+            ),
+        ]
+    )
+    return cases
+
+
+def build_agent_control_baseline_cases() -> list[CaseSpec]:
+    old_cases_by_id = {case.case_id: case for case in build_hard30_cases()}
+    selected_old_ids = [
+        "02_state_summary",
+        "03_main_native_gridbox",
+        "04_p2rank_fallback",
+        "06_build_test",
+        "07_delete_specific",
+    ]
+    cases = [old_cases_by_id[case_id] for case_id in selected_old_ids]
+
+    cases.extend(
+        [
+            CaseSpec(
+                case_id="cb_06_two_receptors_three_grid_batches",
+                prompt=(
+                    "MNA1 ve P2R1 receptorleri ile {ligand_a} ve {ligand_b} ligandlarını kullan. "
+                    "Üç ayrı test batch formatı kur: MNA1 native ligand grid size 18, "
+                    "MNA1 manual center 1,2,3 size 20, P2R1 P2Rank grid size 22. "
+                    "İkinci ve üçüncü batch'i append et; gerçek docking başlatma."
+                ),
+                think_mode="auto",
+                max_steps=18,
+                prepare=_prepare_multi_target_bundle("MNA1", "P2R1"),
+                check=_case_requires_append_queue,
+                notes="İki receptor, iki ligand, üç grid/batch ve append queue kontrolü.",
+            ),
+            CaseSpec(
+                case_id="cb_07_state_forensics_read_only",
+                prompt=(
+                    "Canlı state'i oku ve sadece şu alanları raporla: selected receptor, aktif ligand sayısı, "
+                    "queue count, run status ve gridbox var mı. State'i değiştirme."
+                ),
+                think_mode="auto",
+                max_steps=6,
+                check=_case_state_read_only,
+                notes="Kompleks state sorusu, read-only davranış.",
+            ),
+            CaseSpec(
+                case_id="cb_08_multi_config_append_build_only",
+                prompt=(
+                    "RUN1 ve {ligand_a} için aynı native gridbox ile iki farklı config denemesi hazırla: "
+                    "vina_gpu_21 exhaustiveness 8 ve vina_gpu_21 exhaustiveness 32. "
+                    "İkinci config batch'ini append et. Sadece build_only yap, gerçek run başlatma."
+                ),
+                think_mode="auto",
+                max_steps=16,
+                prepare=_prepare_multi_target_bundle("RUN1"),
+                check=_case_requires_append_queue,
+                notes="Aynı setup üstünde çoklu config ve append batch.",
+            ),
+            CaseSpec(
+                case_id="cb_09_native_plus_p2rank_mixed",
+                prompt=(
+                    "MNA1 için yardımcı iyonları atlayıp ana native ligand ile gridbox kur; P2R1 için native ligand "
+                    "olmadığından P2Rank/gridfinder ile gridbox kur. Sonra iki hedef için queue'yu sadece oluştur, "
+                    "çalıştırma."
+                ),
+                think_mode="auto",
+                max_steps=16,
+                prepare=_prepare_multi_target_bundle("MNA1", "P2R1"),
+                check=_case_requires_repeated_tools(select_workspace=1, set_gridbox=2, build_or_run_queue=1),
+                notes="Native ligand ve P2Rank fallback karışık akış.",
+            ),
+            CaseSpec(
+                case_id="cb_10_no_real_docking_guard",
+                prompt=(
+                    "RUN1 ve {ligand_a} için test amaçlı docking planını hazırla. Eksikleri tamamla, kuyruğu doğrula, "
+                    "planlanan job sayısını söyle; gerçek docking kesinlikle başlatma."
+                ),
+                think_mode="auto",
+                max_steps=12,
+                prepare=_prepare_multi_target_bundle("RUN1"),
+                check=_case_requires_no_real_run,
+                notes="Modelin test-only güvenlik sınırını koruması.",
             ),
         ]
     )

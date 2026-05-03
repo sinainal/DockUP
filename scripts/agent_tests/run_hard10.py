@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import inspect
 import json
 import sys
 import time
@@ -179,12 +180,12 @@ def run_suite(
                 raise RuntimeError("Resolved model is empty after building the request.")
 
             started = time.perf_counter()
-            result = ollama_agent._run_single_agent_tool_loop(
-                payload,
-                request,
-                progress_callback=events.append,
-                max_steps=case.max_steps,
-            )
+            loop_kwargs: dict[str, Any] = {"progress_callback": events.append}
+            if "max_steps" in inspect.signature(ollama_agent._run_single_agent_tool_loop).parameters:
+                loop_kwargs["max_steps"] = case.max_steps
+            if args.no_stream_events:
+                loop_kwargs["progress_callback"] = None
+            result = ollama_agent._run_single_agent_tool_loop(payload, request, **loop_kwargs)
             elapsed = round(time.perf_counter() - started, 3)
             ok, note = case.check(result, events, bundle) if case.check else (bool(result.get("ok", False)), "")
             record = _evaluation_record(ok, note, result, events)
@@ -253,6 +254,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", default="http://localhost:11434", help="Ollama base URL used for model probing.")
     parser.add_argument("--think-mode", default="auto", choices=["auto", "think", "no_think"], help="Think mode for the suite.")
     parser.add_argument("--timeout-seconds", type=float, default=120.0, help="Cap the streaming timeout per model turn.")
+    parser.add_argument("--no-stream-events", action="store_true", help="Use non-streaming model turns while keeping final tool traces.")
     return parser
 
 
