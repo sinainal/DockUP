@@ -44,6 +44,7 @@ def test_agent_run_status_refresh_uses_active_run_panel_polling() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     refresh_body = _function_body(source, "refreshDockupAgentWorkflowState")
     run_panel_body = _function_body(source, "refreshRunPanelFromBackend")
+    request_usage_body = _function_body(source, "refreshDockupAgentRequestUsage")
 
     assert 'normalized === "run_queue"' in refresh_body
     assert 'normalized === "build_or_run_queue" && !!runResult.started' in refresh_body
@@ -51,3 +52,5 @@ def test_agent_run_status_refresh_uses_active_run_panel_polling() -> None:
     assert 'fetchJSON("/api/run/status")' in run_panel_body
     assert "updateRunMetrics" in run_panel_body
     assert "pollRunStatus()" in run_panel_body
+    assert "ollamaState.requestUsage" in source
+    assert 'fetchJSON("/api/extensions/ollama/request-usage"' in request_usage_body

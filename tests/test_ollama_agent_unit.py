@@ -315,9 +315,38 @@ def test_ollama_chat_includes_state_context(monkeypatch, tmp_path) -> None:
     assert captured["kwargs"]["options"]["num_ctx"] == 2048
     assert captured["kwargs"]["options"]["num_batch"] == 64
     assert captured["kwargs"]["options"]["temperature"] == 0.8
-    assert captured["kwargs"]["options"]["num_predict"] == 4096
+    assert captured["kwargs"]["options"]["num_predict"] == 1024
     assert payload["think_mode"] == "no_think"
     assert payload["thinking"] == "We should inspect the current run state."
+
+
+def test_ollama_request_usage_reports_exact_preview(monkeypatch, tmp_path) -> None:
+    from docking_app.extensions import ollama_agent
+
+    monkeypatch.setattr(ollama_agent, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(ollama_agent, "ROOT_DIR", tmp_path)
+    (tmp_path / "state.json").write_text(
+        '{"base_url":"http://localhost:11434","model":"qwen36-35b-iq2-emotion:latest","connected":true,"last_error":""}',
+        encoding="utf-8",
+    )
+
+    response = TestClient(create_app()).post(
+        "/api/extensions/ollama/request-usage",
+        json={
+            "message": "What is the current state?",
+            "think_mode": "no_think",
+            "settings": {"num_ctx": 2048, "num_batch": 64, "temperature": 0.1},
+            "history": [{"role": "user", "content": "hello"}],
+        },
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["ok"] is True
+    assert payload["request_usage"]["window_tokens"] == 2048
+    assert payload["request_usage"]["budget_tokens"] == 1024
+    assert payload["request_usage"]["prompt_tokens_est"] > 0
+    assert payload["request_usage"]["payload_tokens_est"] >= payload["request_usage"]["prompt_tokens_est"]
 
 
 def test_ollama_chat_strips_thinking_from_followup_history(monkeypatch, tmp_path) -> None:

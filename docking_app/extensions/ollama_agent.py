@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -35,7 +36,6 @@ DEFAULT_NUM_GPU = -1
 DEFAULT_WARMUP_TOKENS = 1
 DEFAULT_THINK_MODE = "auto"
 AGENT_TEMPERATURE = 0.8
-AGENT_NUM_PREDICT = 4096
 NUM_CTX_CHOICES = (1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072)
 NUM_BATCH_CHOICES = (64, 128, 256, 512)
 KEEP_ALIVE_CHOICES = (-1, 300, 900, 1800, 3600)
@@ -184,6 +184,14 @@ def _think_flag(mode: Any) -> bool | None:
     return normalized == "think"
 
 
+def _agent_num_predict(num_ctx: Any) -> int:
+    try:
+        ctx = int(num_ctx)
+    except (TypeError, ValueError):
+        ctx = DEFAULT_NUM_CTX
+    return max(1024, ctx // 2)
+
+
 def _ollama_options(settings: dict[str, Any], *, warmup: bool = False) -> dict[str, Any]:
     options: dict[str, Any] = {
         "num_ctx": settings["num_ctx"],
@@ -317,6 +325,7 @@ def _snapshot(
         "version": version,
         "model": selected,
         "num_ctx": settings["num_ctx"],
+        "agent_num_predict": _agent_num_predict(settings["num_ctx"]),
         "settings": settings,
         "think_mode": think_mode,
         "selected_models": visible_models,
@@ -875,6 +884,14 @@ def _build_chat_request(payload: dict[str, Any]) -> dict[str, Any]:
         if role in {"user", "assistant"} and content:
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": message})
+    request_preview = _build_ollama_chat_payload(
+        {
+            "model": model,
+            "settings": settings,
+            "think_mode": think_mode,
+        },
+        messages,
+    )
     return {
         "base_url": base_url,
         "model": model,
@@ -883,14 +900,83 @@ def _build_chat_request(payload: dict[str, Any]) -> dict[str, Any]:
         "message": message,
         "messages": messages,
         "state_context": state_context,
+        "request_usage": _request_usage_from_payload(request_preview),
+    }
+
+
+def _build_ollama_chat_payload(request: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": request["model"],
+        "messages": messages,
+        "stream": False,
+        "tools": DOCKING_TOOLS,
+        "options": _tool_options(request["settings"]),
+        "keep_alive": request["settings"]["keep_alive"],
+    }
+    think = _think_flag(request["think_mode"])
+    if think is not None:
+        payload["think"] = think
+    return payload
+
+
+def _request_usage_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    payload_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+    messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
+    tools = payload.get("tools") if isinstance(payload.get("tools"), list) else []
+    options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+    prompt_text = json.dumps(
+        {
+            "messages": messages,
+            "tools": tools,
+            "options": options,
+            "think": payload.get("think"),
+            "keep_alive": payload.get("keep_alive"),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    prompt_chars = len(prompt_text)
+    payload_chars = len(payload_text)
+    prompt_tokens_est = max(1, math.ceil(prompt_chars / 4)) if prompt_chars else 0
+    payload_tokens_est = max(1, math.ceil(payload_chars / 4)) if payload_chars else 0
+    try:
+        window_tokens = max(1, int((options or {}).get("num_ctx") or DEFAULT_NUM_CTX))
+    except (TypeError, ValueError):
+        window_tokens = DEFAULT_NUM_CTX
+    budget_tokens = _agent_num_predict((options or {}).get("num_ctx"))
+    percent = min(100, round((prompt_tokens_est / window_tokens) * 100)) if window_tokens else 0
+    return {
+        "prompt_chars": prompt_chars,
+        "payload_chars": payload_chars,
+        "prompt_tokens_est": prompt_tokens_est,
+        "payload_tokens_est": payload_tokens_est,
+        "window_tokens": window_tokens,
+        "budget_tokens": budget_tokens,
+        "percent": percent,
+        "message_count": len(messages),
+        "tool_count": len(tools),
+        "system_message_count": sum(1 for row in messages if isinstance(row, dict) and str(row.get("role") or "") == "system"),
+        "history_message_count": max(0, len(messages) - 3),
     }
 
 
 def _tool_options(settings: dict[str, Any]) -> dict[str, Any]:
     options = _ollama_options(settings)
     options["temperature"] = AGENT_TEMPERATURE
-    options["num_predict"] = AGENT_NUM_PREDICT
+    options["num_predict"] = _agent_num_predict(settings.get("num_ctx"))
     return options
+
+
+def request_usage(payload: dict[str, Any]) -> dict[str, Any]:
+    request = _build_chat_request(payload)
+    return {
+        "ok": True,
+        "model": request["model"],
+        "think_mode": request["think_mode"],
+        "state_context": request["state_context"],
+        "request_usage": request.get("request_usage") or {},
+    }
 
 
 def _message_tool_calls(data: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:

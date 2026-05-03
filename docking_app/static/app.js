@@ -125,6 +125,8 @@ let ollamaState = {
   model: "",
   thinkMode: "auto",
   numCtx: 4096,
+  agentNumPredict: 2048,
+  requestUsage: null,
   settings: {
     num_ctx: 4096,
     num_batch: 128,
@@ -156,6 +158,8 @@ let dockupAgentLiveAssistantMessageEl = null;
 let dockupAgentLiveThinkingTextEl = null;
 let dockupAgentLiveAnswerTextEl = null;
 let dockupAgentScrollFrame = 0;
+let dockupAgentRequestUsageTimer = 0;
+let dockupAgentRequestUsageRequestId = 0;
 
 const EXCLUDED_RESN = new Set([
   "HOH", "DOD", "WAT", "NA", "CL", "K", "MG", "CA", "ZN", "FE", "CU", "MN", "CO", "NI",
@@ -1248,6 +1252,8 @@ function renderOllamaStatus(data) {
     model: data.model || "",
     thinkMode,
     numCtx: Number(settings.num_ctx || 4096),
+    agentNumPredict: Number(data.agent_num_predict || Math.max(1024, Math.floor(Number(settings.num_ctx || 4096) / 2))),
+    requestUsage: data.request_usage || ollamaState.requestUsage || null,
     settings,
     models: Array.isArray(data.models) ? data.models : [],
     selectedModels,
@@ -1282,6 +1288,7 @@ function renderOllamaStatus(data) {
     if (ollamaState.selectedModels?.length) lines.push(`Visible models: ${ollamaState.selectedModels.length}`);
     lines.push(`Thinking: ${thinkModeLabel(thinkMode)}`);
     lines.push(`Context: ${Number(settings.num_ctx || 4096).toLocaleString()} tokens`);
+    lines.push(`Thinking budget: ${Number(data.agent_num_predict || Math.max(1024, Math.floor(Number(settings.num_ctx || 4096) / 2))).toLocaleString()} tokens`);
     lines.push(`Batch: ${settings.num_batch} | GPU layers: ${settings.num_gpu < 0 ? "auto" : settings.num_gpu} | Keep alive: ${ollamaKeepAliveLabel(settings.keep_alive)}`);
     lines.push(`Sampling: temp ${settings.temperature}, top_p ${settings.top_p}, repeat ${settings.repeat_penalty}`);
     if (loading) lines.push(job.message || "Loading local model");
@@ -1639,6 +1646,7 @@ function setDockupAgentOpen(next) {
   if (next) {
     renderDockupAgentMessages();
     updateDockupModelLoadingPopup();
+    scheduleDockupAgentRequestUsageRefresh();
     setTimeout(() => els.dockupAgentInput?.focus(), 80);
   }
 }
@@ -1665,13 +1673,68 @@ function formatDockupAgentMetrics(metrics = {}) {
   return parts.join(" · ");
 }
 
-function estimateDockupAgentTokens(text) {
-  const normalized = String(text || "").replace(/\s+/g, " ").trim();
-  if (!normalized) return 0;
-  return Math.ceil(normalized.length / 4);
+function normalizeDockupAgentRequestUsage(data = {}) {
+  const usage = data.request_usage || data.usage || data || {};
+  const windowTokens = Math.max(1, Number(
+    usage.window_tokens ||
+    usage.windowTokens ||
+    usage.num_ctx ||
+    ollamaState.settings?.num_ctx ||
+    ollamaState.numCtx ||
+    4096,
+  ));
+  const promptTokens = Math.max(0, Number(
+    usage.prompt_tokens_est ||
+    usage.promptTokensEst ||
+    usage.prompt_tokens ||
+    usage.promptTokens ||
+    0,
+  ));
+  const payloadTokens = Math.max(0, Number(
+    usage.payload_tokens_est ||
+    usage.payloadTokensEst ||
+    0,
+  ));
+  const promptChars = Math.max(0, Number(usage.prompt_chars || usage.promptChars || 0));
+  const payloadChars = Math.max(0, Number(usage.payload_chars || usage.payloadChars || 0));
+  const budgetTokens = Math.max(1, Number(
+    usage.budget_tokens ||
+    usage.budgetTokens ||
+    Math.max(1024, Math.floor(windowTokens / 2)),
+  ));
+  const percent = Number.isFinite(Number(usage.percent))
+    ? Math.min(100, Math.max(0, Math.round(Number(usage.percent))))
+    : Math.min(100, Math.round((promptTokens / windowTokens) * 100));
+  return {
+    promptTokens,
+    payloadTokens,
+    promptChars,
+    payloadChars,
+    windowTokens,
+    budgetTokens,
+    percent,
+    messageCount: Number(usage.message_count || usage.messageCount || 0),
+    toolCount: Number(usage.tool_count || usage.toolCount || 0),
+    systemMessageCount: Number(usage.system_message_count || usage.systemMessageCount || 0),
+    historyMessageCount: Number(usage.history_message_count || usage.historyMessageCount || 0),
+  };
 }
 
 function dockupAgentContextUsage() {
+  if (ollamaState.requestUsage) {
+    const usage = normalizeDockupAgentRequestUsage(ollamaState.requestUsage);
+    return {
+      usedTokens: usage.promptTokens,
+      windowTokens: usage.windowTokens,
+      percent: usage.percent,
+      budgetTokens: usage.budgetTokens,
+      promptChars: usage.promptChars,
+      payloadTokens: usage.payloadTokens,
+      payloadChars: usage.payloadChars,
+      messageCount: usage.messageCount,
+      toolCount: usage.toolCount,
+    };
+  }
   const windowTokens = Math.max(1, Number(ollamaState.settings?.num_ctx || ollamaState.numCtx || 4096));
   const historyText = dockupAgentMessages
     .slice(-8)
@@ -1679,9 +1742,9 @@ function dockupAgentContextUsage() {
     .join("\n");
   const inputText = String(els.dockupAgentInput?.value || "");
   const systemReserve = 320;
-  const usedTokens = Math.min(windowTokens, estimateDockupAgentTokens(historyText) + estimateDockupAgentTokens(inputText) + systemReserve);
+  const usedTokens = Math.min(windowTokens, Math.ceil((historyText.replace(/\s+/g, " ").trim().length + inputText.replace(/\s+/g, " ").trim().length) / 4) + systemReserve);
   const percent = Math.min(100, Math.round((usedTokens / windowTokens) * 100));
-  return { usedTokens, windowTokens, percent };
+  return { usedTokens, windowTokens, percent, budgetTokens: Math.max(1024, Math.floor(windowTokens / 2)) };
 }
 
 function renderDockupAgentContextMeter() {
@@ -1691,11 +1754,59 @@ function renderDockupAgentContextMeter() {
   const windowLabel = usage.windowTokens.toLocaleString();
   els.dockupAgentContextPercent.textContent = `${usage.percent}% full`;
   els.dockupAgentContextTokens.textContent = `${usedLabel} / ${windowLabel} tokens used`;
-  els.dockupAgentContextMeter.setAttribute("aria-label", `Context window ${usage.percent}% full, ${usedLabel} of ${windowLabel} tokens used`);
-  els.dockupAgentContextMeter.title = `Context window ${usage.percent}% full`;
+  const budgetLabel = Number(usage.budgetTokens || Math.max(1024, Math.floor(windowLabel / 2))).toLocaleString();
+  els.dockupAgentContextMeter.setAttribute("aria-label", `Request usage ${usage.percent}% full, ${usedLabel} of ${windowLabel} tokens used, budget ${budgetLabel} tokens`);
+  els.dockupAgentContextMeter.title = `Request usage ${usage.percent}% full`;
   els.dockupAgentContextDot?.style.setProperty("--context-fill", `${usage.percent}%`);
   els.dockupAgentContextMeter.classList.toggle("is-warm", usage.percent >= 70 && usage.percent < 90);
   els.dockupAgentContextMeter.classList.toggle("is-hot", usage.percent >= 90);
+}
+
+function buildDockupAgentUsageRequest(messageText = String(els.dockupAgentInput?.value || "")) {
+  const usingGemini = dockupAgentProvider === "gemini";
+  if (usingGemini || !ollamaState.connected) return null;
+  const history = dockupAgentMessages
+    .filter((msg) => (msg.role === "user" || msg.role === "assistant") && !msg.loading)
+    .map((msg) => ({ role: msg.role, content: msg.content }));
+  return {
+    base_url: ollamaState.baseUrl,
+    model: ollamaState.model,
+    settings: ollamaState.settings || readOllamaSettingsFromForm(),
+    think_mode: readOllamaThinkModeFromForm(),
+    message: messageText,
+    history,
+  };
+}
+
+async function refreshDockupAgentRequestUsage({ message = null } = {}) {
+  const body = buildDockupAgentUsageRequest(message ?? String(els.dockupAgentInput?.value || ""));
+  if (!body) return null;
+  const requestId = ++dockupAgentRequestUsageRequestId;
+  try {
+    const data = await fetchJSON("/api/extensions/ollama/request-usage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (requestId !== dockupAgentRequestUsageRequestId) return data;
+    ollamaState.requestUsage = data.request_usage || null;
+    renderDockupAgentContextMeter();
+    return data;
+  } catch (err) {
+    if (requestId === dockupAgentRequestUsageRequestId) {
+      ollamaState.requestUsage = null;
+      renderDockupAgentContextMeter();
+    }
+    return null;
+  }
+}
+
+function scheduleDockupAgentRequestUsageRefresh() {
+  if (dockupAgentRequestUsageTimer) clearTimeout(dockupAgentRequestUsageTimer);
+  dockupAgentRequestUsageTimer = window.setTimeout(() => {
+    dockupAgentRequestUsageTimer = 0;
+    refreshDockupAgentRequestUsage().catch(() => {});
+  }, 250);
 }
 
 function scheduleDockupAgentScroll() {
@@ -2221,6 +2332,7 @@ async function sendDockupAgentMessage() {
   const usingGemini = dockupAgentProvider === "gemini";
   const activeModel = usingGemini ? geminiState.model : ollamaState.model;
   if (!text || !activeModel || (!usingGemini && !ollamaState.connected) || (usingGemini && !geminiState.apiKeySaved)) return;
+  await refreshDockupAgentRequestUsage({ message: text });
   if (els.dockupAgentInput) els.dockupAgentInput.value = "";
   if (els.dockupAgentSend) els.dockupAgentSend.disabled = true;
   dockupAgentMessages.push({ role: "user", content: text });
@@ -7687,6 +7799,7 @@ function bindEvents() {
     });
     els.dockupAgentInput.addEventListener("input", () => {
       renderDockupAgentContextMeter();
+      scheduleDockupAgentRequestUsageRefresh();
     });
   }
   document.addEventListener("click", (event) => {
