@@ -4,35 +4,80 @@ import sys
 import time
 import datetime
 from pathlib import Path
+from typing import Any
 
-try:
-    from .app import (
-        _start_run,
-        _existing_files,
-        _load_receptor_meta,
-        DOCK_DIR,
-        BASE,
-        LIGAND_DIR,
-        RECEPTOR_DIR,
-        RUN_STATE,
-    )
-except ImportError:
-    from docking_app.app import (
-        _start_run,
-        _existing_files,
-        _load_receptor_meta,
-        DOCK_DIR,
-        BASE,
-        LIGAND_DIR,
-        RECEPTOR_DIR,
-        RUN_STATE,
-    )
+
+def _legacy_backend() -> dict[str, Any]:
+    try:
+        from .app import _existing_files, _load_receptor_meta, _start_run
+        from .config import BASE, DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR
+        from .state import RUN_STATE
+    except ImportError:
+        from docking_app.app import _existing_files, _load_receptor_meta, _start_run
+        from docking_app.config import BASE, DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR
+        from docking_app.state import RUN_STATE
+    return {
+        "_start_run": _start_run,
+        "_existing_files": _existing_files,
+        "_load_receptor_meta": _load_receptor_meta,
+        "BASE": BASE,
+        "DOCK_DIR": DOCK_DIR,
+        "LIGAND_DIR": LIGAND_DIR,
+        "RECEPTOR_DIR": RECEPTOR_DIR,
+        "RUN_STATE": RUN_STATE,
+    }
+
+
+def _live_client(args: argparse.Namespace):
+    try:
+        from .live import DockUPClient
+    except ImportError:
+        from docking_app.live import DockUPClient
+    return DockUPClient(base_url=args.base_url, timeout=float(args.timeout))
+
+
+def _print_payload(payload: dict[str, Any], *, as_json: bool = False, pretty: bool = False) -> None:
+    if as_json or pretty:
+        print(json.dumps(payload, ensure_ascii=False, indent=2 if pretty else None))
+        return
+    message = str(payload.get("message") or "").strip()
+    if message:
+        print(message)
+    else:
+        print(json.dumps(payload, ensure_ascii=False))
+
+
+def _live_envelope(
+    action: str,
+    data: dict[str, Any],
+    *,
+    message: str = "",
+    ui_hints: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    error = data.get("error") or data.get("detail")
+    return {
+        "ok": not bool(error),
+        "action": action,
+        "message": message or (str(error) if error else f"{action} completed."),
+        "data": data,
+        "ui_hints": ui_hints or {},
+        "error": {"message": str(error), "recoverable": True} if error else None,
+    }
 
 def run_docking_cli(args):
     """
     Main execution logic for CLI.
     Generates grid files, manifest.tsv and triggers _start_run.
     """
+    backend = _legacy_backend()
+    _start_run = backend["_start_run"]
+    _existing_files = backend["_existing_files"]
+    _load_receptor_meta = backend["_load_receptor_meta"]
+    DOCK_DIR = backend["DOCK_DIR"]
+    LIGAND_DIR = backend["LIGAND_DIR"]
+    RECEPTOR_DIR = backend["RECEPTOR_DIR"]
+    RUN_STATE = backend["RUN_STATE"]
+
     out_root_name = args.out_root_name
     if not out_root_name:
         out_root_name = datetime.datetime.now().strftime("docking_%Y_%m_%d_%H%M%S")
@@ -145,6 +190,103 @@ def run_docking_cli(args):
         print(line)
         
     print(f"Batch completed with status: {RUN_STATE['status']}")
+
+
+def cmd_live_state(args: argparse.Namespace) -> int:
+    data = _live_client(args).get_state()
+    payload = _live_envelope(
+        "state.get",
+        data,
+        message=f"state: receptor={data.get('selected_receptor') or '-'} queue={data.get('queue_count', 0)} run={data.get('run_status') or '-'}",
+    )
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_run_status(args: argparse.Namespace) -> int:
+    data = _live_client(args).get_run_status()
+    payload = _live_envelope(
+        "run.status",
+        data,
+        message=f"run: {data.get('status') or '-'} {data.get('completed_runs', 0)}/{data.get('total_runs', 0)}",
+    )
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_receptor_list(args: argparse.Namespace) -> int:
+    data = _live_client(args).list_receptors()
+    receptors = data.get("receptors") if isinstance(data.get("receptors"), list) else []
+    payload = _live_envelope(
+        "receptor.list",
+        data,
+        message=f"receptors: {len(receptors)}",
+    )
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_receptor_load(args: argparse.Namespace) -> int:
+    pdb_ids = " ".join(str(item).strip() for item in args.pdb_ids if str(item).strip())
+    data = _live_client(args).load_receptors(pdb_ids)
+    summary = data.get("summary") if isinstance(data.get("summary"), list) else []
+    ignored = data.get("ignored_ids") if isinstance(data.get("ignored_ids"), list) else []
+    payload = _live_envelope(
+        "receptor.load",
+        data,
+        message=f"loaded receptors: {len(summary)}" + (f"; ignored={','.join(str(x) for x in ignored)}" if ignored else ""),
+        ui_hints={"refresh": ["state", "receptors"]},
+    )
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_receptor_select(args: argparse.Namespace) -> int:
+    pdb_id = str(args.pdb_id or "").strip().upper()
+    data = _live_client(args).select_receptor(pdb_id)
+    payload = _live_envelope(
+        "receptor.select",
+        data,
+        message=f"selected receptor: {data.get('selected_receptor') or pdb_id or '-'}",
+        ui_hints={"refresh": ["state", "viewer"], "selected_receptor": data.get("selected_receptor") or pdb_id},
+    )
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_viewer_show(args: argparse.Namespace) -> int:
+    pdb_id = str(args.pdb_id or "").strip().upper()
+    client = _live_client(args)
+    select_result = client.select_receptor(pdb_id)
+    if select_result.get("error"):
+        payload = _live_envelope("viewer.show", select_result)
+        _print_payload(payload, as_json=args.json, pretty=args.pretty)
+        return 2
+    detail = client.get_receptor_detail(pdb_id, chain=str(args.chain or ""))
+    pdb_text = str(detail.get("pdb_text") or "")
+    compact = {
+        "pdb_id": detail.get("pdb_id") or pdb_id,
+        "pdb_text_length": len(pdb_text),
+        "chains": detail.get("chains") or [],
+        "ligands_by_chain": detail.get("ligands_by_chain") or {},
+        "pdb_file": detail.get("pdb_file") or "",
+        "selected_chain": detail.get("selected_chain") or args.chain or "all",
+        "selected_ligand": detail.get("selected_ligand") or "",
+    }
+    if detail.get("error"):
+        compact["error"] = detail.get("error")
+    payload = _live_envelope(
+        "viewer.show",
+        compact,
+        message=(
+            f"viewer ready: {compact['pdb_id']} ({compact['pdb_text_length']} pdb chars)"
+            if compact.get("pdb_text_length")
+            else f"viewer data missing: {pdb_id}"
+        ),
+        ui_hints={"refresh": ["state", "viewer"], "selected_receptor": compact.get("pdb_id")},
+    )
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] and compact.get("pdb_text_length") else 2
 
 
 def run_agent_assets_cli(args) -> int:
@@ -281,12 +423,55 @@ def run_agent_cli(argv: list[str]) -> int:
     workflow.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
     workflow.set_defaults(func=run_agent_workflow_cli)
 
+    def add_live_output_flags(cmd: argparse.ArgumentParser, *, suppress_default: bool = False) -> None:
+        default = argparse.SUPPRESS if suppress_default else False
+        cmd.add_argument("--json", action="store_true", default=default, help="Print machine-readable JSON envelope")
+        cmd.add_argument("--pretty", action="store_true", default=default, help="Pretty-print JSON envelope")
+
+    live = sub.add_parser("live", help="Control a running DockUP backend through the live API")
+    live.add_argument("--base-url", default="http://localhost:8000", help="Running DockUP backend URL")
+    live.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout in seconds")
+    add_live_output_flags(live)
+    live_sub = live.add_subparsers(dest="live_cmd", required=True)
+
+    live_state = live_sub.add_parser("state", help="Read live DockUP state")
+    add_live_output_flags(live_state, suppress_default=True)
+    live_state.set_defaults(func=cmd_live_state)
+
+    live_run = live_sub.add_parser("run", help="Run-related live commands")
+    live_run_sub = live_run.add_subparsers(dest="run_cmd", required=True)
+    live_run_status = live_run_sub.add_parser("status", help="Read live run status")
+    add_live_output_flags(live_run_status, suppress_default=True)
+    live_run_status.set_defaults(func=cmd_live_run_status)
+
+    live_receptor = live_sub.add_parser("receptor", help="Receptor-related live commands")
+    live_receptor_sub = live_receptor.add_subparsers(dest="receptor_cmd", required=True)
+    live_receptor_list = live_receptor_sub.add_parser("list", help="List stored/loaded receptors")
+    add_live_output_flags(live_receptor_list, suppress_default=True)
+    live_receptor_list.set_defaults(func=cmd_live_receptor_list)
+    live_receptor_load = live_receptor_sub.add_parser("load", help="Load receptor PDB IDs into live state")
+    live_receptor_load.add_argument("pdb_ids", nargs="+")
+    add_live_output_flags(live_receptor_load, suppress_default=True)
+    live_receptor_load.set_defaults(func=cmd_live_receptor_load)
+    live_receptor_select = live_receptor_sub.add_parser("select", help="Select a receptor in live state")
+    live_receptor_select.add_argument("pdb_id")
+    add_live_output_flags(live_receptor_select, suppress_default=True)
+    live_receptor_select.set_defaults(func=cmd_live_receptor_select)
+
+    live_viewer = live_sub.add_parser("viewer", help="Viewer-related live commands")
+    live_viewer_sub = live_viewer.add_subparsers(dest="viewer_cmd", required=True)
+    live_viewer_show = live_viewer_sub.add_parser("show", help="Select receptor and verify viewer data is available")
+    live_viewer_show.add_argument("pdb_id")
+    live_viewer_show.add_argument("--chain", default="")
+    add_live_output_flags(live_viewer_show, suppress_default=True)
+    live_viewer_show.set_defaults(func=cmd_live_viewer_show)
+
     args = parser.parse_args(argv)
     return int(args.func(args))
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] in {"agent-assets", "agent-workflow"}:
+    if len(sys.argv) > 1 and sys.argv[1] in {"agent-assets", "agent-workflow", "live"}:
         raise SystemExit(run_agent_cli(sys.argv[1:]))
 
     parser = argparse.ArgumentParser(description="Docking Automation CLI - Seamlessly integrates with the backend")
