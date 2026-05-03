@@ -2240,7 +2240,6 @@ def run_agent(
     options: dict[str, Any] | None = None,
     think: bool | None = None,
     test_mode: bool = True,
-    max_steps: int = 12,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     raise RuntimeError("run_agent has been retired. Use the interactive DockUP agent loop instead.")

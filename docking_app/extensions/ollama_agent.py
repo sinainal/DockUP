@@ -1372,7 +1372,6 @@ def _run_single_agent_tool_loop(
     request: dict[str, Any],
     *,
     progress_callback=None,
-    max_steps: int = 12,
 ) -> dict[str, Any]:
     _reset_docking_tool_state()
     messages = list(request["messages"])
@@ -1386,7 +1385,9 @@ def _run_single_agent_tool_loop(
     repeated_content_count = 0
     last_thinking_signature = ""
     repeated_thinking_count = 0
-    for step in range(max_steps):
+    step = 0
+    while True:
+        step += 1
         try:
             data = _chat_agent_step(request, messages, progress_callback=progress_callback)
         except Exception as exc:
@@ -1399,7 +1400,7 @@ def _run_single_agent_tool_loop(
             if progress_callback:
                 thinking_streamed = True
         assistant_message = _assistant_history_message(message)
-        trace.append({"step": step + 1, "assistant": assistant_message})
+        trace.append({"step": step, "assistant": assistant_message})
         messages.append(assistant_message)
         content_signature = _loop_text_signature(content, "")
         thinking_signature = _loop_text_signature("", thinking)
@@ -1423,7 +1424,7 @@ def _run_single_agent_tool_loop(
             repeated_thinking_count = 0
         if repeated_content_count >= 3 or repeated_thinking_count >= 3:
             final_answer = content or _tool_loop_answer({"trace": trace}) or _fallback_clarification()
-            _record_agent_memory(step=step + 1, answer=final_answer)
+            _record_agent_memory(step=step, answer=final_answer)
             return {
                 "ok": True,
                 "answer": final_answer,
@@ -1435,7 +1436,7 @@ def _run_single_agent_tool_loop(
             }
         if not calls:
             final_answer = content or _fallback_clarification()
-            _record_agent_memory(step=step + 1, answer=final_answer)
+            _record_agent_memory(step=step, answer=final_answer)
             return {
                 "ok": True,
                 "answer": final_answer,
@@ -1478,10 +1479,10 @@ def _run_single_agent_tool_loop(
             if isinstance(result, dict):
                 result["verification"] = verification
             trace.append({"tool": name, "arguments": args, "result": result})
-            _record_agent_memory(step=step + 1, tool_name=name, result=result)
+            _record_agent_memory(step=step, tool_name=name, result=result)
             record_attempt(
                 AGENT_STATE,
-                step=step + 1,
+                step=step,
                 tool_name=name,
                 arguments=args,
                 result=result,
@@ -1493,7 +1494,6 @@ def _run_single_agent_tool_loop(
             if progress_callback:
                 progress_callback({"type": "status", "stage": name, "delta": _tool_status(name, result), "result": result})
             messages.append({"role": "tool", "tool_name": name, "content": json.dumps(_tool_context_result(name, result), ensure_ascii=False)})
-    return {"ok": False, "error": "Max tool-call steps reached.", "trace": trace, "agent_state": dict(AGENT_STATE)}
 
 
 def ask(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1531,7 +1531,6 @@ def autonomous_docking(payload: dict[str, Any]) -> dict[str, Any]:
         payload,
         request,
         progress_callback=payload.get("progress_callback") if callable(payload.get("progress_callback")) else None,
-        max_steps=int(payload.get("max_steps") or 12),
     )
 
 
