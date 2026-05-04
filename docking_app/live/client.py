@@ -83,7 +83,10 @@ class DockUPClient:
         return f"{path}?{urlencode(clean, doseq=True)}"
 
     def get_state(self) -> dict[str, Any]:
-        return self._request_with_fallback("GET", "/api/control/state", "/api/state")
+        payload = self._request("GET", "/api/state")
+        if int(payload.get("status_code") or 0) == 404:
+            return self._request("GET", "/api/control/state")
+        return payload
 
     def get_run_status(self) -> dict[str, Any]:
         return self._request("GET", "/api/control/run/status")
@@ -99,6 +102,9 @@ class DockUPClient:
 
     def delete_receptor(self, target: str) -> dict[str, Any]:
         return self._request("POST", "/api/control/receptors/delete", json_payload={"target": target})
+
+    def remove_receptor(self, pdb_id: str) -> dict[str, Any]:
+        return self._request("POST", "/api/receptors/remove", json_payload={"pdb_id": pdb_id})
 
     def clear_receptors(self) -> dict[str, Any]:
         return self._request("POST", "/api/control/receptors/clear", json_payload={})

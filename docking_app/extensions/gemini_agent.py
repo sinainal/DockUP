@@ -16,7 +16,7 @@ from ..config import BASE
 EXTENSION_ID = "gemini_agent"
 ROOT_DIR = BASE / ".venv" / "dockup_extensions" / EXTENSION_ID
 STATE_PATH = ROOT_DIR / "state.json"
-DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
+DEFAULT_MODEL = "gemini-2.5-flash"
 CLI_MODEL = "gemini-cli"
 CLI_MODEL_PREFIX = "gemini-cli:"
 DEFAULT_CLI_MODEL = f"{CLI_MODEL_PREFIX}{DEFAULT_MODEL}"
@@ -334,8 +334,9 @@ def configure_cli_mcp(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(settings, dict):
         settings = {}
     servers = settings.get("mcpServers") if isinstance(settings.get("mcpServers"), dict) else {}
+    python_command = BASE / ".venv" / "bin" / "python"
     servers["dockup-control"] = {
-        "command": "python3",
+        "command": str(python_command) if python_command.exists() else "python3",
         "args": [
             "-m",
             "docking_app.mcp_server",
@@ -343,7 +344,7 @@ def configure_cli_mcp(payload: dict[str, Any] | None = None) -> dict[str, Any]:
             str(raw.get("base_url") or "http://127.0.0.1:8000"),
         ],
         "cwd": str(BASE),
-        "timeout": int(raw.get("timeout") or 60000),
+        "timeout": int(raw.get("timeout") or 10000),
     }
     settings["mcpServers"] = servers
     settings_path.write_text(json.dumps(settings, indent=2, sort_keys=True), encoding="utf-8")
@@ -408,7 +409,7 @@ def _build_request(payload: dict[str, Any]) -> dict[str, Any]:
 def _cli_prompt(message: str, history: list[dict[str, Any]], state_context: dict[str, Any], *, think_mode: str = "auto", thinking_budget: Any = None) -> str:
     mcp_note = (
         "DockUP MCP is configured as the preferred control path. Use MCP tools such as "
-        "dockup_state, dockup_queue_prepare, dockup_run_status, and dockup_control for live actions; "
+        "dockup_state, dockup_assets, dockup_mutate, dockup_queue, and dockup_validate for live actions; "
         "do not mutate DockUP files or STATE directly."
     )
     prompt = f"{state_system_prompt()}\n\n{mcp_note}\n\nCurrent DockUP state JSON:\n{json.dumps(state_context, ensure_ascii=False)}\n\n"
@@ -453,28 +454,23 @@ def _cli_env() -> dict[str, str]:
 
 
 def _run_cli_once(command: str, prompt: str, model: str = "", *, thinking_budget: Any = None) -> tuple[str, str]:
-    attempts: list[list[str]] = []
     base_model = _cli_base_model(model)
+    argv = [command, "--skip-trust", "-o", "text"]
     if base_model:
-        attempts.append([command, "-m", base_model, "--skip-trust", "--allowed-mcp-server-names", "dockup-control", "-p", prompt])
-        attempts.append([command, "-m", base_model, "--skip-trust", "-p", prompt])
-        attempts.append([command, "--model", base_model, "--skip-trust", "--prompt", prompt])
-    attempts.append([command, "--skip-trust", "-p", prompt])
-    attempts.append([command, "--skip-trust", "--prompt", prompt])
+        argv.extend(["-m", base_model])
+    argv.extend(["--allowed-mcp-server-names", "dockup-control", "-p", prompt])
     env = _cli_env()
-    last_error = ""
-    for argv in attempts:
-        try:
-            completed = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=180, env=env)
-        except Exception as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
-            continue
-        stdout = str(completed.stdout or "").strip()
-        stderr = str(completed.stderr or "").strip()
-        if completed.returncode == 0 and stdout:
-            return stdout, ""
-        last_error = stderr or stdout or f"Gemini CLI exited with {completed.returncode}."
-    return "", last_error or "Gemini CLI returned no output."
+    try:
+        completed = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=180, env=env)
+    except subprocess.TimeoutExpired:
+        return "", "Gemini CLI timed out after 180 seconds."
+    except Exception as exc:
+        return "", f"{type(exc).__name__}: {exc}"
+    stdout = str(completed.stdout or "").strip()
+    stderr = str(completed.stderr or "").strip()
+    if completed.returncode == 0 and stdout:
+        return stdout, ""
+    return "", stderr or stdout or f"Gemini CLI exited with {completed.returncode}."
 
 
 def stream_cli_ask(payload: dict[str, Any]):

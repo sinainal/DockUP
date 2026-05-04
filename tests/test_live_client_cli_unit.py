@@ -21,6 +21,18 @@ def _transport(routes: dict[tuple[str, str], dict[str, object]], status_code: in
 def test_live_client_reads_state_from_ui_endpoint() -> None:
     client = DockUPClient(
         "http://dockup.local",
+        transport=_transport({("GET", "/api/state"): {"selected_receptor": "6CM4", "queue_count": 2}}),
+    )
+
+    payload = client.get_state()
+
+    assert payload["selected_receptor"] == "6CM4"
+    assert payload["queue_count"] == 2
+
+
+def test_live_client_reads_state_from_control_endpoint_when_legacy_state_missing() -> None:
+    client = DockUPClient(
+        "http://dockup.local",
         transport=_transport({("GET", "/api/control/state"): {"ok": True, "action": "state.get", "data": {"selected_receptor": "6CM4", "queue_count": 2}}}),
     )
 
