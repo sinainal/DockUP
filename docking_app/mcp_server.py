@@ -135,22 +135,37 @@ class DockUPMCPServer:
         return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
 
 
+def _read_exact(stream: Any, length: int) -> bytes:
+    """Read exactly *length* bytes from a binary stream."""
+    chunks: list[bytes] = []
+    remaining = length
+    while remaining > 0:
+        chunk = stream.read(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
 def _read_message(stdin: Any) -> dict[str, Any] | None:
     headers: dict[str, str] = {}
     while True:
         line = stdin.buffer.readline()
         if not line:
             return None
-        text = line.decode("utf-8").strip()
+        text = line.decode("utf-8").rstrip("\r\n")
         if not text:
             break
         if ":" in text:
             key, value = text.split(":", 1)
-            headers[key.lower()] = value.strip()
+            headers[key.strip().lower()] = value.strip()
     length = int(headers.get("content-length") or 0)
     if length <= 0:
         return None
-    body = stdin.buffer.read(length)
+    body = _read_exact(stdin.buffer, length)
+    if len(body) < length:
+        return None
     return json.loads(body.decode("utf-8"))
 
 
@@ -163,7 +178,10 @@ def _write_message(stdout: Any, payload: dict[str, Any]) -> None:
 def serve_stdio(*, base_url: str = DEFAULT_BASE_URL, timeout: float = 60.0) -> None:
     server = DockUPMCPServer(base_url=base_url, timeout=timeout)
     while True:
-        request = _read_message(sys.stdin)
+        try:
+            request = _read_message(sys.stdin)
+        except Exception:
+            continue
         if request is None:
             break
         response = server.handle(request)
