@@ -17,6 +17,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
 from ..config import BASE, DATA_DIR, DOCK_DIR, WORKSPACE_DIR
+from ..control.events import publish_control_event
 from ..helpers import (
     normalize_docking_config,
     read_json,
@@ -99,6 +100,38 @@ def _normalize_render_mode(raw_value: Any) -> str:
     if value in {"multi_ligand", "multi-ligand", "multi_ligand_panel", "multi-ligand-panel"}:
         return REPORT_RENDER_MODE_MULTI_LIGAND
     raise ValueError(f"Unsupported render mode: {raw_value}")
+
+
+def _publish_report_refresh_event(
+    action: str,
+    message: str,
+    *,
+    source_path: Path,
+    output_path: Path,
+    status: str,
+    task: str,
+    progress: int,
+    total: int,
+    render_mode: str = "",
+) -> None:
+    publish_control_event(
+        {
+            "ok": True,
+            "action": action,
+            "trace_id": timestamp_token(),
+            "message": message,
+            "data": {
+                "status": status,
+                "task": task,
+                "progress": int(progress),
+                "total": int(total),
+                "source_path": to_display_path(source_path),
+                "output_path": to_display_path(output_path),
+                "render_mode": render_mode,
+            },
+            "ui_hints": {"refresh": ["report"]},
+        }
+    )
 
 
 def _receptor_sort_key(name: str) -> tuple[int, int, str]:
@@ -2644,6 +2677,17 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
             else:
                 state["message"] = "Render completed." if not errors else "Render completed with errors."
             state["cancel_requested"] = False
+            _publish_report_refresh_event(
+                "report.render",
+                state["message"],
+                source_path=source_dir,
+                output_path=out_dir.parent,
+                status=str(state.get("status") or "idle"),
+                task=str(state.get("task") or "render"),
+                progress=int(state.get("progress") or 0),
+                total=len(jobs),
+                render_mode=render_mode_name,
+            )
 
     background_tasks.add_task(
         run_render_job,
@@ -2674,6 +2718,17 @@ def trigger_render(payload: RenderPayload, background_tasks: BackgroundTasks) ->
         base_seconds = 14 if is_preview_mode else 40
     expected_seconds = int(max(12, len(render_jobs) * base_seconds * dpi_scale))
     REPORT_STATE["expected_time"] = expected_seconds
+    _publish_report_refresh_event(
+        "report.render",
+        REPORT_STATE["message"],
+        source_path=source_dir,
+        output_path=output_root,
+        status=str(REPORT_STATE.get("status") or "running"),
+        task=str(REPORT_STATE.get("task") or "render"),
+        progress=int(REPORT_STATE.get("progress") or 0),
+        total=len(render_jobs),
+        render_mode=render_mode,
+    )
     return JSONResponse({"status": "started", "expected_time": expected_seconds})
 
 

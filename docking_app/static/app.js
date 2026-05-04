@@ -7910,12 +7910,6 @@ function bindEvents() {
       if (mode === appState.mode) return;
 
       const goingToResults = mode === "Results";
-      const leavingResultsLikeMode = appState.mode === "Results" || appState.mode === "Report";
-      if (!goingToResults && !leavingResultsLikeMode) {
-        // Clear configuration but keep receptors when switching docking modes
-        appState.selectionMap = {};
-        gridDataPerReceptor = {};
-      }
 
       await fetchJSON("/api/mode", {
         method: "POST",

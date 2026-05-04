@@ -122,7 +122,7 @@ _LIGAND_DIR_RESOLVED = LIGAND_DIR.resolve()
 _PERSIST_KEYS = (
     "mode", "selected_receptor", "active_ligands", "queue", "runs", "grid_pad",
     "docking_config", "out_root", "out_root_path", "out_root_name",
-    "results_root_path", "agent_grid_data",
+    "results_root_path", "agent_grid_data", "selection_map",
 )
 
 _PATH_KEYS = frozenset({

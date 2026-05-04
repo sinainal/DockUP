@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from docking_app.models import RenderPayload
+from docking_app.control.events import clear_events, latest_event
 from docking_app.routes import report
 from docking_app.state import REPORT_STATE
 
@@ -191,6 +192,78 @@ def test_trigger_render_dispatches_multi_ligand_builder(monkeypatch: pytest.Monk
         render_paths = list(render_dir.glob("*_multi_ligand_panel_*.png"))
         assert render_paths
     finally:
+        REPORT_STATE.clear()
+        REPORT_STATE.update(snapshot)
+
+
+@pytest.mark.unit
+def test_trigger_render_publishes_report_refresh_event(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    snapshot = copy.deepcopy(REPORT_STATE)
+    clear_events()
+    source_dir = tmp_path / "smoke_source"
+    output_root = tmp_path / "report_outputs"
+    output_root.mkdir(parents=True, exist_ok=True)
+    run_dir = source_dir / "6CM4" / "aspirin" / "run1"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    inventory = {"6CM4": {"aspirin": [("run1", run_dir)]}}
+    rows = [{"id": "6CM4", "ready": True, "run_options": ["run1"], "default_run": "run1"}]
+
+    def fake_builder(
+        dtype,
+        _inventory,
+        out_dir,
+        _temp_root,
+        _dpi,
+        preferred_run="run1",
+        preferred_ligand="",
+        output_stem="",
+        preview_mode=False,
+        ligand_order_index=None,
+        process_hooks=None,
+    ):
+        out_path = Path(out_dir) / f"{output_stem or dtype}_classic.png"
+        Image.new("RGB", (32, 32), "white").save(out_path)
+        return out_path, [preferred_run]
+
+    monkeypatch.setattr(report, "_resolve_report_root", lambda _root_path: tmp_path)
+    monkeypatch.setattr(report, "_resolve_report_source", lambda _report_root, _source_path: source_dir)
+    monkeypatch.setattr(report, "_resolve_report_output_root", lambda _report_root, _source_dir, _output_path: output_root)
+    monkeypatch.setattr(report, "_collect_receptor_rows", lambda _source_dir: rows)
+    monkeypatch.setattr(report, "_collect_entities_from_rows", lambda _rows: (["6CM4"], ["aspirin"]))
+    monkeypatch.setattr(report, "_load_source_metadata", lambda *_args, **_kwargs: {"ligand_order": ["aspirin"]})
+    monkeypatch.setattr(report, "_collect_receptor_inventory", lambda _source_dir: inventory)
+    monkeypatch.setattr(report, "_render_dtype_panel", fake_builder)
+
+    background_tasks = BackgroundTasks()
+    try:
+        response = report.trigger_render(
+            RenderPayload(
+                root_path="data/dock",
+                source_path="data/dock/smoke_source",
+                output_path=str(output_root),
+                dpi=120,
+                render_mode="classic",
+                receptors=["6CM4"],
+                run_by_receptor={"6CM4": "run1"},
+                is_preview=False,
+            ),
+            background_tasks,
+        )
+        payload = json.loads(response.body.decode("utf-8"))
+        assert payload["status"] == "started"
+
+        task = background_tasks.tasks[0]
+        task.func(*task.args, **task.kwargs)
+
+        event_payload = latest_event()
+        assert event_payload["event"] is not None
+        event = event_payload["event"]
+        assert event["action"] == "report.render"
+        assert event["ui_hints"]["refresh"] == ["report"]
+        assert event["message"] == "Render completed."
+    finally:
+        clear_events()
         REPORT_STATE.clear()
         REPORT_STATE.update(snapshot)
 
