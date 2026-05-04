@@ -362,7 +362,7 @@ def _init_selection_map(meta: list[dict[str, Any]]) -> dict[str, dict[str, Any]]
         pdb_id = _normalize_receptor_id(item.get("pdb_id"))
         if not pdb_id:
             continue
-        selection[pdb_id] = {"chain": "all", "ligand_resname": "", "ligand_resnames": [], "flex_residues": []}
+        selection[pdb_id] = {"chain": "all", "ligand_resname": "all_set", "ligand_resnames": [], "flex_residues": []}
     return selection
 
 
@@ -803,12 +803,26 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
     batch_id = int(time.time() * 1000)
 
     def _safe_out_root() -> Path:
-        raw = str(STATE.get("out_root") or "").strip()
-        candidate = Path(raw).expanduser()
-        if not candidate.is_absolute():
-            candidate = (WORKSPACE_DIR / candidate).resolve()
+        raw_path = str(payload.get("out_root_path") or STATE.get("out_root_path") or "").strip()
+        raw_name = str(payload.get("out_root_name") or STATE.get("out_root_name") or "").strip()
+        if raw_path or raw_name:
+            base = Path(raw_path or str(DOCK_DIR)).expanduser()
+            if not base.is_absolute():
+                base = (WORKSPACE_DIR / base).resolve()
+            else:
+                base = base.resolve()
+            safe_name = Path(raw_name).name.strip()
+            if safe_name in {"", ".", ".."}:
+                current_out_root = Path(str(STATE.get("out_root") or ""))
+                safe_name = current_out_root.name or f"docking_{time.strftime('%Y_%m_%d_%H%M%S')}"
+            candidate = (base / safe_name).resolve()
         else:
-            candidate = candidate.resolve()
+            raw = str(STATE.get("out_root") or "").strip()
+            candidate = Path(raw).expanduser()
+            if not candidate.is_absolute():
+                candidate = (WORKSPACE_DIR / candidate).resolve()
+            else:
+                candidate = candidate.resolve()
         dock_root = DOCK_DIR.resolve()
         if candidate != dock_root and dock_root not in candidate.parents:
             return dock_root
@@ -888,11 +902,10 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     f"No ligands selected for {pdb_id}. Please choose exactly two dock-ready ligands before building the queue."
                 )
             else:
-                detail = (
-                    f"No ligand selected for {pdb_id}. Please choose a dock-ready ligand "
-                    "or 'All Ligands (Dock All)' before building the queue."
-                )
-            raise HTTPException(status_code=400, detail=detail)
+                selected_ligand = "all_set"
+                detail = ""
+            if detail:
+                raise HTTPException(status_code=400, detail=detail)
 
         target_ligands = []
 
@@ -939,6 +952,11 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "members": ligand_rows,
             }]
         elif mode == "Redocking":
+            if selected_ligand == "all_set":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid redocking ligand for {pdb_id}. Please choose a native ligand instead of All Ligands.",
+                )
             target_ligands = [{"name": selected_ligand, "path": ""}]
         else:
             if selected_ligand == "all_set":

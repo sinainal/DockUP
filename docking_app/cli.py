@@ -92,6 +92,19 @@ def _json_arg(value: str, default: Any) -> Any:
         raise SystemExit(f"Invalid JSON argument: {exc}") from exc
 
 
+def _json_file_arg(path: str) -> dict[str, Any]:
+    source = Path(str(path or "")).expanduser()
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise SystemExit(f"Cannot read JSON file {source}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid JSON file {source}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit(f"JSON file must contain an object: {source}")
+    return payload
+
+
 def _csv_arg(value: str) -> list[str]:
     return [part.strip() for part in str(value or "").split(",") if part.strip()]
 
@@ -336,6 +349,25 @@ def cmd_live_ligand_clear(args: argparse.Namespace) -> int:
     return 0 if payload["ok"] else 2
 
 
+def cmd_live_ligand_active_set(args: argparse.Namespace) -> int:
+    names = [str(item).strip() for item in args.names if str(item).strip()]
+    data = _live_client(args).set_active_ligands(names, replace=not bool(args.append))
+    payload = _coerce_live_envelope("ligand.active.set", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_ligand_generate(args: argparse.Namespace) -> int:
+    payload_args = _json_file_arg(args.json_file)
+    specs = payload_args.get("specs") if isinstance(payload_args.get("specs"), list) else payload_args.get("ligand_specs")
+    if not isinstance(specs, list):
+        specs = [payload_args]
+    data = _live_client(args).generate_ligands(specs, reset=bool(args.reset), activate=not bool(args.no_activate))
+    payload = _coerce_live_envelope("ligand.generate", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
 def cmd_live_assets_inspect(args: argparse.Namespace) -> int:
     data = _live_client(args).inspect_assets()
     inner = _envelope_data(data) or data
@@ -395,6 +427,15 @@ def cmd_live_gridbox_set(args: argparse.Namespace) -> int:
     return 0 if payload["ok"] else 2
 
 
+def cmd_live_gridbox_set_many(args: argparse.Namespace) -> int:
+    payload_args = _json_file_arg(args.json_file)
+    grid_data = payload_args.get("grid_data") if isinstance(payload_args.get("grid_data"), dict) else payload_args
+    data = _live_client(args).set_gridboxes(grid_data)
+    payload = _coerce_live_envelope("gridbox.set_many", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
 def cmd_live_config_set(args: argparse.Namespace) -> int:
     payload_args = {
         "engine": args.engine,
@@ -427,6 +468,19 @@ def cmd_live_queue_list(args: argparse.Namespace) -> int:
 def cmd_live_queue_build(args: argparse.Namespace) -> int:
     data = _live_client(args).build_queue(replace_queue=not bool(args.append))
     payload = _coerce_live_envelope("queue.build", data)
+    _print_payload(payload, as_json=args.json, pretty=args.pretty)
+    return 0 if payload["ok"] else 2
+
+
+def cmd_live_queue_prepare(args: argparse.Namespace) -> int:
+    payload_args = _json_file_arg(args.json_file)
+    if args.append:
+        payload_args["replace_queue"] = False
+        payload_args["reset_queue"] = False
+    if args.reset_ligands:
+        payload_args["reset_ligands"] = True
+    data = _live_client(args).prepare_queue(payload_args)
+    payload = _coerce_live_envelope("queue.prepare", data)
     _print_payload(payload, as_json=args.json, pretty=args.pretty)
     return 0 if payload["ok"] else 2
 
@@ -903,6 +957,17 @@ def run_agent_cli(argv: list[str]) -> int:
     live_ligand_clear = live_ligand_sub.add_parser("clear", help="Clear all stored ligands")
     add_live_output_flags(live_ligand_clear, suppress_default=True)
     live_ligand_clear.set_defaults(func=cmd_live_ligand_clear)
+    live_ligand_active_set = live_ligand_sub.add_parser("active-set", help="Set active dock ligands without touching stored files")
+    live_ligand_active_set.add_argument("names", nargs="+")
+    live_ligand_active_set.add_argument("--append", action="store_true", help="Append to current active ligands instead of replacing")
+    add_live_output_flags(live_ligand_active_set, suppress_default=True)
+    live_ligand_active_set.set_defaults(func=cmd_live_ligand_active_set)
+    live_ligand_generate = live_ligand_sub.add_parser("generate", help="Generate ligand SDF files from a JSON spec")
+    live_ligand_generate.add_argument("--json-file", required=True)
+    live_ligand_generate.add_argument("--reset", action="store_true", help="Delete matching ligand files before generating")
+    live_ligand_generate.add_argument("--no-activate", action="store_true", help="Do not add generated ligands to active dock ligands")
+    add_live_output_flags(live_ligand_generate, suppress_default=True)
+    live_ligand_generate.set_defaults(func=cmd_live_ligand_generate)
 
     live_viewer = live_sub.add_parser("viewer", help="Viewer-related live commands")
     live_viewer_sub = live_viewer.add_subparsers(dest="viewer_cmd", required=True)
@@ -939,6 +1004,10 @@ def run_agent_cli(argv: list[str]) -> int:
     live_gridbox_set.add_argument("--p2rank-mode", default="fit")
     add_live_output_flags(live_gridbox_set, suppress_default=True)
     live_gridbox_set.set_defaults(func=cmd_live_gridbox_set)
+    live_gridbox_set_many = live_gridbox_sub.add_parser("set-many", help="Set multiple receptor gridboxes from JSON")
+    live_gridbox_set_many.add_argument("--json-file", required=True)
+    add_live_output_flags(live_gridbox_set_many, suppress_default=True)
+    live_gridbox_set_many.set_defaults(func=cmd_live_gridbox_set_many)
 
     live_config = live_sub.add_parser("config", help="Config-related live commands")
     live_config_sub = live_config.add_subparsers(dest="config_cmd", required=True)
@@ -967,6 +1036,12 @@ def run_agent_cli(argv: list[str]) -> int:
     live_queue_build.add_argument("--append", action="store_true", help="Append jobs instead of replacing queue")
     add_live_output_flags(live_queue_build, suppress_default=True)
     live_queue_build.set_defaults(func=cmd_live_queue_build)
+    live_queue_prepare = live_queue_sub.add_parser("prepare", help="Prepare live docking config, assets, gridboxes, and queue from JSON")
+    live_queue_prepare.add_argument("--json-file", required=True)
+    live_queue_prepare.add_argument("--append", action="store_true", help="Append queue jobs instead of deleting/replacing first")
+    live_queue_prepare.add_argument("--reset-ligands", action="store_true", help="Delete named/generated ligand files before fetch/generate")
+    add_live_output_flags(live_queue_prepare, suppress_default=True)
+    live_queue_prepare.set_defaults(func=cmd_live_queue_prepare)
     live_queue_remove = live_queue_sub.add_parser("remove", help="Remove one queue batch")
     live_queue_remove.add_argument("batch_id")
     add_live_output_flags(live_queue_remove, suppress_default=True)

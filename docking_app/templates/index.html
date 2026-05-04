@@ -801,6 +801,16 @@
           <button class="primary" id="saveGeminiBtn" type="button">Save key</button>
         </div>
         <div class="ollama-model-summary" id="geminiModelSummary">Select which Gemini models should appear in the assistant model menu.</div>
+        <div class="ollama-connect-row gemini-cli-row">
+          <label class="ollama-toggle-field">
+            <input id="geminiCliEnabled" type="checkbox">
+            <span>Gemini CLI</span>
+          </label>
+          <label class="field">
+            <span class="field-label">Thinking budget</span>
+            <input id="geminiCliThinkingBudget" type="number" min="0" max="32768" step="256" value="0">
+          </label>
+        </div>
         <div class="ollama-model-grid gemini-model-grid" id="geminiModelGrid"></div>
         <div class="extension-log compact" id="geminiExtensionLog">Gemini configuration will appear here.</div>
       </div>

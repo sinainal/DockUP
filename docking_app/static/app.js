@@ -153,6 +153,13 @@ let geminiState = {
   model: "gemini-3.1-flash-lite-preview",
   selectedModels: [],
   models: [],
+  cliAvailable: false,
+  cliEnabled: false,
+  cliCommand: "",
+  cliVersion: "",
+  cliInstalled: false,
+  cliThinkingBudget: 0,
+  cliModels: [],
   error: "",
 };
 let dockupAgentMessages = [];
@@ -270,6 +277,8 @@ function initElements() {
   els.geminiStatusPill = document.getElementById("geminiStatusPill");
   els.geminiApiKey = document.getElementById("geminiApiKey");
   els.saveGeminiBtn = document.getElementById("saveGeminiBtn");
+  els.geminiCliEnabled = document.getElementById("geminiCliEnabled");
+  els.geminiCliThinkingBudget = document.getElementById("geminiCliThinkingBudget");
   els.geminiModelSummary = document.getElementById("geminiModelSummary");
   els.geminiModelGrid = document.getElementById("geminiModelGrid");
   els.geminiExtensionLog = document.getElementById("geminiExtensionLog");
@@ -1347,6 +1356,7 @@ function renderOllamaModels() {
 function renderGeminiStatus(data) {
   if (!data) return;
   const selectedModels = Array.isArray(data.selected_models) ? data.selected_models.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  const cliModels = Array.isArray(data.cli_models) ? data.cli_models : [];
   geminiState = {
     apiKeySaved: Boolean(data.api_key_saved),
     apiKeyPresent: Boolean(data.api_key_present),
@@ -1354,32 +1364,47 @@ function renderGeminiStatus(data) {
     model: String(data.model || data.default_model || "gemini-3.1-flash-lite-preview"),
     selectedModels,
     models: Array.isArray(data.models) ? data.models : [],
+    cliInstalled: Boolean(data.cli_installed),
+    cliAvailable: Boolean(data.cli_available),
+    cliEnabled: Boolean(data.cli_enabled),
+    cliCommand: String(data.cli_command || ""),
+    cliVersion: String(data.cli_version || ""),
+    cliThinkingBudget: Number(data.cli_thinking_budget || geminiState.cliThinkingBudget || 0),
+    cliModels,
     error: String(data.error || ""),
   };
   if (els.geminiApiKey) {
     els.geminiApiKey.value = "";
     els.geminiApiKey.placeholder = geminiState.apiKeySaved ? "API key saved" : "AIza...";
   }
-  if (geminiState.apiKeySaved && !ollamaState.connected && dockupAgentProvider !== "gemini") {
+  if ((geminiState.apiKeySaved || geminiState.cliEnabled) && !ollamaState.connected && dockupAgentProvider !== "gemini" && dockupAgentProvider !== "gemini_cli") {
     dockupAgentProvider = "gemini";
   }
   if (els.geminiStatusPill) {
-    els.geminiStatusPill.textContent = geminiState.apiKeySaved ? "Key saved" : "Key not saved";
-    els.geminiStatusPill.className = `extension-status-pill ${geminiState.apiKeySaved ? "is-ready" : "is-missing"}`;
+    els.geminiStatusPill.textContent = geminiState.apiKeySaved ? "Key saved" : geminiState.cliEnabled ? "CLI ready" : "Key not saved";
+    els.geminiStatusPill.className = `extension-status-pill ${(geminiState.apiKeySaved || geminiState.cliEnabled) ? "is-ready" : "is-missing"}`;
+  }
+  if (els.geminiCliEnabled) {
+    els.geminiCliEnabled.checked = Boolean(geminiState.cliEnabled);
+    els.geminiCliEnabled.disabled = !geminiState.cliAvailable && !geminiState.cliInstalled;
+  }
+  if (els.geminiCliThinkingBudget) {
+    els.geminiCliThinkingBudget.value = String(Number.isFinite(geminiState.cliThinkingBudget) ? geminiState.cliThinkingBudget : 0);
   }
   if (els.geminiModelSummary) {
-    const count = geminiState.models.length;
-    const visibleCount = geminiState.apiKeySaved ? geminiState.selectedModels.length : 0;
-    els.geminiModelSummary.textContent = geminiState.apiKeySaved
+    const count = geminiState.models.length + geminiState.cliModels.length;
+    const visibleCount = (geminiState.apiKeySaved || geminiState.cliEnabled) ? geminiState.selectedModels.length : 0;
+    els.geminiModelSummary.textContent = (geminiState.apiKeySaved || geminiState.cliEnabled)
       ? `${count} Gemini model${count === 1 ? "" : "s"} ready. ${visibleCount} visible in assistant.`
       : `${count} Gemini model${count === 1 ? "" : "s"} available after you save a key.`;
   }
   if (els.geminiModelGrid) {
-    els.geminiModelGrid.hidden = !geminiState.apiKeySaved;
+    els.geminiModelGrid.hidden = !(geminiState.apiKeySaved || geminiState.cliAvailable);
   }
   if (els.geminiExtensionLog) {
     const lines = [];
     lines.push(geminiState.apiKeySaved ? "Gemini API key saved." : "Gemini API key not saved.");
+    lines.push(geminiState.cliAvailable ? `Gemini CLI: ${geminiState.cliCommand || "found"}${geminiState.cliVersion ? ` (${geminiState.cliVersion})` : ""}` : geminiState.cliInstalled ? `Gemini CLI found but unavailable: ${geminiState.error || "check Node version"}` : "Gemini CLI: not found in PATH.");
     lines.push(`Visible models: ${geminiState.selectedModels.length}`);
     lines.push(`Supported models: ${geminiState.models.length}`);
     if (geminiState.error) lines.push(`Error: ${geminiState.error}`);
@@ -1392,8 +1417,9 @@ function renderGeminiStatus(data) {
 function renderDockupAgentModelMenu() {
   if (!els.dockupAgentModelMenu) return;
   const ollamaVisible = (ollamaState.selectedModels || []).filter((name) => (ollamaState.models || []).some((model) => String(model.name || "") === name));
-  const geminiVisible = geminiState.apiKeySaved
-    ? (geminiState.selectedModels || []).filter((name) => (geminiState.models || []).some((model) => String(model.name || "") === name))
+  const geminiModels = [...(geminiState.models || []), ...(geminiState.cliModels || [])];
+  const geminiVisible = (geminiState.apiKeySaved || geminiState.cliEnabled)
+    ? (geminiState.selectedModels || []).filter((name) => geminiModels.some((model) => String(model.name || "") === name))
     : [];
   if (!ollamaVisible.length && !geminiVisible.length) {
     els.dockupAgentModelMenu.innerHTML = `<div class="assistant-toolbar-menu-empty">Select models in Extensions to show them here.</div>`;
@@ -1418,8 +1444,12 @@ function renderDockupAgentModelMenu() {
       <div class="assistant-toolbar-menu-section">
         <div class="assistant-toolbar-menu-section-label">Gemini</div>
         ${geminiVisible.map((name) => {
-          const active = dockupAgentProvider === "gemini" && name === geminiState.model ? " is-active" : "";
-          return `<button class="assistant-toolbar-menu-item assistant-model-item${active}" type="button" data-model="${escapeHtml(name)}" data-provider="gemini"><span>${escapeHtml(compactModelName(name))}</span><span class="assistant-model-size">Gemini</span></button>`;
+          const model = geminiModels.find((item) => String(item.name || "") === name) || {};
+          const provider = name.startsWith("gemini-cli:") || name === "gemini-cli" ? "gemini_cli" : "gemini";
+          const active = dockupAgentProvider === provider && name === geminiState.model ? " is-active" : "";
+          const label = model.label || compactModelName(name);
+          const source = provider === "gemini_cli" ? "CLI" : "Gemini";
+          return `<button class="assistant-toolbar-menu-item assistant-model-item${active}" type="button" data-model="${escapeHtml(name)}" data-provider="${provider}"><span>${escapeHtml(label)}</span><span class="assistant-model-size">${source}</span></button>`;
         }).join("")}
       </div>
     `);
@@ -1430,26 +1460,29 @@ function renderDockupAgentModelMenu() {
 function renderGeminiModels() {
   if (!els.geminiModelGrid) return;
   els.geminiModelGrid.innerHTML = "";
-  if (!geminiState.models.length) {
+  const geminiModels = [...(geminiState.models || []), ...(geminiState.cliModels || [])];
+  if (!geminiModels.length) {
     const empty = document.createElement("div");
     empty.className = "ollama-model-empty";
-    empty.textContent = geminiState.apiKeySaved ? "No Gemini models loaded." : "Save your API key to enable model visibility.";
+    empty.textContent = geminiState.apiKeySaved ? "No Gemini models loaded." : "Save your API key or activate Gemini CLI.";
     els.geminiModelGrid.appendChild(empty);
     return;
   }
-  geminiState.models.forEach((model) => {
+  geminiModels.forEach((model) => {
     const name = String(model.name || "");
     const card = document.createElement("div");
-    const disabled = !geminiState.apiKeySaved ? " is-disabled" : "";
+    const isCli = name.startsWith("gemini-cli:") || name === "gemini-cli";
+    const enabled = isCli ? geminiState.cliAvailable : geminiState.apiKeySaved;
+    const disabled = !enabled ? " is-disabled" : "";
     card.className = `ollama-model-card gemini-model-card ${model.selected ? "is-selected" : ""}${disabled}`;
     card.dataset.model = name;
     card.innerHTML = `
       <label class="extension-model-toggle">
-        <input class="extension-model-checkbox" type="checkbox" data-gemini-visible="${escapeHtml(name)}" ${model.selected ? "checked" : ""} ${geminiState.apiKeySaved ? "" : "disabled"}>
+        <input class="extension-model-checkbox" type="checkbox" data-gemini-visible="${escapeHtml(name)}" ${model.selected ? "checked" : ""} ${enabled ? "" : "disabled"}>
         <span class="extension-model-toggle-ui" aria-hidden="true"></span>
         <span class="extension-model-toggle-copy">
           <span class="ollama-model-card-title">${escapeHtml(model.label || compactModelName(name))}</span>
-          <span class="ollama-model-card-meta">${escapeHtml(name)}</span>
+          <span class="ollama-model-card-meta">${escapeHtml(isCli ? (geminiState.cliCommand || "gemini") : name)}</span>
         </span>
       </label>
     `;
@@ -1496,6 +1529,8 @@ function readSelectedGeminiModelsFromUI() {
     selected.push(name);
     seen.add(name);
   });
+  const active = String(geminiState.model || "").trim();
+  if (active && !seen.has(active)) selected.unshift(active);
   return selected;
 }
 
@@ -1519,12 +1554,33 @@ async function saveOllamaVisibleModels() {
 async function saveGeminiSettings({ model = "" } = {}) {
   const api_key = String(els.geminiApiKey?.value || "").trim();
   const selected_models = readSelectedGeminiModelsFromUI();
+  const cli_thinking_budget = Number(els.geminiCliThinkingBudget?.value || geminiState.cliThinkingBudget || 0);
   const data = await fetchJSON("/api/extensions/gemini/save", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ api_key, selected_models, model: model || geminiState.model || "" }),
+    body: JSON.stringify({ api_key, selected_models, model: model || geminiState.model || "", cli_enabled: geminiState.cliEnabled, cli_thinking_budget }),
   });
   renderGeminiStatus(data);
+  return data;
+}
+
+async function activateGeminiCli({ enabled = true } = {}) {
+  const cli_thinking_budget = Number(els.geminiCliThinkingBudget?.value || geminiState.cliThinkingBudget || 0);
+  const data = await fetchJSON("/api/extensions/gemini/cli", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled, cli_thinking_budget }),
+  });
+  renderGeminiStatus(data);
+  if (data?.ok && data?.cli_enabled) {
+    await fetchJSON("/api/extensions/gemini/cli/mcp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base_url: window.location.origin }),
+    }).catch((err) => {
+      if (els.geminiExtensionLog) els.geminiExtensionLog.textContent = err.message || String(err);
+    });
+  }
   return data;
 }
 
@@ -1586,20 +1642,20 @@ async function offloadOllamaModel({ baseUrl = ollamaState.baseUrl, model = ollam
 }
 
 function renderDockupAgentShell() {
-  const visible = Boolean(ollamaState.connected || geminiState.apiKeySaved);
+  const visible = Boolean(ollamaState.connected || geminiState.apiKeySaved || geminiState.cliEnabled);
   if (els.dockupAgentLauncher) {
     els.dockupAgentLauncher.hidden = !visible;
     els.dockupAgentLauncher.classList.toggle("is-active", els.dockupAgentPanel?.classList.contains("is-open"));
     els.dockupAgentLauncher.classList.toggle("is-loading", Boolean(ollamaState.job?.running));
   }
   if (els.dockupAgentModelLabel) {
-    const label = dockupAgentProvider === "gemini"
+    const label = dockupAgentProvider === "gemini" || dockupAgentProvider === "gemini_cli"
       ? compactModelName(geminiState.model || geminiState.defaultModel || "Gemini")
       : compactModelName(ollamaState.model || "Ollama");
     els.dockupAgentModelLabel.textContent = visible ? label : "AI";
   }
   if (els.dockupAgentProviderLabel) {
-    els.dockupAgentProviderLabel.textContent = dockupAgentProvider === "gemini" ? "Gemini" : "Local";
+    els.dockupAgentProviderLabel.textContent = dockupAgentProvider === "gemini_cli" ? "Gemini CLI" : dockupAgentProvider === "gemini" ? "Gemini" : "Local";
   }
   if (els.dockupAgentThinkLabel) {
     els.dockupAgentThinkLabel.textContent = thinkModeLabel(ollamaState.thinkMode || "auto");
@@ -1766,7 +1822,7 @@ function renderDockupAgentContextMeter() {
 }
 
 function buildDockupAgentUsageRequest(messageText = String(els.dockupAgentInput?.value || "")) {
-  const usingGemini = dockupAgentProvider === "gemini";
+  const usingGemini = dockupAgentProvider === "gemini" || dockupAgentProvider === "gemini_cli";
   if (usingGemini || !ollamaState.connected) return null;
   const history = dockupAgentMessages
     .filter((msg) => (msg.role === "user" || msg.role === "assistant") && !msg.loading)
@@ -2422,9 +2478,10 @@ function updateLastDockupAgentMessage(patch, { render = true } = {}) {
 
 async function sendDockupAgentMessage() {
   const text = String(els.dockupAgentInput?.value || "").trim();
-  const usingGemini = dockupAgentProvider === "gemini";
+  const usingGemini = dockupAgentProvider === "gemini" || dockupAgentProvider === "gemini_cli";
+  const usingGeminiCli = dockupAgentProvider === "gemini_cli";
   const activeModel = usingGemini ? geminiState.model : ollamaState.model;
-  if (!text || !activeModel || (!usingGemini && !ollamaState.connected) || (usingGemini && !geminiState.apiKeySaved)) return;
+  if (!text || !activeModel || (!usingGemini && !ollamaState.connected) || (dockupAgentProvider === "gemini" && !geminiState.apiKeySaved) || (usingGeminiCli && !geminiState.cliEnabled)) return;
   await refreshDockupAgentRequestUsage({ message: text });
   if (els.dockupAgentInput) els.dockupAgentInput.value = "";
   if (els.dockupAgentSend) els.dockupAgentSend.disabled = true;
@@ -2451,7 +2508,7 @@ async function sendDockupAgentMessage() {
     timers.push(setTimeout(() => {
       const current = dockupAgentMessages[dockupAgentMessages.length - 1] || {};
       if (current.loading && !current.content && !current.thinking) {
-        const label = usingGemini ? "Gemini" : "Ollama";
+        const label = usingGeminiCli ? "Gemini CLI" : usingGemini ? "Gemini" : "Ollama";
         updateLastDockupAgentMessage({ status: `Waiting for ${label}...` }, { render: false });
         setDockupAssistantStatus(`Waiting for ${label}...`);
       }
@@ -2474,7 +2531,12 @@ async function sendDockupAgentMessage() {
       .slice(0, -1)
       .filter((msg) => msg.role === "user" || msg.role === "assistant")
       .map((msg) => ({ role: msg.role, content: msg.content }));
-    const response = await fetch(usingGemini ? "/api/extensions/gemini/chat/stream" : "/api/extensions/ollama/chat/stream", {
+    const streamUrl = dockupAgentProvider === "gemini_cli"
+      ? "/api/extensions/gemini-cli/chat/stream"
+      : usingGemini
+        ? "/api/extensions/gemini/chat/stream"
+        : "/api/extensions/ollama/chat/stream";
+    const response = await fetch(streamUrl, {
       method: "POST",
       signal: controller.signal,
       headers: { "Content-Type": "application/json" },
@@ -2482,6 +2544,7 @@ async function sendDockupAgentMessage() {
         base_url: ollamaState.baseUrl,
         model: activeModel,
         settings: ollamaState.settings || readOllamaSettingsFromForm(),
+        thinking_budget: usingGeminiCli ? Number(geminiState.cliThinkingBudget || els.geminiCliThinkingBudget?.value || 0) : undefined,
         think_mode: readOllamaThinkModeFromForm(),
         message: text,
         history,
@@ -2878,9 +2941,10 @@ function ensureSelectionMapEntry(pdbId) {
   if (!normalizedPdbId) return null;
   if (!appState.selectionMap) appState.selectionMap = {};
   const current = appState.selectionMap[normalizedPdbId] || {};
+  const defaultLigand = String(appState.mode || "").trim() === "Docking" && !isMultiLigandMode() ? "all_set" : "";
   const next = {
     chain: normalizeChainValue(current.chain || "all"),
-    ligand_resname: String(current.ligand_resname || ""),
+    ligand_resname: String(current.ligand_resname || current.ligand || defaultLigand),
     ligand_resnames: normalizeLigandNameList(current.ligand_resnames || (current.ligand_resname && current.ligand_resname !== "all_set" ? [current.ligand_resname] : [])),
     flex_residues: normalizeFlexResidueList(current.flex_residues || current.flex_residue_spec || []),
   };
@@ -2946,18 +3010,30 @@ function buildLigandSetLabel(ligandNames, { short = false } = {}) {
 }
 
 function syncSelectionMapForLigandWorkflow() {
+  const activeSet = new Set(activeLigands || appState.activeLigands || []);
   Object.keys(appState.selectionMap || {}).forEach((pdbId) => {
     const row = ensureSelectionMapEntry(pdbId);
     if (!row) return;
-    if (!isMultiLigandMode() && String(row.ligand_resname || "") === "all_set") {
-      row.ligand_resnames = [];
-      return;
-    }
     const ligandNames = normalizeLigandNameList(row.ligand_resnames || []);
     if (isMultiLigandMode()) {
-      const keptLigands = ligandNames.slice(0, 2);
+      const keptLigands = ligandNames.filter((name) => activeSet.has(name)).slice(0, 2);
       row.ligand_resnames = keptLigands;
       row.ligand_resname = buildLigandSetLabel(keptLigands);
+      return;
+    }
+    if (String(appState.mode || "").trim() === "Docking") {
+      const currentLigand = String(row.ligand_resname || "").trim();
+      if (!currentLigand || currentLigand === "all_set" || !activeSet.has(currentLigand)) {
+        row.ligand_resname = "all_set";
+        row.ligand_resnames = [];
+        return;
+      }
+      row.ligand_resnames = [currentLigand];
+      return;
+    }
+    if (String(row.ligand_resname || "") === "all_set") {
+      row.ligand_resname = "";
+      row.ligand_resnames = [];
       return;
     }
     const firstLigand = ligandNames[0] || "";
@@ -6367,7 +6443,7 @@ async function renderReceptorSummary(rows) {
         let nextLigand = previousLigand;
         let nextLigands = [];
         if (appState.mode === "Redocking") {
-          nextLigand = previousLigand && previousLigand !== "all_set" && !allowedLigands.includes(previousLigand)
+          nextLigand = previousLigand === "all_set" || (previousLigand && !allowedLigands.includes(previousLigand))
             ? ""
             : previousLigand;
           nextLigands = nextLigand && nextLigand !== "all_set" ? [nextLigand] : [];
@@ -6375,8 +6451,8 @@ async function renderReceptorSummary(rows) {
           nextLigands = previousLigands.filter((name) => allowedLigands.includes(name)).slice(0, 2);
           nextLigand = buildLigandSetLabel(nextLigands);
         } else {
-          nextLigand = previousLigand && previousLigand !== "all_set" && !allowedLigands.includes(previousLigand)
-            ? ""
+          nextLigand = !previousLigand || previousLigand === "all_set" || !allowedLigands.includes(previousLigand)
+            ? "all_set"
             : previousLigand;
           nextLigands = nextLigand && nextLigand !== "all_set" ? [nextLigand] : [];
         }
@@ -6462,7 +6538,14 @@ async function renderReceptorSummary(rows) {
         ligandOptions.push({ value: ligName, label: ligName });
       });
 
-      const selectedLigandValue = String(appState.selectionMap?.[row.pdb_id]?.ligand_resname || "");
+      let selectedLigandValue = String(appState.selectionMap?.[row.pdb_id]?.ligand_resname || "");
+      if (appState.mode !== "Redocking" && (!selectedLigandValue || (selectedLigandValue !== "all_set" && !activeLigands.includes(selectedLigandValue)))) {
+        selectedLigandValue = "all_set";
+        if (!appState.selectionMap) appState.selectionMap = {};
+        if (!appState.selectionMap[row.pdb_id]) appState.selectionMap[row.pdb_id] = {};
+        appState.selectionMap[row.pdb_id].ligand_resname = "all_set";
+        appState.selectionMap[row.pdb_id].ligand_resnames = [];
+      }
       const ligandDropdown = createModernRowDropdown({
         value: selectedLigandValue,
         placeholder: "Select Ligand...",
@@ -7810,6 +7893,25 @@ function bindEvents() {
       }
     });
   }
+  if (els.geminiCliEnabled) {
+    els.geminiCliEnabled.addEventListener("change", async () => {
+      try {
+        await activateGeminiCli({ enabled: Boolean(els.geminiCliEnabled.checked) });
+      } catch (err) {
+        if (els.geminiExtensionLog) els.geminiExtensionLog.textContent = err.message || String(err);
+        await refreshGeminiStatus().catch(() => {});
+      }
+    });
+  }
+  if (els.geminiCliThinkingBudget) {
+    els.geminiCliThinkingBudget.addEventListener("change", async () => {
+      try {
+        await saveGeminiSettings({ model: geminiState.model });
+      } catch (err) {
+        if (els.geminiExtensionLog) els.geminiExtensionLog.textContent = err.message || String(err);
+      }
+    });
+  }
   if (els.dockupAgentLauncher) {
     els.dockupAgentLauncher.addEventListener("click", () => {
       setDockupAgentOpen(!els.dockupAgentPanel?.classList.contains("is-open"));
@@ -7827,8 +7929,8 @@ function bindEvents() {
       const item = event.target.closest(".assistant-model-item");
       if (!item || item.disabled) return;
       closeDockupAgentMenus();
-      if (item.dataset.provider === "gemini") {
-        dockupAgentProvider = "gemini";
+      if (item.dataset.provider === "gemini" || item.dataset.provider === "gemini_cli") {
+        dockupAgentProvider = item.dataset.provider;
         geminiState.model = item.dataset.model || geminiState.defaultModel;
         renderDockupAgentShell();
         if (ollamaState.connected && ollamaState.model) {

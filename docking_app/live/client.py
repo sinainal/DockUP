@@ -115,6 +115,16 @@ class DockUPClient:
     def clear_ligands(self) -> dict[str, Any]:
         return self._request("POST", "/api/control/ligands/clear", json_payload={})
 
+    def set_active_ligands(self, names: list[str], *, replace: bool = True) -> dict[str, Any]:
+        return self._request("POST", "/api/control/ligands/active/set", json_payload={"names": names, "replace": replace})
+
+    def generate_ligands(self, specs: list[dict[str, Any]], *, reset: bool = False, activate: bool = True) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/control/ligands/generate",
+            json_payload={"specs": specs, "reset": reset, "activate": activate},
+        )
+
     def inspect_assets(self) -> dict[str, Any]:
         payload = self._request("GET", "/api/control/assets/inspect")
         if int(payload.get("status_code") or 0) != 404:
@@ -196,6 +206,9 @@ class DockUPClient:
             },
         )
 
+    def set_gridboxes(self, grid_data: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        return self._request("POST", "/api/control/gridbox/set-many", json_payload={"grid_data": grid_data})
+
     def set_config(self, **payload: Any) -> dict[str, Any]:
         return self._request("POST", "/api/control/config/set", json_payload=dict(payload))
 
@@ -204,6 +217,9 @@ class DockUPClient:
 
     def build_queue(self, *, replace_queue: bool = True) -> dict[str, Any]:
         return self._request("POST", "/api/control/queue/build", json_payload={"replace_queue": replace_queue})
+
+    def prepare_queue(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/api/control/queue/prepare", json_payload=dict(payload))
 
     def remove_queue_batch(self, batch_id: str) -> dict[str, Any]:
         return self._request("POST", "/api/control/queue/remove", json_payload={"batch_id": batch_id})

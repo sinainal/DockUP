@@ -113,10 +113,30 @@ def gemini_models(payload: dict[str, object]) -> JSONResponse:
     return JSONResponse(gemini_agent.save(payload))
 
 
+@router.post("/gemini/cli")
+def gemini_cli(payload: dict[str, object]) -> JSONResponse:
+    result = gemini_agent.activate_cli(payload)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 404)
+
+
+@router.post("/gemini/cli/mcp")
+def gemini_cli_mcp(payload: dict[str, object]) -> JSONResponse:
+    return JSONResponse(gemini_agent.configure_cli_mcp(payload))
+
+
 @router.post("/gemini/chat/stream")
 def gemini_chat_stream(payload: dict[str, object]) -> StreamingResponse:
     return StreamingResponse(
         gemini_agent.stream_ask(payload),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/gemini-cli/chat/stream")
+def gemini_cli_chat_stream(payload: dict[str, object]) -> StreamingResponse:
+    return StreamingResponse(
+        gemini_agent.stream_cli_ask(payload),
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -305,3 +305,73 @@ def test_control_workspace_select_activates_explicit_dock_ligand() -> None:
         ligand_path.unlink(missing_ok=True)
         STATE.clear()
         STATE.update(previous)
+
+
+def test_control_queue_prepare_preserves_config_and_uses_dock_all() -> None:
+    previous = copy.deepcopy(STATE)
+    ligand_a = LIGAND_DIR / "control_prepare_a.sdf"
+    ligand_b = LIGAND_DIR / "control_prepare_b.sdf"
+    ligand_text = "control prepare\nDockUP\n\n  0  0  0     0  0            999 V2000\nM  END\n$$$$\n"
+    ligand_a.write_text(ligand_text, encoding="utf-8")
+    ligand_b.write_text(ligand_text, encoding="utf-8")
+    STATE.clear()
+    STATE.update(
+        {
+            "mode": "Docking",
+            "receptor_meta": [
+                {
+                    "pdb_id": "PRP1",
+                    "pdb_text": "ATOM      1  N   GLY A   1       1.000   1.000   1.000\nEND\n",
+                    "chains": ["all", "A"],
+                    "ligands_by_chain": {"A": ["NAT 101"], "all": ["NAT 101"]},
+                    "pdb_file": str(Path("/tmp/PRP1.pdb")),
+                }
+            ],
+            "selection_map": {"PRP1": {"chain": "A", "ligand_resname": "", "ligand_resnames": [], "flex_residues": []}},
+            "selected_receptor": "PRP1",
+            "selected_ids": ["PRP1"],
+            "selected_ligand": "",
+            "selected_chain": "A",
+            "active_ligands": [],
+            "grid_file_path": "",
+            "agent_grid_data": {},
+            "queue": [{"batch_id": "old"}],
+            "runs": 9,
+            "grid_pad": 4.0,
+            "docking_config": {"docking_engine": "vina_gpu_21", "docking_mode": "standard", "vina_exhaustiveness": 32},
+            "out_root": "",
+            "out_root_path": "data/dock",
+            "out_root_name": "",
+            "results_root_path": "",
+        }
+    )
+    try:
+        response = TestClient(create_app()).post(
+            "/api/control/queue/prepare",
+            json={
+                "mode": "Docking",
+                "chains": {"PRP1": "A"},
+                "ligands": ["control_prepare_a.sdf", "control_prepare_b.sdf"],
+                "grid_data": {"PRP1": {"cx": 1, "cy": 2, "cz": 3, "sx": 15, "sy": 15, "sz": 15}},
+                "run_count": 5,
+                "padding": 10,
+                "out_root_name": "control_prepare",
+                "replace_queue": True,
+                "reset_queue": True,
+            },
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["ok"] is True
+        assert payload["data"]["queue_count"] == 2
+        assert payload["data"]["total_runs"] == 10
+        assert payload["data"]["selection_map"]["PRP1"]["ligand_resname"] == "all_set"
+        assert payload["data"]["active_ligands"] == ["control_prepare_a.sdf", "control_prepare_b.sdf"]
+        assert payload["data"]["queue"][0]["grid_params"]["sx"] == 25.0
+        assert STATE["selected_ligand"] == "all_set"
+        assert STATE["docking_config"]["docking_engine"] == "vina_gpu_21"
+    finally:
+        ligand_a.unlink(missing_ok=True)
+        ligand_b.unlink(missing_ok=True)
+        STATE.clear()
+        STATE.update(previous)

@@ -101,6 +101,44 @@ def _sanitize_out_root_name(raw_name: str) -> str:
     return basename
 
 
+def _selection_default_ligand_for_mode(mode: str) -> str:
+    return "all_set" if str(mode or "").strip() == "Docking" else ""
+
+
+def _sanitize_selection_for_mode(mode: str, selection_map: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    normalized_mode = str(mode or "").strip()
+    sanitized: dict[str, dict[str, Any]] = {}
+    for raw_pid, raw_sel in (selection_map or {}).items():
+        pdb_id = _normalize_receptor_id(raw_pid)
+        if not pdb_id:
+            continue
+        sel = raw_sel if isinstance(raw_sel, dict) else {}
+        ligand_label = str(sel.get("ligand_resname") or sel.get("ligand") or "").strip()
+        ligand_names = normalize_ligand_name_list(
+            sel.get("ligand_resnames")
+            or ([ligand_label] if ligand_label and ligand_label != "all_set" else [])
+        )
+        if normalized_mode == "Docking":
+            available = {path.name for path in LIGAND_DIR.glob("*.sdf") if path.is_file()}
+            if ligand_label and ligand_label != "all_set" and ligand_label not in available:
+                ligand_label = "all_set"
+                ligand_names = []
+            elif not ligand_label and not ligand_names:
+                ligand_label = "all_set"
+        elif normalized_mode == "Redocking" and ligand_label == "all_set":
+            ligand_label = ""
+            ligand_names = []
+        sanitized[pdb_id] = {
+            "chain": str(sel.get("chain", "all") or "all"),
+            "ligand_resname": ligand_label,
+            "ligand_resnames": ligand_names,
+            "flex_residues": normalize_flex_residue_list(
+                sel.get("flex_residues") or sel.get("flex_residue_spec") or []
+            ),
+        }
+    return sanitized
+
+
 def _cleanup_ligand_dir_names() -> None:
     for path in sorted(LIGAND_DIR.glob("*.sdf"), key=lambda item: item.name.lower()):
         if not path.is_file():
@@ -153,18 +191,23 @@ def _normalize_receptor_state() -> None:
     for item in normalized_meta:
         normalized_selection.setdefault(
             item["pdb_id"],
-            {"chain": "all", "ligand_resname": "", "ligand_resnames": [], "flex_residues": []},
+            {
+                "chain": "all",
+                "ligand_resname": _selection_default_ligand_for_mode(STATE.get("mode", "Docking")),
+                "ligand_resnames": [],
+                "flex_residues": [],
+            },
         )
 
     STATE["receptor_meta"] = normalized_meta
-    STATE["selection_map"] = normalized_selection
+    STATE["selection_map"] = _sanitize_selection_for_mode(STATE.get("mode", "Docking"), normalized_selection)
 
     if normalized_meta:
         selected = _normalize_receptor_id(STATE.get("selected_receptor", ""))
         if selected not in seen_ids:
             selected = normalized_meta[0]["pdb_id"]
         STATE["selected_receptor"] = selected
-        sel_row = normalized_selection.get(selected, {})
+        sel_row = STATE["selection_map"].get(selected, {})
         STATE["selected_chain"] = str(sel_row.get("chain", "all") or "all")
         STATE["selected_ligand"] = str(sel_row.get("ligand_resname", "") or "")
     else:
@@ -366,6 +409,12 @@ def api_state() -> JSONResponse:
 def api_mode(payload: ModePayload) -> JSONResponse:
     mode = payload.mode if payload.mode in {"Docking", "Multi-Ligand", "Redocking", "Results", "Report"} else "Docking"
     STATE["mode"] = mode
+    if mode in {"Docking", "Multi-Ligand", "Redocking"}:
+        STATE["selection_map"] = _sanitize_selection_for_mode(mode, STATE.get("selection_map", {}))
+        selected = _normalize_receptor_id(STATE.get("selected_receptor", ""))
+        if selected and selected in STATE["selection_map"]:
+            STATE["selected_chain"] = STATE["selection_map"][selected].get("chain", "all")
+            STATE["selected_ligand"] = STATE["selection_map"][selected].get("ligand_resname", "")
     save_state_cache()
     return JSONResponse({"mode": STATE["mode"]})
 
@@ -808,6 +857,15 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
     # We expect payload to be a dict with keys: run_count, padding, selection_map, grid_data
     # We append new jobs to the existing queue
     _normalize_receptor_state()
+    previous_config = normalize_docking_config(STATE.get("docking_config") or {})
+    previous_runs = STATE.get("runs")
+    previous_grid_pad = STATE.get("grid_pad")
+    previous_out_root = STATE.get("out_root")
+    previous_out_root_path = STATE.get("out_root_path")
+    previous_out_root_name = STATE.get("out_root_name")
+    previous_selection_map = STATE.get("selection_map") if isinstance(STATE.get("selection_map"), dict) else {}
+    previous_selected_chain = STATE.get("selected_chain")
+    previous_selected_ligand = STATE.get("selected_ligand")
     if "docking_config" in payload:
         raw_docking_config = payload.get("docking_config")
         STATE["docking_config"] = normalize_docking_config(
@@ -821,27 +879,10 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
             STATE["runs"] = int(run_count)
         except (TypeError, ValueError):
             pass
-    requested_out_root_path = str(
-        payload.get("out_root_path") or STATE.get("out_root_path") or str(DOCK_DIR)
-    )
-    resolved_out_root_path = resolve_dock_directory(
-        requested_out_root_path,
-        default=DOCK_DIR_RESOLVED,
-        allow_create=True,
-    )
-    out_root_name = _sanitize_out_root_name(
-        str(payload.get("out_root_name") or STATE.get("out_root_name") or "")
-    )
-    if not out_root_name:
-        import datetime
-        out_root_name = datetime.datetime.now().strftime("docking_%Y_%m_%d_%H%M%S")
-    STATE["out_root_path"] = to_display_path(resolved_out_root_path)
-    STATE["out_root_name"] = out_root_name
-    STATE["out_root"] = str((resolved_out_root_path / out_root_name).resolve())
-
     if "selection_map" in payload and isinstance(payload.get("selection_map"), dict):
         incoming = payload.get("selection_map") or {}
         normalized_incoming: dict[str, dict[str, str]] = {}
+        build_mode = str(payload.get("mode") or STATE.get("mode") or "Docking")
         for raw_pid, raw_sel in incoming.items():
             pdb_id = _normalize_receptor_id(raw_pid)
             if not pdb_id:
@@ -858,6 +899,7 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
                     sel.get("flex_residues") or sel.get("flex_residue_spec") or []
                 ),
             }
+        normalized_incoming = _sanitize_selection_for_mode(build_mode, normalized_incoming)
         current_selection = STATE.get("selection_map") if isinstance(STATE.get("selection_map"), dict) else {}
         STATE["selection_map"] = {**current_selection, **normalized_incoming}
         selected = _normalize_receptor_id(STATE.get("selected_receptor", ""))
@@ -865,7 +907,18 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
             STATE["selected_chain"] = STATE["selection_map"][selected].get("chain", "all")
             STATE["selected_ligand"] = STATE["selection_map"][selected].get("ligand_resname", "")
 
-    new_jobs = _build_queue(payload)
+    try:
+        new_jobs = _build_queue(payload)
+    finally:
+        STATE["docking_config"] = previous_config
+        STATE["runs"] = previous_runs
+        STATE["grid_pad"] = previous_grid_pad
+        STATE["out_root"] = previous_out_root
+        STATE["out_root_path"] = previous_out_root_path
+        STATE["out_root_name"] = previous_out_root_name
+        STATE["selection_map"] = previous_selection_map
+        STATE["selected_chain"] = previous_selected_chain
+        STATE["selected_ligand"] = previous_selected_ligand
     _merge_agent_grid_data(payload.get("grid_data"))
     update_batch_id = payload.get("update_batch_id")
     replace_queue = bool(payload.get("replace_queue", False))

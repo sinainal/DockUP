@@ -83,7 +83,6 @@ def _configure_minimal_state(active_ligands: list[str] | None = None) -> None:
 @pytest.mark.parametrize(
     ("mode", "detail_substring"),
     [
-        ("Docking", "dock-ready ligand"),
         ("Redocking", "native ligand"),
     ],
 )
@@ -129,6 +128,99 @@ def test_build_queue_keeps_valid_docking_ligand():
     assert entries[0]["pdb_id"] == "6CM4"
     assert entries[0]["ligand_resname"] == ligand_name
     assert entries[0]["lig_spec"] == str(ligand_path)
+
+
+def test_build_queue_defaults_empty_docking_selection_to_all_active_ligands():
+    ligand_name = _first_ligand_name()
+    ligand_path = LIGAND_DIR / ligand_name
+    _configure_minimal_state(active_ligands=[ligand_name])
+
+    payload = {
+        "selection_map": {"6CM4": {"chain": "all", "ligand_resname": "", "ligand_resnames": []}},
+        "grid_data": {"6CM4": {"cx": 0.0, "cy": 0.0, "cz": 0.0, "sx": 20.0, "sy": 20.0, "sz": 20.0}},
+        "run_count": 3,
+        "padding": 0.0,
+        "mode": "Docking",
+        "docking_config": {},
+    }
+
+    entries = _build_queue(payload)
+
+    assert len(entries) == 1
+    assert entries[0]["ligand_resname"] == ligand_name
+    assert entries[0]["lig_spec"] == str(ligand_path)
+    assert entries[0]["run_count"] == 3
+
+
+def test_build_queue_rejects_all_set_in_redocking():
+    ligand_name = _first_ligand_name()
+    _configure_minimal_state(active_ligands=[ligand_name])
+
+    payload = {
+        "selection_map": {"6CM4": {"chain": "all", "ligand_resname": "all_set", "ligand_resnames": []}},
+        "grid_data": {"6CM4": {"cx": 0.0, "cy": 0.0, "cz": 0.0, "sx": 20.0, "sy": 20.0, "sz": 20.0}},
+        "run_count": 1,
+        "padding": 0.0,
+        "mode": "Redocking",
+        "docking_config": {},
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        _build_queue(payload)
+
+    assert exc_info.value.status_code == 400
+    assert "Invalid redocking ligand" in str(exc_info.value.detail)
+
+
+def test_queue_build_does_not_mutate_global_config_or_selection():
+    ligand_name = _first_ligand_name()
+    _configure_minimal_state(active_ligands=[ligand_name])
+    STATE["mode"] = "Docking"
+    STATE["selected_receptor"] = "6CM4"
+    STATE["selected_chain"] = "all"
+    STATE["selected_ligand"] = "all_set"
+    STATE["selection_map"] = {
+        "6CM4": {"chain": "all", "ligand_resname": "all_set", "ligand_resnames": [], "flex_residues": []}
+    }
+    STATE["agent_grid_data"] = {
+        "6CM4": {"cx": 1.0, "cy": 2.0, "cz": 3.0, "sx": 20.0, "sy": 20.0, "sz": 20.0}
+    }
+    STATE["runs"] = 5
+    STATE["grid_pad"] = 10.0
+    STATE["docking_config"] = {
+        "docking_engine": "vina_gpu_21",
+        "docking_mode": "standard",
+        "ligand_binding_mode": "single",
+    }
+    STATE["out_root_path"] = str((DOCK_DIR / "pytest_queue_validation").resolve())
+    STATE["out_root_name"] = "global_config"
+    STATE["out_root"] = str((DOCK_DIR / "pytest_queue_validation" / "global_config").resolve())
+    STATE["queue"] = []
+
+    payload = {
+        "selection_map": {"6CM4": {"chain": "all", "ligand_resname": ligand_name, "ligand_resnames": [ligand_name]}},
+        "grid_data": {"6CM4": {"cx": 1.0, "cy": 2.0, "cz": 3.0, "sx": 20.0, "sy": 20.0, "sz": 20.0}},
+        "run_count": 9,
+        "padding": 2.0,
+        "mode": "Docking",
+        "out_root_path": str((DOCK_DIR / "pytest_queue_validation").resolve()),
+        "out_root_name": "batch_specific",
+        "docking_config": {"docking_engine": "vina", "docking_mode": "flexible", "ligand_binding_mode": "single"},
+        "replace_queue": False,
+    }
+
+    response = core.queue_build(payload)
+    data = json.loads(response.body.decode("utf-8"))
+
+    assert data["queue_count"] == 1
+    assert data["queue"][0]["run_count"] == 9
+    assert data["queue"][0]["out_root_name"] == "batch_specific"
+    assert STATE["runs"] == 5
+    assert STATE["grid_pad"] == 10.0
+    assert STATE["out_root_name"] == "global_config"
+    assert STATE["docking_config"]["docking_engine"] == "vina_gpu_21"
+    assert STATE["selection_map"]["6CM4"]["ligand_resname"] == "all_set"
+    assert STATE["selected_ligand"] == "all_set"
 
 
 def test_build_or_run_queue_syncs_batch_config_from_state(monkeypatch):
@@ -308,7 +400,7 @@ def test_queue_build_partial_batch_preserves_other_receptor_selection():
     assert response.status_code == 200
     assert payload["queue_count"] == 1
     assert STATE["selection_map"]["6CM4"]["ligand_resname"] == ligand_name
-    assert STATE["selection_map"]["8IRV"]["ligand_resname"] == ligand_name
+    assert STATE["selection_map"]["8IRV"]["ligand_resname"] == "all_set"
     assert STATE["agent_grid_data"]["8IRV"] == grid
 
 

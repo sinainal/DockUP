@@ -6,11 +6,15 @@ from fastapi.responses import JSONResponse
 from ..control import actions
 from ..control.events import latest_event
 from ..control.models import (
+    ActiveLigandsSetRequest,
     LigandDeleteRequest,
     LigandFetchRequest,
+    LigandGenerateRequest,
     ConfigSetRequest,
     GridboxSetRequest,
+    GridboxSetManyRequest,
     QueueBuildRequest,
+    QueuePrepareRequest,
     QueueRemoveRequest,
     ReceptorDeleteRequest,
     ReceptorLoadRequest,
@@ -80,6 +84,18 @@ def control_ligand_clear() -> JSONResponse:
     return JSONResponse(actions.clear_ligands())
 
 
+@router.post("/ligands/active/set")
+def control_ligand_active_set(payload: ActiveLigandsSetRequest) -> JSONResponse:
+    result = actions.set_active_ligands(payload.names, replace=payload.replace)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@router.post("/ligands/generate")
+def control_ligand_generate(payload: LigandGenerateRequest) -> JSONResponse:
+    result = actions.generate_ligands(payload.specs, reset=payload.reset, activate=payload.activate)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
 @router.get("/assets/inspect")
 def control_assets_inspect() -> JSONResponse:
     return JSONResponse(actions.inspect_assets())
@@ -121,6 +137,12 @@ def control_gridbox_set(payload: GridboxSetRequest) -> JSONResponse:
     return JSONResponse(result, status_code=200 if result.get("ok") else 400)
 
 
+@router.post("/gridbox/set-many")
+def control_gridbox_set_many(payload: GridboxSetManyRequest) -> JSONResponse:
+    result = actions.set_gridboxes(payload.grid_data)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
 @router.post("/config/set")
 def control_config_set(payload: ConfigSetRequest) -> JSONResponse:
     result = actions.set_config(
@@ -148,6 +170,12 @@ def control_queue_list() -> JSONResponse:
 @router.post("/queue/build")
 def control_queue_build(payload: QueueBuildRequest) -> JSONResponse:
     result = actions.build_queue(replace_queue=payload.replace_queue)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@router.post("/queue/prepare")
+def control_queue_prepare(payload: QueuePrepareRequest) -> JSONResponse:
+    result = actions.prepare_queue(payload.model_dump())
     return JSONResponse(result, status_code=200 if result.get("ok") else 400)
 
 

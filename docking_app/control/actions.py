@@ -10,13 +10,71 @@ from fastapi.responses import JSONResponse
 
 from ..config import LIGAND_DIR, RECEPTOR_DIR
 from ..helpers import normalize_docking_config
-from ..models import FetchLigandsPayload, LoadReceptorsPayload, RunStartPayload, SelectReceptorPayload
+from ..models import FetchLigandsPayload, LoadReceptorsPayload, ModePayload, RunStartPayload, SelectLigandPayload, SelectReceptorPayload
 from ..agent import autonomous_docking
 from ..routes import core
 from ..routes import results as result_routes
 from ..state import RUN_STATE, STATE, save_state_cache
 from .events import publish_control_event
 from .models import ControlEnvelope, ControlError
+
+
+def _safe_ligand_filename(value: str) -> str:
+    name = Path(str(value or "").strip()).name
+    if not name:
+        raise ValueError("Ligand filename is empty.")
+    if not name.lower().endswith(".sdf"):
+        name = f"{name}.sdf"
+    if name in {".sdf", "..sdf"} or "/" in name or "\\" in name:
+        raise ValueError("Invalid ligand filename.")
+    return name
+
+
+def _normalize_receptor_id(value: str) -> str:
+    return str(value or "").strip().upper()
+
+
+def _normalize_grid_row(row: dict[str, Any]) -> dict[str, float]:
+    aliases = {
+        "center_x": "cx",
+        "center_y": "cy",
+        "center_z": "cz",
+        "size_x": "sx",
+        "size_y": "sy",
+        "size_z": "sz",
+    }
+    clean: dict[str, float] = {}
+    for key, value in row.items():
+        normalized_key = aliases.get(str(key), str(key))
+        if normalized_key in {"cx", "cy", "cz", "sx", "sy", "sz"}:
+            clean[normalized_key] = float(value)
+    missing = [key for key in ("cx", "cy", "cz", "sx", "sy", "sz") if key not in clean]
+    if missing:
+        raise ValueError(f"Grid row missing fields: {', '.join(missing)}")
+    return clean
+
+
+def _queue_summary(queue: list[dict[str, Any]]) -> dict[str, Any]:
+    total_runs = 0
+    job_types: set[str] = set()
+    batches: set[str] = set()
+    for job in queue:
+        if not isinstance(job, dict):
+            continue
+        try:
+            total_runs += int(job.get("run_count") or job.get("runs") or 1)
+        except (TypeError, ValueError):
+            total_runs += 1
+        if job.get("job_type"):
+            job_types.add(str(job.get("job_type")))
+        if job.get("batch_id") is not None:
+            batches.add(str(job.get("batch_id")))
+    return {
+        "queue_count": len(queue),
+        "total_runs": total_runs,
+        "job_types": sorted(job_types),
+        "batch_ids": sorted(batches),
+    }
 
 
 def _trace_id(action: str) -> str:
@@ -320,6 +378,70 @@ def clear_ligands() -> dict[str, Any]:
     )
 
 
+def set_active_ligands(names: list[str], *, replace: bool = True) -> dict[str, Any]:
+    before = _state_snapshot()
+    clean_names = [_safe_ligand_filename(name) for name in names if str(name or "").strip()]
+    if replace:
+        _response_payload(core.clear_active_ligands())
+    data, status = _response_payload(core.add_active_ligands({"names": clean_names}))
+    return _envelope(
+        "ligand.active.set",
+        data,
+        before=before,
+        message=f"active ligands: {len(data.get('active_ligands') or [])}",
+        ui_hints={"refresh": ["state", "ligands", "queue"]},
+        status_code=status,
+        error_code="ligand_active_set_failed",
+        next_actions=["ligand.list", "ligand.active.set"],
+    )
+
+
+def generate_ligands(specs: list[dict[str, Any]], *, reset: bool = False, activate: bool = True) -> dict[str, Any]:
+    before = _state_snapshot()
+    saved: list[str] = []
+    failed: list[dict[str, str]] = []
+    try:
+        from convert_3D import build_oligomer_smiles, smiles_to_3d_sdf
+    except Exception as exc:
+        return _envelope(
+            "ligand.generate",
+            {"error": f"Cannot import ligand generator: {exc}", "saved": [], "failed": []},
+            before=before,
+            status_code=500,
+            error_code="ligand_generate_unavailable",
+            next_actions=["ligand.fetch"],
+        )
+    for spec in specs:
+        raw_spec = spec if isinstance(spec, dict) else {}
+        try:
+            filename = _safe_ligand_filename(str(raw_spec.get("filename") or raw_spec.get("name") or ""))
+            monomer_smiles = str(raw_spec.get("smiles") or raw_spec.get("monomer_smiles") or "").strip()
+            count = int(raw_spec.get("count") or raw_spec.get("n") or 1)
+            if not monomer_smiles:
+                raise ValueError("SMILES is required for deterministic ligand generation.")
+            target = LIGAND_DIR / filename
+            if reset and target.exists():
+                _response_payload(core.delete_ligand({"name": filename}))
+            oligomer_smiles = build_oligomer_smiles(monomer_smiles, count)
+            smiles_to_3d_sdf(oligomer_smiles, target)
+            saved.append(filename)
+        except Exception as exc:
+            failed.append({"spec": str(raw_spec.get("filename") or raw_spec.get("name") or raw_spec), "error": str(exc)})
+    if activate and saved:
+        _response_payload(core.add_active_ligands({"names": saved}))
+    status = 400 if failed and not saved else 200
+    return _envelope(
+        "ligand.generate",
+        {"saved": saved, "failed": failed, "active_ligands": STATE.get("active_ligands", [])},
+        before=before,
+        message=f"generated ligands: {len(saved)}" + (f"; failed={len(failed)}" if failed else ""),
+        ui_hints={"refresh": ["state", "ligands"]},
+        status_code=status,
+        error_code="ligand_generate_failed",
+        next_actions=["ligand.generate", "ligand.list"],
+    )
+
+
 def show_viewer(pdb_id: str, *, chain: str = "") -> dict[str, Any]:
     before = _state_snapshot()
     selected = select_receptor(pdb_id)
@@ -469,6 +591,42 @@ def set_gridbox(
     )
 
 
+def set_gridboxes(grid_data: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    before = _state_snapshot()
+    normalized: dict[str, dict[str, float]] = {}
+    errors: list[dict[str, str]] = []
+    for raw_id, raw_row in (grid_data or {}).items():
+        pdb_id = _normalize_receptor_id(str(raw_id))
+        if not pdb_id:
+            continue
+        try:
+            normalized[pdb_id] = _normalize_grid_row(raw_row if isinstance(raw_row, dict) else {})
+        except Exception as exc:
+            errors.append({"pdb_id": pdb_id, "error": str(exc)})
+    if errors and not normalized:
+        return _envelope(
+            "gridbox.set_many",
+            {"error": "No valid gridbox rows.", "errors": errors},
+            before=before,
+            status_code=400,
+            error_code="gridbox_set_many_failed",
+            next_actions=["gridbox.set_many"],
+        )
+    current = STATE.get("agent_grid_data") if isinstance(STATE.get("agent_grid_data"), dict) else {}
+    STATE["agent_grid_data"] = {**current, **normalized}
+    save_state_cache()
+    return _envelope(
+        "gridbox.set_many",
+        {"grid_data": normalized, "errors": errors, "gridbox_count": len(STATE["agent_grid_data"])},
+        before=before,
+        message=f"gridboxes set: {len(normalized)}",
+        ui_hints={"refresh": ["state", "gridbox", "queue"]},
+        status_code=400 if errors and not normalized else 200,
+        error_code="gridbox_set_many_failed",
+        next_actions=["queue.prepare", "queue.build"],
+    )
+
+
 def set_config(
     *,
     engine: str = "vina_gpu_21",
@@ -561,6 +719,163 @@ def build_queue(*, replace_queue: bool = True) -> dict[str, Any]:
         status_code=status,
         error_code="queue_build_failed",
         next_actions=["workspace.select", "gridbox.set", "config.set"],
+    )
+
+
+def prepare_queue(payload: dict[str, Any]) -> dict[str, Any]:
+    before = _state_snapshot()
+    trace: list[str] = []
+    mode = str(payload.get("mode") or "Docking").strip()
+    if mode not in {"Docking", "Multi-Ligand", "Redocking"}:
+        mode = "Docking"
+
+    if bool(payload.get("reset_queue", True)):
+        STATE["queue"] = []
+        trace.append("queue cleared")
+
+    receptor_ids = [_normalize_receptor_id(item) for item in payload.get("receptors") or []]
+    receptor_ids = [item for item in receptor_ids if item]
+    if receptor_ids:
+        loaded, load_status = _response_payload(core.add_receptors(LoadReceptorsPayload(pdb_ids=",".join(receptor_ids))))
+        if load_status >= 400 or loaded.get("error"):
+            return _envelope(
+                "queue.prepare",
+                loaded,
+                before=before,
+                message=str(loaded.get("error") or "Could not load receptors."),
+                status_code=load_status,
+                error_code="queue_prepare_receptors_failed",
+                next_actions=["receptor.load"],
+            )
+        trace.append(f"receptors loaded: {len(receptor_ids)}")
+
+    ligand_names = [_safe_ligand_filename(item) for item in payload.get("ligands") or [] if str(item or "").strip()]
+    ligand_specs = [item for item in payload.get("ligand_specs") or [] if isinstance(item, dict)]
+    generated_names: list[str] = []
+    if bool(payload.get("reset_ligands", False)):
+        for name in ligand_names:
+            if (LIGAND_DIR / name).exists():
+                _response_payload(core.delete_ligand({"name": name}))
+        for spec in ligand_specs:
+            raw_name = str(spec.get("filename") or spec.get("name") or "").strip()
+            if raw_name:
+                safe_name = _safe_ligand_filename(raw_name)
+                if (LIGAND_DIR / safe_name).exists():
+                    _response_payload(core.delete_ligand({"name": safe_name}))
+        trace.append("requested ligand files deleted before fetch/generate")
+
+    if ligand_specs:
+        generated = generate_ligands(ligand_specs, reset=False, activate=False)
+        generated_data = generated.get("data") if isinstance(generated.get("data"), dict) else {}
+        generated_names = [str(item) for item in generated_data.get("saved") or []]
+        failures = generated_data.get("failed") if isinstance(generated_data.get("failed"), list) else []
+        if failures and not generated_names:
+            return _envelope(
+                "queue.prepare",
+                {"error": "Ligand generation failed.", "failed": failures},
+                before=before,
+                status_code=400,
+                error_code="queue_prepare_ligands_failed",
+                next_actions=["ligand.generate"],
+            )
+        trace.append(f"ligands generated: {len(generated_names)}")
+
+    all_ligands = [*ligand_names, *[name for name in generated_names if name not in ligand_names]]
+    if payload.get("activate_ligands", True) and all_ligands:
+        active = set_active_ligands(all_ligands, replace=True)
+        active_data = active.get("data") if isinstance(active.get("data"), dict) else {}
+        ignored = active_data.get("ignored") if isinstance(active_data.get("ignored"), list) else []
+        if ignored:
+            return _envelope(
+                "queue.prepare",
+                {"error": "Some requested active ligands are missing.", "ignored": ignored, "active_ligands": active_data.get("active_ligands", [])},
+                before=before,
+                status_code=400,
+                error_code="queue_prepare_ligands_missing",
+                next_actions=["ligand.list", "ligand.generate", "ligand.fetch"],
+            )
+        trace.append(f"active ligands set: {len(all_ligands)}")
+
+    grid_payload = payload.get("grid_data") if isinstance(payload.get("grid_data"), dict) else {}
+    if grid_payload:
+        grid_result = set_gridboxes(grid_payload)
+        if not grid_result.get("ok"):
+            return _envelope(
+                "queue.prepare",
+                grid_result.get("data") if isinstance(grid_result.get("data"), dict) else {"error": "Invalid gridboxes."},
+                before=before,
+                status_code=400,
+                error_code="queue_prepare_gridbox_failed",
+                next_actions=["gridbox.set_many"],
+            )
+        trace.append(f"gridboxes set: {len(grid_payload)}")
+
+    _response_payload(core.api_mode(ModePayload(mode=mode)))
+    chains = payload.get("chains") if isinstance(payload.get("chains"), dict) else {}
+    incoming_selection = payload.get("selection_map") if isinstance(payload.get("selection_map"), dict) else {}
+    selection_map: dict[str, dict[str, Any]] = {}
+    target_receptors = receptor_ids or [_normalize_receptor_id(item.get("pdb_id")) for item in STATE.get("receptor_meta", []) if isinstance(item, dict)]
+    for pdb_id in target_receptors:
+        incoming = incoming_selection.get(pdb_id) if isinstance(incoming_selection.get(pdb_id), dict) else {}
+        chain = str(incoming.get("chain") or chains.get(pdb_id) or "all")
+        ligand_label = str(incoming.get("ligand_resname") or incoming.get("ligand") or "").strip()
+        ligand_members = incoming.get("ligand_resnames") if isinstance(incoming.get("ligand_resnames"), list) else []
+        if mode == "Docking" and not ligand_label:
+            ligand_label = "all_set"
+            ligand_members = []
+        selection_map[pdb_id] = {
+            "chain": chain,
+            "ligand_resname": ligand_label,
+            "ligand_resnames": ligand_members,
+            "flex_residues": incoming.get("flex_residues") or [],
+        }
+        _response_payload(core.ligand_select(SelectLigandPayload(pdb_id=pdb_id, chain=chain, ligand=ligand_label, ligands=ligand_members)))
+
+    raw_docking_config = payload.get("docking_config")
+    if isinstance(raw_docking_config, dict) and raw_docking_config:
+        docking_config = normalize_docking_config(raw_docking_config)
+    else:
+        docking_config = normalize_docking_config(STATE.get("docking_config") or {})
+    STATE["mode"] = mode
+    STATE["runs"] = int(payload.get("run_count") or STATE.get("runs") or 1)
+    STATE["grid_pad"] = float(payload.get("padding") if payload.get("padding") is not None else STATE.get("grid_pad") or 0.0)
+    STATE["out_root_path"] = str(payload.get("out_root_path") or STATE.get("out_root_path") or "data/dock")
+    STATE["out_root_name"] = str(payload.get("out_root_name") or STATE.get("out_root_name") or "")
+    STATE["docking_config"] = docking_config
+    save_state_cache()
+
+    queue_payload = {
+        "mode": mode,
+        "run_count": STATE["runs"],
+        "padding": STATE["grid_pad"],
+        "out_root_path": STATE["out_root_path"],
+        "out_root_name": STATE["out_root_name"],
+        "docking_config": docking_config,
+        "selection_map": selection_map or STATE.get("selection_map") or {},
+        "grid_data": STATE.get("agent_grid_data") if isinstance(STATE.get("agent_grid_data"), dict) else {},
+        "replace_queue": bool(payload.get("replace_queue", True)),
+    }
+    data, status = _call_route(core.queue_build, queue_payload)
+    queue = data.get("queue") if isinstance(data.get("queue"), list) else STATE.get("queue", [])
+    summary = _queue_summary(queue if isinstance(queue, list) else [])
+    data = {
+        **data,
+        **summary,
+        "mode": mode,
+        "active_ligands": STATE.get("active_ligands", []),
+        "selection_map": selection_map,
+        "gridbox_count": len(STATE.get("agent_grid_data") if isinstance(STATE.get("agent_grid_data"), dict) else {}),
+        "trace": trace,
+    }
+    return _envelope(
+        "queue.prepare",
+        data,
+        before=before,
+        message=f"prepared queue: {summary['queue_count']} job(s), {summary['total_runs']} run(s)",
+        ui_hints={"refresh": ["state", "ligands", "gridbox", "queue"]},
+        status_code=status,
+        error_code="queue_prepare_failed",
+        next_actions=["queue.list", "run.start"],
     )
 
 

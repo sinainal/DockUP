@@ -1,0 +1,63 @@
+Metadata-Version: 2.4
+Name: dockup
+Version: 0.2.0
+Summary: DockUP — A modern web-based molecular docking interface
+Author: DockUP Contributors
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: fastapi<0.129.0,>=0.128.0
+Requires-Dist: starlette<0.51.0,>=0.50.0
+Requires-Dist: httpx<0.29.0,>=0.28.1
+Requires-Dist: uvicorn[standard]<0.41.0,>=0.40.0
+Requires-Dist: pydantic>=2.0
+Requires-Dist: python-multipart>=0.0.9
+Requires-Dist: watchfiles>=0.21
+Requires-Dist: requests>=2.31
+Requires-Dist: lxml>=5.0
+Requires-Dist: beautifulsoup4>=4.12
+Requires-Dist: numpy<3,>=1.26
+Requires-Dist: jinja2<3.2.0,>=3.1.6
+Requires-Dist: pandas>=2.0
+Requires-Dist: openpyxl>=3.1
+Requires-Dist: python-docx>=1.1
+Requires-Dist: matplotlib>=3.8
+Requires-Dist: opencv-python-headless>=4.10
+Provides-Extra: docking
+Requires-Dist: pdb2pqr>=3.6; extra == "docking"
+Requires-Dist: meeko>=0.7; extra == "docking"
+Requires-Dist: scipy>=1.10.0; extra == "docking"
+Requires-Dist: gemmi>=0.6.2; extra == "docking"
+Requires-Dist: vina>=1.2.5; extra == "docking"
+Requires-Dist: rdkit>=2023.9; extra == "docking"
+Requires-Dist: openbabel-wheel>=3.1.1; extra == "docking"
+Provides-Extra: pymol
+Requires-Dist: pymol-open-source>=3.0; sys_platform == "linux" and extra == "pymol"
+Provides-Extra: dev
+Requires-Dist: pytest<8.4,>=8.3; extra == "dev"
+Requires-Dist: pytest-timeout>=2.0; extra == "dev"
+Requires-Dist: httpx<0.29.0,>=0.28.1; extra == "dev"
+Provides-Extra: all
+Requires-Dist: dockup[dev,docking]; extra == "all"
+Dynamic: license-file
+
+# DockUP
+
+DockUP is a FastAPI-based molecular docking web application with queue management,
+run tracking, report generation, and render pipelines.
+
+## Quick Start
+
+```bash
+./setup.sh
+./start.sh
+```
+
+Then open `http://localhost:8000`.
+
+## Notes
+
+- Core dependencies are listed in `requirements/core.txt`.
+- Docking toolchain dependencies are listed in `requirements/docking.txt`.
+- End-to-end scripts live under `tests/`.
