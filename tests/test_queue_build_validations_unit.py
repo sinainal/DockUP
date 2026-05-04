@@ -130,6 +130,26 @@ def test_build_queue_keeps_valid_docking_ligand():
     assert entries[0]["lig_spec"] == str(ligand_path)
 
 
+def test_api_state_does_not_convert_stale_ligand_to_dock_all():
+    ligand_name = _first_ligand_name()
+    _configure_minimal_state(active_ligands=[ligand_name])
+    STATE["mode"] = "Docking"
+    STATE["selection_map"] = {
+        "6CM4": {
+            "chain": "all",
+            "ligand_resname": "missing_stale_ligand.sdf",
+            "ligand_resnames": ["missing_stale_ligand.sdf"],
+            "flex_residues": [],
+        }
+    }
+
+    response = core.api_state()
+    data = json.loads(response.body.decode("utf-8"))
+
+    assert data["selection_map"]["6CM4"]["ligand_resname"] == "missing_stale_ligand.sdf"
+    assert data["selection_map"]["6CM4"]["ligand_resname"] != "all_set"
+
+
 def test_build_queue_defaults_empty_docking_selection_to_all_active_ligands():
     ligand_name = _first_ligand_name()
     ligand_path = LIGAND_DIR / ligand_name
@@ -172,7 +192,7 @@ def test_build_queue_rejects_all_set_in_redocking():
     assert "Invalid redocking ligand" in str(exc_info.value.detail)
 
 
-def test_queue_build_does_not_mutate_global_config_or_selection():
+def test_queue_build_does_not_mutate_global_config_or_selection_but_updates_output_state():
     ligand_name = _first_ligand_name()
     _configure_minimal_state(active_ligands=[ligand_name])
     STATE["mode"] = "Docking"
@@ -215,9 +235,10 @@ def test_queue_build_does_not_mutate_global_config_or_selection():
     assert data["queue_count"] == 1
     assert data["queue"][0]["run_count"] == 9
     assert data["queue"][0]["out_root_name"] == "batch_specific"
+    assert data["out_root_name"] == "batch_specific"
     assert STATE["runs"] == 5
     assert STATE["grid_pad"] == 10.0
-    assert STATE["out_root_name"] == "global_config"
+    assert STATE["out_root_name"] == "batch_specific"
     assert STATE["docking_config"]["docking_engine"] == "vina_gpu_21"
     assert STATE["selection_map"]["6CM4"]["ligand_resname"] == "all_set"
     assert STATE["selected_ligand"] == "all_set"
@@ -368,6 +389,7 @@ def test_queue_build_partial_batch_preserves_other_receptor_selection():
         {"pdb_id": "6CM4", "pdb_file": str(receptor_path)},
         {"pdb_id": "8IRV", "pdb_file": str(receptor_path)},
     ]
+    STATE["mode"] = "Docking"
     STATE["selected_receptor"] = "6CM4"
     STATE["selected_chain"] = "A"
     STATE["selected_ligand"] = ligand_name

@@ -107,6 +107,14 @@ def results_detail(payload: dict[str, Any]) -> JSONResponse:
             # This might be the original docked ligand file
             ligand_filename = sdf_file.stem
             break
+    if not native_ligand_path:
+        prepared = entry.get("prepared_artifacts") if isinstance(entry.get("prepared_artifacts"), dict) else {}
+        ligand_artifact = prepared.get("ligand") if isinstance(prepared.get("ligand"), dict) else {}
+        candidate = Path(str(ligand_artifact.get("fixed_sdf") or "")).expanduser()
+        if str(candidate) and candidate.exists():
+            native_ligand_path = str(candidate)
+            if not ligand_filename:
+                ligand_filename = candidate.stem.replace("_ligand_fixed", "").replace("_ligand", "")
 
     pdb_key = str(entry.get("pdb_id") or "").strip().lower()
     if ligand_filename and pdb_key and ligand_filename.strip().lower() == pdb_key:

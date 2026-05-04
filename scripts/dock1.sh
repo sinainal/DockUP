@@ -28,6 +28,7 @@ if [ -x "$DOCKUP_PYTHON" ]; then
   export PATH="$DOCKUP_BIN_DIR:$PATH"
 fi
 export PYTHONNOUSERSITE=1
+export PYTHONPATH="$root_dir:${PYTHONPATH:-}"
 
 if [ -n "$DOCKUP_VINA" ] && [ -x "$DOCKUP_VINA" ]; then
   VINA_BIN="$DOCKUP_VINA"
@@ -37,7 +38,7 @@ else
   VINA_BIN=""
 fi
 
-[ $# -ge 3 ] || { echo "Usage: $0 <PDBID> <CHAIN> <LIGAND_RESNAME> [--lig_spec path_to_sdf] [--pdb_file path_to_receptor.pdb] [--grid_pad value|x,y,z] [--grid_file path] [--flexres A:114[,A:118]] [--docking_engine vina|vina_gpu_21] [--pdb2pqr_ph value] [--pdb2pqr_ff name] [--pdb2pqr_ffout name] [--pdb2pqr_nodebump 1|0] [--pdb2pqr_keep_chain 1|0] [--mkrec_allow_bad_res 1|0] [--mkrec_default_altloc A] [--vina_exhaustiveness N] [--vina_num_modes N] [--vina_energy_range E] [--vina_cpu N] [--vina_seed N]"; exit 1; }
+[ $# -ge 3 ] || { echo "Usage: $0 <PDBID> <CHAIN> <LIGAND_RESNAME> [--lig_spec path_to_sdf] [--pdb_file path_to_receptor.pdb] [--grid_pad value|x,y,z] [--grid_file path] [--flexres A:114[,A:118]] [--prepared_root path] [--docking_engine vina|vina_gpu_21] [--pdb2pqr_ph value] [--pdb2pqr_ff name] [--pdb2pqr_ffout name] [--pdb2pqr_nodebump 1|0] [--pdb2pqr_keep_chain 1|0] [--mkrec_allow_bad_res 1|0] [--mkrec_default_altloc A] [--vina_exhaustiveness N] [--vina_num_modes N] [--vina_energy_range E] [--vina_cpu N] [--vina_seed N]"; exit 1; }
 PDB=$1
 CHAIN=$2
 LIGAND_RESNAME=$3
@@ -61,6 +62,7 @@ VINA_ENERGY_RANGE=""
 VINA_CPU=""
 VINA_SEED=""
 FLEXRES=""
+PREPARED_ROOT="${DOCKUP_PREPARED_ROOT:-}"
 if [ "$#" -gt 3 ]; then
   # shift first three positional args then parse
   shift 3
@@ -80,6 +82,8 @@ if [ "$#" -gt 3 ]; then
         GRID_FILE="$2"; shift 2;;
       --flexres)
         FLEXRES="$2"; shift 2;;
+      --prepared_root|--prepared-root)
+        PREPARED_ROOT="$2"; shift 2;;
       --docking_engine)
         DOCKING_ENGINE="$2"; shift 2;;
       --pdb2pqr_ph)
@@ -178,6 +182,7 @@ PY
 LIG_SPEC=$(normalize_optional_path "$LIG_SPEC")
 PDB_FILE=$(normalize_optional_path "$PDB_FILE")
 GRID_FILE=$(normalize_optional_path "$GRID_FILE")
+PREPARED_ROOT=$(normalize_optional_path "$PREPARED_ROOT")
 
 if [ -n "$PDB_FILE" ] && [ ! -f "$PDB_FILE" ]; then
   echo "Error: --pdb_file not found: $PDB_FILE" >&2
@@ -187,6 +192,16 @@ if [ -n "$GRID_FILE" ] && [ ! -f "$GRID_FILE" ]; then
   echo "Error: --grid_file not found: $GRID_FILE" >&2
   exit 2
 fi
+
+link_or_copy() {
+  local src="$1"
+  local dst="$2"
+  rm -f "$dst"
+  if ln -s "$src" "$dst" 2>/dev/null; then
+    return 0
+  fi
+  cp -f "$src" "$dst"
+}
 
 # Ensure OpenBabel can find its plugin directory when used as fallback
 if [ -z "${BABEL_LIBDIR:-}" ]; then
@@ -208,8 +223,34 @@ if [ -n "${DOCKUP_BIN_DIR:-}" ]; then
   fi
 fi
 
+DOCKUP_PREPARED_INPUT_ENABLED="0"
+DOCKUP_PREPARED_INPUT_PLAN_JSON=""
+DOCKUP_PREPARED_INPUT_RAW_HIT="0"
+DOCKUP_PREPARED_INPUT_PQR_HIT="0"
+if [ -n "$PREPARED_ROOT" ] && [ -n "$PDB_FILE" ]; then
+  if INPUT_EXPORTS=$("$DOCKUP_PYTHON" -m docking_app.prepared_artifacts plan-receptor-input-shell \
+    --prepared-root "$PREPARED_ROOT" \
+    --pdb-id "$PDB" \
+    --chain "$CHAIN" \
+    --ligand-resname "$LIGAND_RESNAME" \
+    --source-pdb "$PDB_FILE" \
+    --pdb2pqr-ph "$PDB2PQR_PH" \
+    --pdb2pqr-ff "$PDB2PQR_FF" \
+    --pdb2pqr-ffout "$PDB2PQR_FFOUT" \
+    --pdb2pqr-nodebump "$PDB2PQR_NODEBUMP" \
+    --pdb2pqr-keep-chain "$PDB2PQR_KEEP_CHAIN"); then
+    eval "$INPUT_EXPORTS"
+  else
+    echo "Warning: prepared receptor input planning failed; continuing without input cache" >&2
+    DOCKUP_PREPARED_INPUT_ENABLED="0"
+  fi
+fi
+
 #──────────────── 1. PyMOL – chain/ligand split (fallback without PyMOL) ─────────────────
-if "$DOCKUP_PYMOL_PYTHON" - "$PDB" "$CHAIN" "$LIGAND_RESNAME" "${PDB_FILE:-}" <<'PY'
+if [ "$DOCKUP_PREPARED_INPUT_ENABLED" = "1" ] && [ "$DOCKUP_PREPARED_INPUT_RAW_HIT" = "1" ]; then
+  link_or_copy "$DOCKUP_PREPARED_INPUT_RAW_PDB" "${PDB}_rec_raw.pdb"
+  echo "Prepared receptor input raw cache hit: $DOCKUP_PREPARED_INPUT_ID"
+elif "$DOCKUP_PYMOL_PYTHON" - "$PDB" "$CHAIN" "$LIGAND_RESNAME" "${PDB_FILE:-}" <<'PY'
 import sys
 from pathlib import Path
 
@@ -346,6 +387,13 @@ except Exception as exc:
 print(f"Fallback ligand saved: {pid}_ligand.sdf")
 PY
 fi
+if [ "$DOCKUP_PREPARED_INPUT_ENABLED" = "1" ] && [ "$DOCKUP_PREPARED_INPUT_RAW_HIT" != "1" ] && [ -f "${PDB}_rec_raw.pdb" ]; then
+  "$DOCKUP_PYTHON" -m docking_app.prepared_artifacts install-receptor-input \
+    --plan-json "$DOCKUP_PREPARED_INPUT_PLAN_JSON" \
+    --raw-pdb "${PDB}_rec_raw.pdb" >/dev/null
+  link_or_copy "$DOCKUP_PREPARED_INPUT_RAW_PDB" "${PDB}_rec_raw.pdb"
+  echo "Prepared receptor input raw cache stored: $DOCKUP_PREPARED_INPUT_ID"
+fi
 # If user provided external ligand spec, copy it to expected filename
 if [ -n "$LIG_SPEC" ]; then
   if [ -f "$LIG_SPEC" ]; then
@@ -357,17 +405,30 @@ if [ -n "$LIG_SPEC" ]; then
 fi
 
 #──────────────── 2. Receptor → PQR (pdb2pqr) ───────────────────────
-pdb2pqr_cmd=(pdb2pqr30 --ff "$PDB2PQR_FF" --ffout "$PDB2PQR_FFOUT" --with-ph "$PDB2PQR_PH")
-if [ "$PDB2PQR_NODEBUMP" = "1" ]; then
-  pdb2pqr_cmd+=(--nodebump)
-fi
-if [ "$PDB2PQR_KEEP_CHAIN" = "1" ]; then
-  pdb2pqr_cmd+=(--keep-chain)
-fi
-pdb2pqr_cmd+=("${PDB}_rec_raw.pdb" "${PDB}_rec.pqr")
-if ! "${pdb2pqr_cmd[@]}"; then
-  echo "Warning: pdb2pqr30 failed; continuing with raw PDB as fallback" >&2
-  cp "${PDB}_rec_raw.pdb" "${PDB}_rec.pqr"
+if [ "$DOCKUP_PREPARED_INPUT_ENABLED" = "1" ] && [ "$DOCKUP_PREPARED_INPUT_PQR_HIT" = "1" ]; then
+  link_or_copy "$DOCKUP_PREPARED_INPUT_PQR" "${PDB}_rec.pqr"
+  echo "Prepared receptor input PQR cache hit: $DOCKUP_PREPARED_INPUT_ID"
+else
+  pdb2pqr_cmd=(pdb2pqr30 --ff "$PDB2PQR_FF" --ffout "$PDB2PQR_FFOUT" --with-ph "$PDB2PQR_PH")
+  if [ "$PDB2PQR_NODEBUMP" = "1" ]; then
+    pdb2pqr_cmd+=(--nodebump)
+  fi
+  if [ "$PDB2PQR_KEEP_CHAIN" = "1" ]; then
+    pdb2pqr_cmd+=(--keep-chain)
+  fi
+  pdb2pqr_cmd+=("${PDB}_rec_raw.pdb" "${PDB}_rec.pqr")
+  if ! "${pdb2pqr_cmd[@]}"; then
+    echo "Warning: pdb2pqr30 failed; continuing with raw PDB as fallback" >&2
+    cp "${PDB}_rec_raw.pdb" "${PDB}_rec.pqr"
+  fi
+  if [ "$DOCKUP_PREPARED_INPUT_ENABLED" = "1" ] && [ -f "${PDB}_rec.pqr" ]; then
+    "$DOCKUP_PYTHON" -m docking_app.prepared_artifacts install-receptor-input \
+      --plan-json "$DOCKUP_PREPARED_INPUT_PLAN_JSON" \
+      --raw-pdb "${PDB}_rec_raw.pdb" \
+      --pqr "${PDB}_rec.pqr" >/dev/null
+    link_or_copy "$DOCKUP_PREPARED_INPUT_PQR" "${PDB}_rec.pqr"
+    echo "Prepared receptor input PQR cache stored: $DOCKUP_PREPARED_INPUT_ID"
+  fi
 fi
 
 
@@ -465,9 +526,63 @@ fi
 read CX CY CZ <<<$(awk -F '=' '/center_[xyz]/{gsub(/[[:space:]]/,"",$2);printf "%s ",$2}' "$GRIDBOX")
 read SX SY SZ <<<$(awk -F '=' '/size_[xyz]/{gsub(/[[:space:]]/,"",$2);printf "%s ",$2}'  "$GRIDBOX")
 
+DOCKUP_PREPARED_ENABLED="0"
+DOCKUP_PREPARED_PLAN_JSON=""
+DOCKUP_PREPARED_RECEPTOR_HIT="0"
+DOCKUP_PREPARED_LIGAND_HIT="0"
+DOCKUP_PREPARED_GRID_HIT="0"
+if [ -n "$PREPARED_ROOT" ]; then
+  if PREPARED_EXPORTS=$("$DOCKUP_PYTHON" -m docking_app.prepared_artifacts plan-shell \
+    --prepared-root "$PREPARED_ROOT" \
+    --pdb-id "$PDB" \
+    --chain "$CHAIN" \
+    --ligand-resname "$LIGAND_RESNAME" \
+    --receptor-pdb "${PDB}_rec_raw.pdb" \
+    --ligand-sdf "${PDB}_ligand.sdf" \
+    --grid-file "$GRIDBOX" \
+    --flexres "$FLEXRES" \
+    --mkrec-allow-bad-res "$MKREC_ALLOW_BAD_RES" \
+    --mkrec-default-altloc "$MKREC_DEFAULT_ALTLOC" \
+    --pdb2pqr-ph "$PDB2PQR_PH" \
+    --pdb2pqr-ff "$PDB2PQR_FF" \
+    --pdb2pqr-ffout "$PDB2PQR_FFOUT" \
+    --pdb2pqr-nodebump "$PDB2PQR_NODEBUMP" \
+    --pdb2pqr-keep-chain "$PDB2PQR_KEEP_CHAIN" \
+    --ligand-source-name "$(basename "${LIG_SPEC:-$LIGAND_RESNAME}")"); then
+    eval "$PREPARED_EXPORTS"
+    if [ "$DOCKUP_PREPARED_GRID_HIT" != "1" ]; then
+      "$DOCKUP_PYTHON" -m docking_app.prepared_artifacts install \
+        --plan-json "$DOCKUP_PREPARED_PLAN_JSON" \
+        --grid-file "$GRIDBOX" >/dev/null
+      DOCKUP_PREPARED_GRID_HIT="1"
+    fi
+    link_or_copy "$DOCKUP_PREPARED_GRID_FILE" "$GRIDBOX"
+    GRIDBOX_LOWER=$(echo "$GRIDBOX" | tr '[:upper:]' '[:lower:]')
+    link_or_copy "$DOCKUP_PREPARED_GRID_FILE" "$GRIDBOX_LOWER"
+    echo "Prepared artifact store active: $PREPARED_ROOT"
+  else
+    echo "Warning: prepared artifact planning failed; continuing without prepared cache" >&2
+    DOCKUP_PREPARED_ENABLED="0"
+  fi
+fi
+
 #──────────────── 5. Receptor PDBQT (rigid or flex split) ──────────────────────
 RIGID_RECEPTOR_PDBQT="${PDB}_receptor.pdbqt"
 FLEX_RECEPTOR_PDBQT=""
+if [ -n "$FLEXRES" ]; then
+  RIGID_RECEPTOR_PDBQT="${PDB}_rigid.pdbqt"
+  FLEX_RECEPTOR_PDBQT="${PDB}_flex.pdbqt"
+fi
+if [ "$DOCKUP_PREPARED_ENABLED" = "1" ] && [ "$DOCKUP_PREPARED_RECEPTOR_HIT" = "1" ]; then
+  link_or_copy "$DOCKUP_PREPARED_RIGID_PDBQT" "$RIGID_RECEPTOR_PDBQT"
+  if [ -n "$FLEX_RECEPTOR_PDBQT" ] && [ -n "$DOCKUP_PREPARED_FLEX_PDBQT" ]; then
+    link_or_copy "$DOCKUP_PREPARED_FLEX_PDBQT" "$FLEX_RECEPTOR_PDBQT"
+  fi
+  if [ -n "$DOCKUP_PREPARED_RECEPTOR_JSON" ] && [ -f "$DOCKUP_PREPARED_RECEPTOR_JSON" ]; then
+    link_or_copy "$DOCKUP_PREPARED_RECEPTOR_JSON" "${PDB}.json"
+  fi
+  echo "Prepared receptor cache hit: $DOCKUP_PREPARED_RECEPTOR_ID"
+else
 mk_prepare_rec_cmd=(
   "$MK_PREP_REC"
   --read_pdb "${PDB}_rec_raw.pdb"
@@ -482,8 +597,6 @@ if [ -n "$MKREC_DEFAULT_ALTLOC" ]; then
 fi
 if [ -n "$FLEXRES" ]; then
   mk_prepare_rec_cmd+=(-o "${PDB}" -p -j -f "$FLEXRES")
-  RIGID_RECEPTOR_PDBQT="${PDB}_rigid.pdbqt"
-  FLEX_RECEPTOR_PDBQT="${PDB}_flex.pdbqt"
 else
   mk_prepare_rec_cmd+=(--write_pdbqt "${RIGID_RECEPTOR_PDBQT}")
 fi
@@ -503,8 +616,29 @@ if ! "${mk_prepare_rec_cmd[@]}"; then
     exit 1
   fi
 fi
+if [ "$DOCKUP_PREPARED_ENABLED" = "1" ]; then
+  "$DOCKUP_PYTHON" -m docking_app.prepared_artifacts install \
+    --plan-json "$DOCKUP_PREPARED_PLAN_JSON" \
+    --rigid-pdbqt "$RIGID_RECEPTOR_PDBQT" \
+    --flex-pdbqt "$FLEX_RECEPTOR_PDBQT" \
+    --receptor-json "${PDB}.json" >/dev/null
+  link_or_copy "$DOCKUP_PREPARED_RIGID_PDBQT" "$RIGID_RECEPTOR_PDBQT"
+  if [ -n "$FLEX_RECEPTOR_PDBQT" ] && [ -n "$DOCKUP_PREPARED_FLEX_PDBQT" ] && [ -f "$DOCKUP_PREPARED_FLEX_PDBQT" ]; then
+    link_or_copy "$DOCKUP_PREPARED_FLEX_PDBQT" "$FLEX_RECEPTOR_PDBQT"
+  fi
+  if [ -f "$DOCKUP_PREPARED_RECEPTOR_JSON" ]; then
+    link_or_copy "$DOCKUP_PREPARED_RECEPTOR_JSON" "${PDB}.json"
+  fi
+  echo "Prepared receptor cache stored: $DOCKUP_PREPARED_RECEPTOR_ID"
+fi
+fi
 
 #──────────────── 6. Ligand: RDKit + mk_prepare_ligand.py ───────────
+if [ "$DOCKUP_PREPARED_ENABLED" = "1" ] && [ "$DOCKUP_PREPARED_LIGAND_HIT" = "1" ]; then
+  link_or_copy "$DOCKUP_PREPARED_LIGAND_FIXED_SDF" "${PDB}_ligand_fixed.sdf"
+  link_or_copy "$DOCKUP_PREPARED_LIGAND_PDBQT" "${PDB}_ligand.pdbqt"
+  echo "Prepared ligand cache hit: $DOCKUP_PREPARED_LIGAND_ID"
+else
 "$DOCKUP_PYTHON" - <<PY
 import sys
 from rdkit import Chem
@@ -554,6 +688,49 @@ if ! "$MK_PREP_LIG" -i "${PDB}_ligand_fixed.sdf" -o "${PDB}_ligand.pdbqt"; then
     echo "Error: mk_prepare_ligand.py failed and obabel not available" >&2
     exit 1
   fi
+fi
+if [ "$DOCKUP_PREPARED_ENABLED" = "1" ]; then
+  "$DOCKUP_PYTHON" -m docking_app.prepared_artifacts install \
+    --plan-json "$DOCKUP_PREPARED_PLAN_JSON" \
+    --ligand-pdbqt "${PDB}_ligand.pdbqt" \
+    --ligand-fixed-sdf "${PDB}_ligand_fixed.sdf" >/dev/null
+  link_or_copy "$DOCKUP_PREPARED_LIGAND_FIXED_SDF" "${PDB}_ligand_fixed.sdf"
+  link_or_copy "$DOCKUP_PREPARED_LIGAND_PDBQT" "${PDB}_ligand.pdbqt"
+  echo "Prepared ligand cache stored: $DOCKUP_PREPARED_LIGAND_ID"
+fi
+fi
+
+if [ "$DOCKUP_PREPARED_ENABLED" = "1" ]; then
+  DOCKUP_PREPARED_PLAN_JSON_ENV="$DOCKUP_PREPARED_PLAN_JSON" \
+  DOCKUP_PREPARED_INPUT_PLAN_JSON_ENV="$DOCKUP_PREPARED_INPUT_PLAN_JSON" \
+  DOCKUP_PREPARED_RECEPTOR_HIT_ENV="$DOCKUP_PREPARED_RECEPTOR_HIT" \
+  DOCKUP_PREPARED_LIGAND_HIT_ENV="$DOCKUP_PREPARED_LIGAND_HIT" \
+  DOCKUP_PREPARED_GRID_HIT_ENV="$DOCKUP_PREPARED_GRID_HIT" \
+  "$DOCKUP_PYTHON" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+plan = json.loads(os.environ["DOCKUP_PREPARED_PLAN_JSON_ENV"])
+try:
+    input_plan = json.loads(os.environ.get("DOCKUP_PREPARED_INPUT_PLAN_JSON_ENV") or "{}")
+except Exception:
+    input_plan = {}
+payload = {
+    "schema_version": 1,
+    "prepared_root": plan.get("prepared_root"),
+    "cache_hit_at_start": {
+        "receptor": os.environ.get("DOCKUP_PREPARED_RECEPTOR_HIT_ENV") == "1",
+        "ligand": os.environ.get("DOCKUP_PREPARED_LIGAND_HIT_ENV") == "1",
+        "grid": os.environ.get("DOCKUP_PREPARED_GRID_HIT_ENV") == "1",
+    },
+    "receptor": plan.get("receptor") or {},
+    "receptor_input": input_plan.get("receptor_input") or {},
+    "ligand": plan.get("ligand") or {},
+    "grid": plan.get("grid") or {},
+}
+Path("prepared_artifacts.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+PY
 fi
 
 #──────────────── 7. Docking – AutoDock Vina / Vina-GPU 2.1 ────────────────────────

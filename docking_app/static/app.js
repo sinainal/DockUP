@@ -4563,6 +4563,15 @@ function findDockedLigandSelection(component, result) {
   return residues.map((residue) => `(${residue.sele})`).join(" or ");
 }
 
+function getStructureChains(component) {
+  const chains = new Set();
+  if (!component || !component.structure) return [];
+  component.structure.eachAtom((atom) => {
+    chains.add(String(atom.chainname || "").trim() || "_");
+  });
+  return Array.from(chains).sort((a, b) => a.localeCompare(b));
+}
+
 function isProteinAtom(atom) {
   const resname = normalizeResname(atom?.resname || "");
   return AMINO_ACID_RESN.has(resname);
@@ -5129,8 +5138,8 @@ function renderResultsTable() {
   const header = document.createElement("div");
   header.className = "table-row header";
   if (isAverage) {
-    header.style.gridTemplateColumns = "1fr 0.8fr 0.5fr 0.6fr 0.6fr";
-    header.innerHTML = "<div>PDB</div><div>Ligand</div><div>Runs</div><div>Avg Affinity</div><div>Avg RMSD</div>";
+    header.style.gridTemplateColumns = "1fr 0.8fr 0.5fr 0.6fr 0.6fr 0.6fr 0.6fr";
+    header.innerHTML = "<div>PDB</div><div>Ligand</div><div>Runs</div><div>Avg Affinity</div><div>Std</div><div>Avg RMSD</div><div>Std</div>";
   } else {
     header.style.gridTemplateColumns = "0.8fr 0.5fr 0.8fr 0.6fr 0.6fr 0.6fr";
     header.innerHTML = "<div>PDB</div><div>Run</div><div>Ligand</div><div>Affinity</div><div>RMSD</div><div>Interactions</div>";
@@ -5141,13 +5150,15 @@ function renderResultsTable() {
     const item = document.createElement("div");
     item.className = "table-row";
     if (isAverage) {
-      item.style.gridTemplateColumns = "1fr 0.8fr 0.5fr 0.6fr 0.6fr";
+      item.style.gridTemplateColumns = "1fr 0.8fr 0.5fr 0.6fr 0.6fr 0.6fr 0.6fr";
       item.innerHTML = `
         <div>${row.pdb_id || "-"}</div>
         <div>${row.ligand_display_name || row.ligand_resname || "-"}</div>
         <div>${row.run_count || 0}</div>
         <div>${formatNumber(row.avg_affinity)}</div>
+        <div>${formatNumber(row.std_affinity)}</div>
         <div>${formatNumber(row.avg_rmsd)}</div>
+        <div>${formatNumber(row.std_rmsd)}</div>
       `;
       item.addEventListener("click", () => {
         els.resultsTable.querySelectorAll(".table-row:not(.header)").forEach(r => r.classList.remove("selected"));
@@ -5367,11 +5378,11 @@ function renderResultDetail(result) {
         </div>
         <div class="result-detail-item">
           <div class="result-detail-label">Avg Affinity</div>
-          <div class="result-detail-value">${formatNumber(result.avg_affinity)}</div>
+          <div class="result-detail-value">${formatNumber(result.avg_affinity)} ± ${formatNumber(result.std_affinity)}</div>
         </div>
         <div class="result-detail-item">
           <div class="result-detail-label">Avg RMSD</div>
-          <div class="result-detail-value">${formatNumber(result.avg_rmsd)}</div>
+          <div class="result-detail-value">${formatNumber(result.avg_rmsd)} ± ${formatNumber(result.std_rmsd)}</div>
         </div>
         <div class="result-detail-item">
           <div class="result-detail-label">Range</div>
@@ -5475,6 +5486,10 @@ function renderResultDetail(result) {
       </div>
       <div class="result-detail-item">
         <div class="result-detail-label">Chain</div>
+        <div class="result-detail-value">${result.chain || "-"}</div>
+      </div>
+      <div class="result-detail-item">
+        <div class="result-detail-label">Ligand Chain</div>
         <div class="result-detail-value">${result.ligand_chain || "-"}</div>
       </div>
       <div class="result-detail-item">
@@ -5605,6 +5620,8 @@ async function loadResultStructure(result, originalReceptorPath) {
 
     comp = component;
     nativeLigComp = nextNativeLigComp;
+    updateViewerChainOptions(getStructureChains(comp), "all");
+    if (els.showDockedLigand) els.showDockedLigand.checked = true;
     representations = { cartoon: null, surface: null, nativeLigand: null, dockedLigand: null, focusedLigand: null, sticks: null, selectedAtom: null, residueSearch: null, flexResidueSearch: null, highlightedResidue: null };
     selectedAtomData = null;
     externalGridSelectionData = appState.selectedReceptor
@@ -6099,8 +6116,9 @@ function toObjectOrEmpty(value) {
 }
 
 function enforceResultsInteractionToggle() {
-  if (appState.mode === "Results" && els.showInteractions) {
-    els.showInteractions.checked = true;
+  if (appState.mode === "Results") {
+    if (els.showInteractions) els.showInteractions.checked = true;
+    if (els.showDockedLigand) els.showDockedLigand.checked = true;
   }
 }
 
@@ -6539,7 +6557,14 @@ async function renderReceptorSummary(rows) {
       });
 
       let selectedLigandValue = String(appState.selectionMap?.[row.pdb_id]?.ligand_resname || "");
-      if (appState.mode !== "Redocking" && (!selectedLigandValue || (selectedLigandValue !== "all_set" && !activeLigands.includes(selectedLigandValue)))) {
+      if (appState.mode !== "Redocking" && selectedLigandValue && selectedLigandValue !== "all_set" && !activeLigands.includes(selectedLigandValue)) {
+        ligandOptions.push({
+          value: selectedLigandValue,
+          label: `${selectedLigandValue} (missing)`,
+          disabled: true,
+        });
+      }
+      if (appState.mode !== "Redocking" && !selectedLigandValue) {
         selectedLigandValue = "all_set";
         if (!appState.selectionMap) appState.selectionMap = {};
         if (!appState.selectionMap[row.pdb_id]) appState.selectionMap[row.pdb_id] = {};
@@ -7427,9 +7452,15 @@ async function buildQueue() {
   hydrateGridDataFromQueue(appState.queueData);
   const normalizedSelectionMap = normalizeSelectionMapState(JSON.parse(JSON.stringify(appState.selectionMap || {})));
   const selectionMap = {};
+  const visibleReceptorIds = new Set(
+    (latestReceptorSummaryRows || [])
+      .map((row) => String(row?.pdb_id || "").trim().toUpperCase())
+      .filter(Boolean)
+  );
   Object.entries(normalizedSelectionMap).forEach(([pdbId, row]) => {
     const normalizedPdbId = String(pdbId || "").trim().toUpperCase();
     if (!normalizedPdbId) return;
+    if (visibleReceptorIds.size && !visibleReceptorIds.has(normalizedPdbId)) return;
     selectionMap[normalizedPdbId] = { ...row };
   });
   Object.keys(selectionMap).forEach((pdbId) => {
@@ -7444,9 +7475,6 @@ async function buildQueue() {
     } else {
       if (!lig || lig === "all_set") return;
       if (!activeSet.has(lig)) {
-        row.ligand_resname = "";
-        row.ligand = "";
-        row.ligand_resnames = [];
         selectionMap[pdbId] = row;
       }
     }
@@ -7482,6 +7510,12 @@ async function buildQueue() {
   });
   appState.queueData = Array.isArray(data.queue) ? data.queue : [];
   appState.queueCount = data.queue_count || 0;
+  if (typeof data.out_root_path === "string" && els.outRootPath) {
+    els.outRootPath.value = data.out_root_path || "data/dock";
+  }
+  if (typeof data.out_root_name === "string" && els.outRootName) {
+    els.outRootName.value = data.out_root_name || "";
+  }
   const nextBatchIds = [...new Set(appState.queueData.map((row) => normalizeQueueBatchId(row?.batch_id)).filter(Boolean))];
   const appendedBatchIds = nextBatchIds.filter((batchId) => !previousBatchIds.has(batchId));
   appState.selectedQueueBatchId = appendedBatchIds.length === 1 ? appendedBatchIds[0] : null;
@@ -7530,6 +7564,8 @@ function renderQueueTable(queue) {
 
     // Batch Container
     const batchContainer = document.createElement("div");
+    batchContainer.className = "queue-batch-card";
+    batchContainer.style.display = "block";
     batchContainer.style.marginBottom = "16px";
     batchContainer.style.border = "1px solid var(--border)";
     batchContainer.style.borderRadius = "6px";
@@ -7544,6 +7580,7 @@ function renderQueueTable(queue) {
     batchHeader.style.background = "var(--surface-2)";
     batchHeader.style.padding = "8px 12px";
     batchHeader.style.display = "flex";
+    batchHeader.style.minHeight = "38px";
     batchHeader.style.justifyContent = "space-between";
     batchHeader.style.alignItems = "center";
     batchHeader.style.borderBottom = "1px solid var(--border)";

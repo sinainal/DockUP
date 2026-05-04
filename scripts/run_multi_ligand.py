@@ -43,7 +43,12 @@ def _load_dotenv(dotenv_path: Path) -> None:
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = SCRIPT_DIR.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 _load_dotenv(ROOT_DIR / ".env")
+
+from docking_app.prepared_artifacts import install as install_prepared_artifacts
+from docking_app.prepared_artifacts import plan as plan_prepared_artifacts
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -179,6 +184,26 @@ def _sanitize_folder_name(raw: str) -> str:
     text = re.sub(r"[^A-Za-z0-9_.+-]+", "_", text)
     text = text.replace("+", "_plus_")
     return text.strip("._") or "Ligand_Set"
+
+
+def _stage_output_path(path: Path, target: Path, *, prepared_root: Path | None = None) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        target.unlink()
+    use_link = False
+    if prepared_root is not None:
+        try:
+            path.resolve().relative_to(prepared_root.resolve())
+            use_link = True
+        except ValueError:
+            use_link = False
+    if use_link:
+        try:
+            target.symlink_to(path.resolve())
+            return
+        except OSError:
+            pass
+    shutil.copy2(path, target)
 
 
 def _read_grid_file(path: Path) -> dict[str, float]:
@@ -581,6 +606,7 @@ def _build_site_payloads(
     receptor_pdb: Path,
     prepared_ligands: list[dict[str, Any]],
     pdb_id: str,
+    prepared_root: Path | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     root, bindingsites = _parse_bindingsites(report_xml)
     if len(bindingsites) < 2:
@@ -625,7 +651,7 @@ def _build_site_payloads(
         ligand_fixed_target = site_dir / f"{pdb_id}_ligand_fixed.sdf"
         meta_path = site_dir / "meta.json"
         shutil.copy2(prepared["pose_pdb"], pose_target)
-        shutil.copy2(prepared["fixed_sdf"], ligand_fixed_target)
+        _stage_output_path(Path(prepared["fixed_sdf"]), ligand_fixed_target, prepared_root=prepared_root)
 
         receptor_atoms, ligand_atoms = _parse_atoms(
             complex_pdb,
@@ -778,6 +804,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grid_file", required=True)
     parser.add_argument("--run_id", default="1")
     parser.add_argument("--out_root", default="")
+    parser.add_argument("--prepared_root", default="")
     parser.add_argument("--pdb2pqr_ph", default="")
     parser.add_argument("--pdb2pqr_ff", default="")
     parser.add_argument("--pdb2pqr_ffout", default="")
@@ -826,6 +853,7 @@ def main() -> None:
     grid_file = Path(_normalize_optional_path(args.grid_file))
     run_id = int(args.run_id or 1)
     out_root_raw = str(args.out_root or "").strip()
+    prepared_root_raw = str(args.prepared_root or "").strip()
     ligand_rows = _load_ligand_manifest(ligand_manifest)
     ligand_label = " + ".join(Path(item["name"]).stem for item in ligand_rows)
     ligand_suffix = _sanitize_folder_name(ligand_label)
@@ -835,6 +863,7 @@ def main() -> None:
         out_dir = out_root / pdb_id / ligand_suffix / f"run{run_id}"
     else:
         out_dir = SCRIPT_DIR / pdb_id / ligand_suffix / f"run{run_id}"
+    prepared_root = Path(_normalize_optional_path(prepared_root_raw)) if prepared_root_raw else (Path(_normalize_optional_path(out_root_raw)) / "_prepared" if out_root_raw else None)
     out_dir.mkdir(parents=True, exist_ok=True)
     work_dir = Path(
         tempfile.mkdtemp(prefix=".multi_run_", dir=str(out_dir))
@@ -851,15 +880,43 @@ def main() -> None:
         _write_grid_file(grid_out, grid)
 
         receptor_pdbqt = work_dir / f"{pdb_id}_receptor.pdbqt"
-        _prepare_receptor_pdbqt(
-            mk_prepare_receptor,
-            receptor_pdb=rec_raw,
-            grid=grid,
-            out_path=receptor_pdbqt,
-            allow_bad_res=_env_bool("DOCKUP_MKREC_ALLOW_BAD_RES", str(args.mkrec_allow_bad_res) != "0"),
-            default_altloc=str(args.mkrec_default_altloc or "A").strip() or "A",
-            cwd=work_dir,
-        )
+        receptor_plan: dict[str, Any] | None = None
+        if prepared_root is not None:
+            receptor_plan = plan_prepared_artifacts(
+                prepared_root=prepared_root,
+                pdb_id=pdb_id,
+                chain=chain,
+                ligand_resname=ligand_label,
+                receptor_pdb=rec_raw,
+                ligand_sdf=Path(ligand_rows[0]["path"]),
+                grid_file=grid_out,
+                flexres="",
+                mkrec_allow_bad_res=str(args.mkrec_allow_bad_res or "1"),
+                mkrec_default_altloc=str(args.mkrec_default_altloc or "A"),
+                pdb2pqr_ph=str(args.pdb2pqr_ph or ""),
+                pdb2pqr_ff=str(args.pdb2pqr_ff or ""),
+                pdb2pqr_ffout=str(args.pdb2pqr_ffout or ""),
+                pdb2pqr_nodebump=str(args.pdb2pqr_nodebump or ""),
+                pdb2pqr_keep_chain=str(args.pdb2pqr_keep_chain or ""),
+                ligand_source_name=ligand_label,
+            )
+        if receptor_plan and receptor_plan.get("cache_hit", {}).get("receptor"):
+            receptor_pdbqt = Path(receptor_plan["receptor"]["rigid_pdbqt"])
+            print(f"Prepared receptor cache hit: {receptor_plan['receptor']['id']}")
+        else:
+            _prepare_receptor_pdbqt(
+                mk_prepare_receptor,
+                receptor_pdb=rec_raw,
+                grid=grid,
+                out_path=receptor_pdbqt,
+                allow_bad_res=_env_bool("DOCKUP_MKREC_ALLOW_BAD_RES", str(args.mkrec_allow_bad_res) != "0"),
+                default_altloc=str(args.mkrec_default_altloc or "A").strip() or "A",
+                cwd=work_dir,
+            )
+            if receptor_plan:
+                install_prepared_artifacts(receptor_plan, sources={"rigid_pdbqt": str(receptor_pdbqt), "grid_file": str(grid_out)})
+                receptor_pdbqt = Path(receptor_plan["receptor"]["rigid_pdbqt"])
+                print(f"Prepared receptor cache stored: {receptor_plan['receptor']['id']}")
 
         prepared_ligands: list[dict[str, Any]] = []
         ligand_chains = ["X", "Y"]
@@ -869,13 +926,43 @@ def main() -> None:
             source_path = Path(ligand_row["path"])
             fixed_sdf = work_dir / f"{pdb_id}_ligand_{index}_fixed.sdf"
             ligand_pdbqt = work_dir / f"{pdb_id}_ligand_{index}.pdbqt"
-            _process_ligand_sdf(source_path, fixed_sdf)
-            _prepare_ligand_pdbqt(
-                mk_prepare_ligand,
-                fixed_sdf_path=fixed_sdf,
-                out_path=ligand_pdbqt,
-                cwd=work_dir,
-            )
+            ligand_plan: dict[str, Any] | None = None
+            if prepared_root is not None:
+                ligand_plan = plan_prepared_artifacts(
+                    prepared_root=prepared_root,
+                    pdb_id=pdb_id,
+                    chain=chain,
+                    ligand_resname=display_name,
+                    receptor_pdb=rec_raw,
+                    ligand_sdf=source_path,
+                    grid_file=grid_out,
+                    flexres="",
+                    mkrec_allow_bad_res=str(args.mkrec_allow_bad_res or "1"),
+                    mkrec_default_altloc=str(args.mkrec_default_altloc or "A"),
+                    pdb2pqr_ph=str(args.pdb2pqr_ph or ""),
+                    pdb2pqr_ff=str(args.pdb2pqr_ff or ""),
+                    pdb2pqr_ffout=str(args.pdb2pqr_ffout or ""),
+                    pdb2pqr_nodebump=str(args.pdb2pqr_nodebump or ""),
+                    pdb2pqr_keep_chain=str(args.pdb2pqr_keep_chain or ""),
+                    ligand_source_name=source_name,
+                )
+            if ligand_plan and ligand_plan.get("cache_hit", {}).get("ligand"):
+                fixed_sdf = Path(ligand_plan["ligand"]["fixed_sdf"])
+                ligand_pdbqt = Path(ligand_plan["ligand"]["pdbqt"])
+                print(f"Prepared ligand cache hit: {ligand_plan['ligand']['id']}")
+            else:
+                _process_ligand_sdf(source_path, fixed_sdf)
+                _prepare_ligand_pdbqt(
+                    mk_prepare_ligand,
+                    fixed_sdf_path=fixed_sdf,
+                    out_path=ligand_pdbqt,
+                    cwd=work_dir,
+                )
+                if ligand_plan:
+                    install_prepared_artifacts(ligand_plan, sources={"ligand_pdbqt": str(ligand_pdbqt), "ligand_fixed_sdf": str(fixed_sdf), "grid_file": str(grid_out)})
+                    fixed_sdf = Path(ligand_plan["ligand"]["fixed_sdf"])
+                    ligand_pdbqt = Path(ligand_plan["ligand"]["pdbqt"])
+                    print(f"Prepared ligand cache stored: {ligand_plan['ligand']['id']}")
             prepared_ligands.append(
                 {
                     "source_name": source_name,
@@ -886,6 +973,7 @@ def main() -> None:
                     "ligand_resname": f"M{index:02d}"[-3:],
                     "ligand_chain": ligand_chains[index - 1],
                     "ligand_resid": str(index),
+                    "prepared_artifact": ligand_plan.get("ligand") if ligand_plan else {},
                 }
             )
 
@@ -1019,7 +1107,7 @@ def main() -> None:
 
         (out_dir / "plip").mkdir(parents=True, exist_ok=True)
         for path in [receptor_pdbqt, *vina_output_paths, *vina_log_paths, grid_out, rec_raw, complex_pdb]:
-            shutil.copy2(path, out_dir / path.name)
+            _stage_output_path(path, out_dir / path.name, prepared_root=prepared_root)
         shutil.copy2(report_xml, out_dir / "plip" / "report.xml")
 
         site_rows, merged_interaction_map = _build_site_payloads(
@@ -1029,6 +1117,7 @@ def main() -> None:
             receptor_pdb=out_dir / f"{pdb_id}_rec_raw.pdb",
             prepared_ligands=prepared_ligands,
             pdb_id=pdb_id,
+            prepared_root=prepared_root,
         )
         (out_dir / "interaction_map.json").write_text(json.dumps(merged_interaction_map, indent=2), encoding="utf-8")
         (out_dir / "multi_ligand" / "sites.json").write_text(json.dumps({"sites": site_rows}, indent=2), encoding="utf-8")
@@ -1041,6 +1130,35 @@ def main() -> None:
             ligand_display_name=ligand_label,
             site_rows=site_rows,
             interaction_map=merged_interaction_map,
+        )
+        (out_dir / "result_manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "pdb_id": pdb_id,
+                    "chain": chain,
+                    "ligand_name": ligand_suffix,
+                    "ligand_resname": ligand_label,
+                    "run_id": run_id,
+                    "job_type": "Multi-Ligand",
+                    "docking_mode": "standard",
+                    "flex_residues": [],
+                    "prepared_artifacts": {
+                        "prepared_root": str(prepared_root.resolve()) if prepared_root else "",
+                        "receptor": receptor_plan.get("receptor") if receptor_plan else {},
+                        "ligands": [item.get("prepared_artifact") or {} for item in prepared_ligands],
+                    },
+                    "files": {
+                        "results_json": str((out_dir / "results.json").resolve()),
+                        "interaction_map": str((out_dir / "interaction_map.json").resolve()),
+                        "complex_pdb": str((out_dir / f"{pdb_id}_complex.pdb").resolve()),
+                        "receptor_pdb": str((out_dir / f"{pdb_id}_rec_raw.pdb").resolve()),
+                        "plip_report": str((out_dir / "plip" / "report.xml").resolve()),
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
         )
 
         print(f"Run complete. Results in: {out_dir}")

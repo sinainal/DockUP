@@ -119,11 +119,7 @@ def _sanitize_selection_for_mode(mode: str, selection_map: dict[str, Any]) -> di
             or ([ligand_label] if ligand_label and ligand_label != "all_set" else [])
         )
         if normalized_mode == "Docking":
-            available = {path.name for path in LIGAND_DIR.glob("*.sdf") if path.is_file()}
-            if ligand_label and ligand_label != "all_set" and ligand_label not in available:
-                ligand_label = "all_set"
-                ligand_names = []
-            elif not ligand_label and not ligand_names:
+            if not ligand_label and not ligand_names:
                 ligand_label = "all_set"
         elif normalized_mode == "Redocking" and ligand_label == "all_set":
             ligand_label = ""
@@ -951,6 +947,17 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
         STATE["queue"] = list(new_jobs)
     else:
         STATE["queue"].extend(new_jobs)
+    if new_jobs:
+        first_out_root = str(new_jobs[0].get("out_root") or "").strip()
+        if first_out_root:
+            STATE["out_root"] = first_out_root
+            try:
+                resolved = Path(first_out_root).expanduser().resolve()
+                STATE["out_root_path"] = to_display_path(resolved.parent)
+                STATE["out_root_name"] = resolved.name
+            except Exception:
+                STATE["out_root_path"] = str(Path(first_out_root).parent)
+                STATE["out_root_name"] = Path(first_out_root).name
     save_state_cache()  # persist queue + out_root so they survive hot-reload
 
     # --- Debug info (diagnose empty queue) ---
@@ -976,6 +983,9 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
     return JSONResponse({
         "queue_count": len(STATE["queue"]),
         "queue": STATE["queue"],
+        "out_root": STATE.get("out_root", ""),
+        "out_root_path": STATE.get("out_root_path", "data/dock"),
+        "out_root_name": STATE.get("out_root_name", ""),
         "debug": debug,
     })
 

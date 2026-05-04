@@ -575,6 +575,14 @@ def _parse_results_folder(folder: Path) -> dict[str, Any] | None:
     flex_residues = normalize_flex_residue_list(payload.get("flex_residues") or payload.get("flex_residue_spec") or [])
     is_multi_ligand = bool(payload.get("multi_ligand"))
     payload_site_rows = payload.get("multi_ligand_sites") if isinstance(payload.get("multi_ligand_sites"), list) else []
+    manifest_path = folder / "result_manifest.json"
+    manifest: dict[str, Any] = {}
+    if manifest_path.exists():
+        try:
+            raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest = raw_manifest if isinstance(raw_manifest, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            manifest = {}
 
     pdb_id = folder.name
     run_id = None
@@ -630,6 +638,16 @@ def _parse_results_folder(folder: Path) -> dict[str, Any] | None:
         if is_multi_ligand and isinstance(imap.get("sites"), list):
             payload_site_rows = [row for row in imap.get("sites", []) if isinstance(row, dict)]
 
+    manifest_files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+    if manifest:
+        pdb_id = str(manifest.get("pdb_id") or pdb_id)
+        ligand_from_folder = str(manifest.get("ligand_name") or ligand_from_folder)
+        if manifest.get("run_id") is not None:
+            try:
+                run_id = int(manifest.get("run_id"))
+            except (TypeError, ValueError):
+                pass
+
     pdb_id_upper = pdb_id.upper()
     pdb_id_lower = pdb_id.lower()
 
@@ -673,6 +691,23 @@ def _parse_results_folder(folder: Path) -> dict[str, Any] | None:
         if not report_path:
             report_path = str(report_xml)
 
+    for key, target_name in (
+        ("complex_pdb", "complex_path"),
+        ("pose_pdb", "pose_path"),
+        ("receptor_pdb", "receptor_path"),
+        ("plip_report", "report_path"),
+    ):
+        raw_path = str(manifest_files.get(key) or "").strip()
+        if raw_path and Path(raw_path).exists():
+            if target_name == "complex_path":
+                complex_path = raw_path
+            elif target_name == "pose_path":
+                pose_path = raw_path
+            elif target_name == "receptor_path":
+                receptor_path = raw_path
+            elif target_name == "report_path":
+                report_path = raw_path
+
     ligand_display = ligand_from_folder
     if is_multi_ligand:
         ligand_display = str(payload.get("ligand_display_name") or ligand_display or "Multi-Ligand").strip() or "Multi-Ligand"
@@ -692,15 +727,16 @@ def _parse_results_folder(folder: Path) -> dict[str, Any] | None:
     return {
         "name": folder.name,
         "pdb_id": pdb_id,
+        "chain": str(manifest.get("chain") or ""),
         "run_id": run_id,
         "best_affinity": best_affinity,
         "rmsd": rmsd,
-        "docking_mode": docking_mode,
-        "job_type": str(payload.get("job_type") or "Docking"),
+        "docking_mode": str(manifest.get("docking_mode") or docking_mode),
+        "job_type": str(manifest.get("job_type") or payload.get("job_type") or "Docking"),
         "multi_ligand": is_multi_ligand,
         "ligand_count": int(payload.get("ligand_count") or (len(payload_site_rows) or 0)),
         "multi_ligand_sites": payload_site_rows,
-        "flex_residues": flex_residues,
+        "flex_residues": manifest.get("flex_residues") if isinstance(manifest.get("flex_residues"), list) else flex_residues,
         "ligand_resname": ligand_resname,
         "ligand_display_name": ligand_display,
         "ligand_chain": ligand_chain,
@@ -713,6 +749,8 @@ def _parse_results_folder(folder: Path) -> dict[str, Any] | None:
         "receptor_path": receptor_path,
         "complex_path": complex_path,
         "report_path": report_path,
+        "result_manifest_path": str(manifest_path) if manifest_path.exists() else "",
+        "prepared_artifacts": manifest.get("prepared_artifacts") if isinstance(manifest.get("prepared_artifacts"), dict) else {},
     }
 
 
@@ -746,6 +784,16 @@ def _scan_results(root_path: str) -> dict[str, Any]:
         rmsd_vals = [v for v in (it.get("rmsd") for it in items) if v is not None]
         avg_aff = sum(aff_vals) / len(aff_vals) if aff_vals else None
         avg_rmsd = sum(rmsd_vals) / len(rmsd_vals) if rmsd_vals else None
+        aff_std = (
+            (sum((value - avg_aff) ** 2 for value in aff_vals) / len(aff_vals)) ** 0.5
+            if aff_vals and avg_aff is not None
+            else None
+        )
+        rmsd_std = (
+            (sum((value - avg_rmsd) ** 2 for value in rmsd_vals) / len(rmsd_vals)) ** 0.5
+            if rmsd_vals and avg_rmsd is not None
+            else None
+        )
         averages.append(
             {
                 "pdb_id": pdb_id,
@@ -753,7 +801,9 @@ def _scan_results(root_path: str) -> dict[str, Any]:
                 "ligand_resname": ligand_label,
                 "run_count": len(items),
                 "avg_affinity": avg_aff,
+                "std_affinity": aff_std,
                 "avg_rmsd": avg_rmsd,
+                "std_rmsd": rmsd_std,
                 "min_affinity": min(aff_vals) if aff_vals else None,
                 "max_affinity": max(aff_vals) if aff_vals else None,
             }
@@ -1137,6 +1187,7 @@ def _start_run(
             "    ! is_empty \"$vina_cpu\" && args+=(--vina_cpu \"$vina_cpu\")\n"
             "    ! is_empty \"$vina_seed\" && args+=(--vina_seed \"$vina_seed\")\n"
             "    ! is_empty \"$OUT_ROOT\" && args+=(--out_root \"$OUT_ROOT\")\n"
+            "    ! is_empty \"$OUT_ROOT\" && args+=(--prepared_root \"$OUT_ROOT/_prepared\")\n"
             "    runner=\"$SCRIPT_DIR/run1.sh\"\n"
             "    if [[ \"$job_type\" == \"Multi-Ligand\" ]]; then\n"
             "      runner=\"$SCRIPT_DIR/run_multi_ligand.py\"\n"

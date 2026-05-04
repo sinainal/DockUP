@@ -16,7 +16,7 @@ from ..config import BASE
 EXTENSION_ID = "gemini_agent"
 ROOT_DIR = BASE / ".venv" / "dockup_extensions" / EXTENSION_ID
 STATE_PATH = ROOT_DIR / "state.json"
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 CLI_MODEL = "gemini-cli"
 CLI_MODEL_PREFIX = "gemini-cli:"
 DEFAULT_CLI_MODEL = f"{CLI_MODEL_PREFIX}{DEFAULT_MODEL}"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[ $# -ge 3 ] || { echo "Usage: $0 <PDBID> <CHAIN> <LIGAND_RESNAME> [--lig_spec /path/to_ligand.sdf] [--pdb_file /path/to/receptor.pdb] [--grid_pad value|x,y,z] [--grid_file path_to_gridbox.txt] [--flexres A:114[,A:118]] [--run_id N] [--out_root /path/to/output_root] [--pdb2pqr_ph value] [--pdb2pqr_ff name] [--pdb2pqr_ffout name] [--pdb2pqr_nodebump 1|0] [--pdb2pqr_keep_chain 1|0] [--mkrec_allow_bad_res 1|0] [--mkrec_default_altloc A] [--vina_exhaustiveness N] [--vina_num_modes N] [--vina_energy_range E] [--vina_cpu N] [--vina_seed N]"; exit 1; }
+[ $# -ge 3 ] || { echo "Usage: $0 <PDBID> <CHAIN> <LIGAND_RESNAME> [--lig_spec /path/to_ligand.sdf] [--pdb_file /path/to/receptor.pdb] [--grid_pad value|x,y,z] [--grid_file path_to_gridbox.txt] [--flexres A:114[,A:118]] [--run_id N] [--out_root /path/to/output_root] [--prepared_root /path/to/prepared_store] [--pdb2pqr_ph value] [--pdb2pqr_ff name] [--pdb2pqr_ffout name] [--pdb2pqr_nodebump 1|0] [--pdb2pqr_keep_chain 1|0] [--mkrec_allow_bad_res 1|0] [--mkrec_default_altloc A] [--vina_exhaustiveness N] [--vina_num_modes N] [--vina_energy_range E] [--vina_cpu N] [--vina_seed N]"; exit 1; }
 
 # ── Environment Discovery ───────────────────────────────────────────────────
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -88,6 +88,13 @@ for idx in "${!shifted_args[@]}"; do
       next=$((idx + 1))
       if [ "$next" -lt "${#shifted_args[@]}" ]; then
         resolved=$(normalize_path "${shifted_args[$next]}")
+        shifted_args[$next]="$resolved"
+      fi
+      ;;
+    --prepared_root|--prepared-root)
+      next=$((idx + 1))
+      if [ "$next" -lt "${#shifted_args[@]}" ]; then
+        resolved=$(normalize_dir "${shifted_args[$next]}")
         shifted_args[$next]="$resolved"
       fi
       ;;
@@ -530,13 +537,26 @@ fi
 
 rm -f "$OUTDIR/stats.json"
 
-BEST_AFF_ENV="$BEST_AFF_VAL" RMSD_ENV="$RMSD_VAL" OUTDIR_ENV="$OUTDIR" FLEXRES_ENV="$FLEXRES" "$DOCKUP_PYTHON" - <<'PY'
+JOB_TYPE_VALUE="Docking"
+if [ "$REDOCK" = true ]; then
+  JOB_TYPE_VALUE="Redocking"
+fi
+
+BEST_AFF_ENV="$BEST_AFF_VAL" RMSD_ENV="$RMSD_VAL" OUTDIR_ENV="$OUTDIR" FLEXRES_ENV="$FLEXRES" PDB_ENV="$PDB" CHAIN_ENV="$CHAIN" LIGAND_ENV="$LIGAND" LIGAND_SUFFIX_ENV="$LIGAND_SUFFIX" RUN_ID_ENV="$RUN_ID" JOB_TYPE_ENV="$JOB_TYPE_VALUE" "$DOCKUP_PYTHON" - <<'PY'
 import json, os
+from pathlib import Path
 
 outdir = os.environ['OUTDIR_ENV']
 best = os.environ.get('BEST_AFF_ENV') or None
 rmsd = os.environ.get('RMSD_ENV') or None
 flexres = os.environ.get('FLEXRES_ENV') or ""
+pdb_id = os.environ.get("PDB_ENV") or ""
+chain = os.environ.get("CHAIN_ENV") or "all"
+ligand = os.environ.get("LIGAND_ENV") or ""
+ligand_suffix = os.environ.get("LIGAND_SUFFIX_ENV") or ligand
+run_id_raw = os.environ.get("RUN_ID_ENV") or "1"
+job_type = os.environ.get("JOB_TYPE_ENV") or "Docking"
+out_path = Path(outdir)
 
 def to_float(value):
     if value in (None, '', 'null'):
@@ -550,15 +570,54 @@ result_entry = {
     'best_affinity': to_float(best),
     'rmsd': to_float(rmsd),
     'docking_mode': 'flexible' if flexres else 'standard',
+    'job_type': job_type,
     'flex_residues': [item.strip() for item in flexres.split(',') if item.strip()],
 }
 
 results = {os.path.basename(outdir): result_entry}
 
+prepared_path = out_path / "prepared_artifacts.json"
+prepared = {}
+if prepared_path.exists():
+    try:
+        prepared = json.loads(prepared_path.read_text(encoding="utf-8"))
+    except Exception:
+        prepared = {}
+
+try:
+    run_id = int(run_id_raw)
+except ValueError:
+    run_id = None
+
+result_files = {
+    "results_json": str((out_path / "results.json").resolve()),
+    "interaction_map": str((out_path / "interaction_map.json").resolve()) if (out_path / "interaction_map.json").exists() else "",
+    "complex_pdb": str((out_path / f"{pdb_id}_complex.pdb").resolve()) if (out_path / f"{pdb_id}_complex.pdb").exists() else "",
+    "pose_pdb": str((out_path / f"{pdb_id}_pose.pdb").resolve()) if (out_path / f"{pdb_id}_pose.pdb").exists() else "",
+    "receptor_pdb": str((out_path / f"{pdb_id}_rec_raw.pdb").resolve()) if (out_path / f"{pdb_id}_rec_raw.pdb").exists() else "",
+    "plip_report": str((out_path / "plip" / "report.xml").resolve()) if (out_path / "plip" / "report.xml").exists() else "",
+}
+manifest = {
+    "schema_version": 1,
+    "pdb_id": pdb_id,
+    "chain": chain,
+    "ligand_name": ligand_suffix,
+    "ligand_resname": ligand,
+    "run_id": run_id,
+    "job_type": job_type,
+    "docking_mode": result_entry["docking_mode"],
+    "flex_residues": result_entry["flex_residues"],
+    "prepared_artifacts": prepared,
+    "files": result_files,
+}
+
 with open(os.path.join(outdir, 'results.json'), 'w') as wf:
     json.dump(results, wf, indent=2)
+with open(os.path.join(outdir, 'result_manifest.json'), 'w') as wf:
+    json.dump(manifest, wf, indent=2)
 
 print('Wrote results.json with', results)
+print('Wrote result_manifest.json')
 PY
 
 echo "Run complete. Results in: $OUTDIR | Log: $LOG"

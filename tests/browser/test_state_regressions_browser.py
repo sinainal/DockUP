@@ -230,6 +230,7 @@ def _queue_batch_card(page: Page, batch_label: str):
 
 def _select_queue_batch(page: Page, batch_label: str) -> None:
     card = _queue_batch_card(page, batch_label)
+    card.scroll_into_view_if_needed()
     card.locator(":scope > div").first.click(force=True)
 
 
@@ -416,15 +417,17 @@ def test_queue_popup_edits_do_not_leak_hidden_receptors_into_new_batch(
     _clear_loaded_receptors(api)
     api.post("/api/ligands/active/clear", {})
     try:
-        _prepare_distinct_receptor_batches(api, test_cfg, stamp=int(time.time() * 1000))
+        stamp = int(time.time() * 1000)
+        _prepare_distinct_receptor_batches(api, test_cfg, stamp=stamp)
         api.post("/api/receptors/remove", {"pdb_id": "3PBL"})
         ligands_6 = api.assert_ok(api.get("/api/receptors/6CM4/ligands"), where="GET /api/receptors/6CM4/ligands")
         row_6 = list(ligands_6.get("rows") or [])[0]
-        api.assert_ok(api.post("/api/ligands/active/add", {"names": ["Ethylene_monomer_3.sdf"]}), where="add safe active ligand")
+        safe_ligand = _upload_temp_ligand(test_cfg.base_url, f"browser_safe_6_{stamp}")
+        api.assert_ok(api.post("/api/ligands/active/add", {"names": [safe_ligand]}), where="add safe active ligand")
         api.assert_ok(
             api.post(
                 "/api/ligands/select",
-                {"pdb_id": "6CM4", "chain": row_6["chain"], "ligand": "Ethylene_monomer_3.sdf"},
+                {"pdb_id": "6CM4", "chain": row_6["chain"], "ligand": safe_ligand},
             ),
             where="select safe ligand for 6CM4",
         )
