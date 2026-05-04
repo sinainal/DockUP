@@ -77,11 +77,18 @@ def _detect_gemini_cli() -> dict[str, Any]:
         "gemini-cli",
     ]
     seen: set[str] = set()
+    # Build environment with nvm node on PATH (lazily, _cli_env may not exist yet during module init)
+    try:
+        env = _cli_env()
+    except Exception:
+        env = dict(os.environ)
     for candidate in candidates:
         if not candidate or candidate in seen:
             continue
         seen.add(candidate)
-        path = shutil.which(candidate)
+        path = shutil.which(candidate, path=env.get("PATH"))
+        if not path:
+            path = shutil.which(candidate)
         if not path:
             continue
         version = ""
@@ -93,6 +100,7 @@ def _detect_gemini_cli() -> dict[str, Any]:
                 capture_output=True,
                 text=True,
                 timeout=5,
+                env=env,
             )
             output = (completed.stdout or completed.stderr or "").strip()
             version = output.splitlines()[0] if output else ""
@@ -419,20 +427,45 @@ def _cli_prompt(message: str, history: list[dict[str, Any]], state_context: dict
     return prompt
 
 
+def _cli_env() -> dict[str, str]:
+    """Build an environment for running Gemini CLI with nvm-managed Node."""
+    env = dict(os.environ)
+    env["GEMINI_CLI_TRUST_WORKSPACE"] = "true"
+    # Ensure nvm Node >= 20 is on PATH
+    nvm_dir = env.get("NVM_DIR") or str(Path.home() / ".nvm")
+    nvm_node_bin = Path(nvm_dir) / "versions" / "node"
+    if nvm_node_bin.is_dir():
+        versions = sorted(nvm_node_bin.iterdir(), reverse=True)
+        for v in versions:
+            node_bin = v / "bin"
+            if node_bin.is_dir():
+                try:
+                    major = int(v.name.lstrip("v").split(".")[0])
+                except (ValueError, IndexError):
+                    continue
+                if major >= 20:
+                    env["PATH"] = f"{node_bin}:{env.get('PATH', '')}"
+                    break
+    # Avoid GOOGLE_API_KEY / GEMINI_API_KEY conflict
+    if env.get("GOOGLE_API_KEY") and env.get("GEMINI_API_KEY"):
+        env.pop("GOOGLE_API_KEY", None)
+    return env
+
+
 def _run_cli_once(command: str, prompt: str, model: str = "", *, thinking_budget: Any = None) -> tuple[str, str]:
     attempts: list[list[str]] = []
     base_model = _cli_base_model(model)
     if base_model:
-        attempts.append([command, "-m", base_model, "-p", prompt])
-        attempts.append([command, "--model", base_model, "--prompt", prompt])
-        if thinking_budget not in {None, ""}:
-            attempts.insert(0, [command, "-m", base_model, "--allowed-mcp-server-names", "dockup-control", "-p", prompt])
-    attempts.append([command, "-p", prompt])
-    attempts.append([command, "--prompt", prompt])
+        attempts.append([command, "-m", base_model, "--skip-trust", "--allowed-mcp-server-names", "dockup-control", "-p", prompt])
+        attempts.append([command, "-m", base_model, "--skip-trust", "-p", prompt])
+        attempts.append([command, "--model", base_model, "--skip-trust", "--prompt", prompt])
+    attempts.append([command, "--skip-trust", "-p", prompt])
+    attempts.append([command, "--skip-trust", "--prompt", prompt])
+    env = _cli_env()
     last_error = ""
     for argv in attempts:
         try:
-            completed = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=180)
+            completed = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=180, env=env)
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             continue

@@ -13,6 +13,11 @@ def test_gemini_status_exposes_supported_models(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(gemini_agent, "STATE_PATH", tmp_path / "state.json")
     monkeypatch.setattr(gemini_agent, "ROOT_DIR", tmp_path)
     monkeypatch.setattr(gemini_agent, "EXTERNAL_KEY_PATHS", ())
+    monkeypatch.setattr(
+        gemini_agent,
+        "_detect_gemini_cli",
+        lambda: {"available": False, "installed": False, "command": "", "version": "", "error": "Gemini CLI not found in PATH."},
+    )
 
     response = TestClient(create_app()).get("/api/extensions/gemini/status")
     payload = response.json()
@@ -36,6 +41,11 @@ def test_gemini_save_persists_key_and_visibility(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(gemini_agent, "STATE_PATH", tmp_path / "state.json")
     monkeypatch.setattr(gemini_agent, "ROOT_DIR", tmp_path)
     monkeypatch.setattr(gemini_agent, "EXTERNAL_KEY_PATHS", ())
+    monkeypatch.setattr(
+        gemini_agent,
+        "_detect_gemini_cli",
+        lambda: {"available": False, "installed": False, "command": "", "version": "", "error": "Gemini CLI not found in PATH."},
+    )
 
     response = TestClient(create_app()).post(
         "/api/extensions/gemini/save",
@@ -60,6 +70,11 @@ def test_gemini_save_defaults_to_all_models_after_key(monkeypatch, tmp_path) -> 
     monkeypatch.setattr(gemini_agent, "STATE_PATH", tmp_path / "state.json")
     monkeypatch.setattr(gemini_agent, "ROOT_DIR", tmp_path)
     monkeypatch.setattr(gemini_agent, "EXTERNAL_KEY_PATHS", ())
+    monkeypatch.setattr(
+        gemini_agent,
+        "_detect_gemini_cli",
+        lambda: {"available": False, "installed": False, "command": "", "version": "", "error": "Gemini CLI not found in PATH."},
+    )
 
     response = TestClient(create_app()).post("/api/extensions/gemini/save", json={"api_key": "gemini-secret"})
     payload = response.json()
