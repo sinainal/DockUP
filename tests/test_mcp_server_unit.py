@@ -19,6 +19,8 @@ def test_mcp_lists_core_tools() -> None:
         "dockup_mutate",
         "dockup_queue",
         "dockup_validate",
+        "dockup_backend",
+        "dockup_report",
     ]
 
 
@@ -170,6 +172,68 @@ def test_mcp_exposes_short_control_resource() -> None:
     assert read is not None
     text = read["result"]["contents"][0]["text"]
     assert "Do not start runs" in text
+
+
+def test_mcp_backend_status_is_compact(monkeypatch) -> None:
+    server = mcp_server.DockUPMCPServer(base_url="http://dockup.local")
+    monkeypatch.setattr(server, "_is_local_base_url", lambda: True)
+    monkeypatch.setattr(server, "_backend_running", lambda: False)
+
+    response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {"name": "dockup_backend", "arguments": {"action": "status"}},
+        }
+    )
+
+    assert response is not None
+    payload = json.loads(response["result"]["content"][0]["text"])
+    assert payload["facts"]["running"] is False
+    assert payload["facts"]["local"] is True
+
+
+def test_mcp_report_render_passes_dpi_alias() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.render_payload = None
+
+        def trigger_report_render(self, **payload):
+            self.render_payload = payload
+            return {
+                "ok": True,
+                "message": "render queued",
+                "data": {
+                    "status": "queued",
+                    "task": "render",
+                    "render_images": [{"path": "report_outputs/a.png"}],
+                },
+            }
+
+    fake = FakeClient()
+    server = mcp_server.DockUPMCPServer(base_url="http://dockup.local")
+    server.client = fake
+
+    response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": "dockup_report",
+                "arguments": {
+                    "action": "report.render",
+                    "payload": {"source_path": "data/dock/Dopamine_Trimer_30", "render_mode": "otofigure", "dpi": 300},
+                },
+            },
+        }
+    )
+
+    assert response is not None
+    payload = json.loads(response["result"]["content"][0]["text"])
+    assert fake.render_payload["render_dpi"] == 300
+    assert payload["facts"]["render_images_count"] == 1
 
 
 def test_mcp_stdio_supports_ndjson_framing() -> None:

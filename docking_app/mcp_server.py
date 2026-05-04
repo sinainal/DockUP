@@ -3,10 +3,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
+import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
+from .config import BASE
 from .live.client import DEFAULT_BASE_URL, DockUPClient
 
 
@@ -106,6 +111,55 @@ TOOLS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "dockup_backend",
+        "description": "Inspect or start the local DockUP web backend using the repo venv. Does not start docking runs.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["status", "start"]},
+                "wait_seconds": {"type": "number", "minimum": 0},
+                "response": {"type": "string", "enum": ["summary", "full"]},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "dockup_report",
+        "description": "Manage DockUP result/report views, plots, renders, DPI, images, metadata, and report compilation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "results.folders",
+                        "results.scan",
+                        "results.detail",
+                        "report.list",
+                        "report.images",
+                        "report.preview",
+                        "report.metadata.get",
+                        "report.metadata.set",
+                        "report.doc_config.get",
+                        "report.doc_config.set",
+                        "report.source.delete",
+                        "report.images.delete",
+                        "report.images.delete_all",
+                        "report.graphs",
+                        "report.render",
+                        "report.render.stop",
+                        "report.compile",
+                        "report.status",
+                    ],
+                },
+                "payload": {"type": "object", "additionalProperties": True},
+                "response": {"type": "string", "enum": ["summary", "full"]},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 GUIDE_URI = "dockup://guide/control"
@@ -114,13 +168,21 @@ GUIDE_TEXT = """DockUP MCP guide:
 - For queue prep: read state/assets, ensure receptors/ligands/grid/config, prepare queue, validate.
 - Docking uses dock-ready SDF ligands; Redocking uses receptor-native ligands.
 - In Docking, all_set expands to active SDF ligands.
+- If localhost backend is down, use dockup_backend start/status; it starts only the web app via the repo venv.
+- For reports/results, use dockup_report. It can scan result folders, list images, generate plots, render views, set DPI/render options, and compile docs.
 - After mutations, validate queue_count, total_runs, run_status, grid sizes, active ligands, and pdb_file/pdb_id matches.
 - Do not start runs unless the user explicitly asks.
 """
 
 
 class DockUPMCPServer:
-    def __init__(self, *, base_url: str = DEFAULT_BASE_URL, timeout: float = 60.0) -> None:
+    def __init__(self, *, base_url: str = DEFAULT_BASE_URL, timeout: float = 60.0, auto_start: bool = True) -> None:
+        self.base_url = base_url
+        self.timeout = timeout
+        self.auto_start = auto_start
+        self.backend_process: subprocess.Popen[Any] | None = None
+        if self.auto_start and self._is_local_base_url():
+            self._ensure_backend(wait_seconds=10.0)
         self.client = DockUPClient(base_url=base_url, timeout=timeout)
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any] | None:
@@ -180,15 +242,10 @@ class DockUPMCPServer:
             payload = self._queue(args)
         elif name == "dockup_validate":
             payload = self._validate(args)
-        elif name == "dockup_queue_prepare":
-            raw_payload = args.get("payload")
-            if not isinstance(raw_payload, dict):
-                raise ValueError("dockup_queue_prepare requires object argument: payload")
-            payload = self.client.prepare_queue(raw_payload)
-        elif name == "dockup_run_status":
-            payload = self.client.get_run_status()
-        elif name == "dockup_control":
-            payload = self._dispatch_control(args)
+        elif name == "dockup_backend":
+            payload = self._backend(args)
+        elif name == "dockup_report":
+            payload = self._report(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
         return {
@@ -370,6 +427,93 @@ class DockUPMCPServer:
                     repaired.append(pdb_id)
         return {"ok": True, "action": "state.repair", "message": f"repaired receptors: {len(repaired)}", "data": {"repaired_receptors": repaired}}
 
+    def _is_local_base_url(self) -> bool:
+        parsed = urlparse(self.base_url)
+        host = (parsed.hostname or "").lower()
+        return host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+    def _backend_host_port(self) -> tuple[str, int]:
+        parsed = urlparse(self.base_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = int(parsed.port or (443 if parsed.scheme == "https" else 80))
+        return host, port
+
+    def _backend_running(self) -> bool:
+        host, port = self._backend_host_port()
+        connect_host = "127.0.0.1" if host in {"0.0.0.0", "::1"} else host
+        try:
+            with socket.create_connection((connect_host, port), timeout=0.35):
+                return True
+        except OSError:
+            return False
+
+    def _ensure_backend(self, *, wait_seconds: float = 10.0) -> dict[str, Any]:
+        host, port = self._backend_host_port()
+        if not self._is_local_base_url():
+            return {"ok": False, "action": "backend.start", "message": "backend auto-start is only supported for local URLs", "data": {"base_url": self.base_url}, "error": "non-local base_url"}
+        if self._backend_running():
+            return {"ok": True, "action": "backend.status", "message": f"DockUP backend is already listening on {self.base_url}", "data": {"base_url": self.base_url, "running": True, "started": False}, "error": None}
+        python_bin = BASE / ".venv" / "bin" / "python"
+        interpreter = str(python_bin if python_bin.exists() else Path(sys.executable))
+        log_path = Path(os.getenv("DOCKUP_MCP_BACKEND_LOG", f"/tmp/dockup_mcp_uvicorn_{port}.log"))
+        cmd = [
+            interpreter,
+            "-m",
+            "uvicorn",
+            "docking_app.app:app",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            str(port),
+        ]
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("ab") as log_fh:
+            self.backend_process = subprocess.Popen(
+                cmd,
+                cwd=str(BASE),
+                stdin=subprocess.DEVNULL,
+                stdout=log_fh,
+                stderr=log_fh,
+                start_new_session=True,
+            )
+        deadline = time.time() + max(0.0, float(wait_seconds))
+        while time.time() <= deadline:
+            if self._backend_running():
+                return {
+                    "ok": True,
+                    "action": "backend.start",
+                    "message": f"DockUP backend started on {self.base_url}",
+                    "data": {"base_url": self.base_url, "running": True, "started": True, "pid": self.backend_process.pid if self.backend_process else None, "log_path": str(log_path)},
+                    "error": None,
+                }
+            time.sleep(0.2)
+        return {
+            "ok": False,
+            "action": "backend.start",
+            "message": f"DockUP backend did not become ready within {wait_seconds:g}s",
+            "data": {"base_url": self.base_url, "host": host, "port": port, "log_path": str(log_path), "pid": self.backend_process.pid if self.backend_process else None},
+            "error": "backend not ready",
+        }
+
+    def _backend(self, args: dict[str, Any]) -> dict[str, Any]:
+        action = str(args.get("action") or "status")
+        response = str(args.get("response") or "summary")
+        if action == "status":
+            raw = {
+                "ok": True,
+                "action": "backend.status",
+                "message": "backend status checked",
+                "data": {"base_url": self.base_url, "local": self._is_local_base_url(), "running": self._backend_running()},
+                "error": None,
+            }
+        elif action == "start":
+            raw = self._ensure_backend(wait_seconds=float(args.get("wait_seconds") or 10.0))
+        else:
+            raise ValueError(f"Unsupported dockup_backend action: {action}")
+        data = self._data(raw)
+        facts = {key: data.get(key) for key in ["base_url", "local", "running", "started", "pid", "log_path"] if key in data}
+        return self._compact_envelope(action, raw, facts, response=response)
+
     def _queue(self, args: dict[str, Any]) -> dict[str, Any]:
         action = str(args.get("action") or "").strip()
         payload = args.get("payload") if isinstance(args.get("payload"), dict) else {}
@@ -394,6 +538,109 @@ class DockUPMCPServer:
         if response == "full":
             facts["queue"] = rows
         return self._compact_envelope(f"queue.{action}", raw, facts, response=response)
+
+    def _report(self, args: dict[str, Any]) -> dict[str, Any]:
+        action = str(args.get("action") or "").strip()
+        payload = args.get("payload") if isinstance(args.get("payload"), dict) else {}
+        response = str(args.get("response") or "summary")
+        raw: dict[str, Any]
+        if action == "results.folders":
+            raw = self.client.list_result_folders()
+        elif action == "results.scan":
+            raw = self.client.scan_results(root_path=str(payload.get("root_path") or "data/dock"))
+        elif action == "results.detail":
+            raw = self.client.get_result_detail(result_dir=str(payload.get("result_dir") or payload.get("source_path") or ""))
+        elif action == "report.list":
+            raw = self.client.list_reports(
+                root_path=str(payload.get("root_path") or ""),
+                source_path=str(payload.get("source_path") or ""),
+                output_path=str(payload.get("output_path") or ""),
+                linked_path=str(payload.get("linked_path") or ""),
+            )
+        elif action == "report.images":
+            raw = self.client.list_report_images(
+                root_path=str(payload.get("root_path") or ""),
+                source_path=str(payload.get("source_path") or ""),
+                output_path=str(payload.get("output_path") or ""),
+                images_root_path=str(payload.get("images_root_path") or ""),
+            )
+        elif action == "report.preview":
+            raw = self.client.report_preview(
+                root_path=str(payload.get("root_path") or ""),
+                source_path=str(payload.get("source_path") or ""),
+                receptor_id=str(payload.get("receptor_id") or ""),
+                run_name=str(payload.get("run_name") or ""),
+                render_mode=str(payload.get("render_mode") or ""),
+            )
+        elif action == "report.metadata.get":
+            raw = self.client.get_report_root_metadata(root_path=str(payload.get("root_path") or ""), source_path=str(payload.get("source_path") or ""))
+        elif action == "report.metadata.set":
+            raw = self.client.save_report_root_metadata(**payload)
+        elif action == "report.doc_config.get":
+            raw = self.client.get_report_doc_config(root_path=str(payload.get("root_path") or ""), source_path=str(payload.get("source_path") or ""))
+        elif action == "report.doc_config.set":
+            raw = self.client.save_report_doc_config(**payload)
+        elif action == "report.source.delete":
+            raw = self.client.delete_report_source(root_path=str(payload.get("root_path") or ""), source_path=str(payload.get("source_path") or ""))
+        elif action == "report.images.delete":
+            raw = self.client.delete_report_image(
+                root_path=str(payload.get("root_path") or ""),
+                source_path=str(payload.get("source_path") or ""),
+                output_path=str(payload.get("output_path") or ""),
+                images_root_path=str(payload.get("images_root_path") or ""),
+                path=str(payload.get("path") or ""),
+            )
+        elif action == "report.images.delete_all":
+            raw = self.client.delete_all_report_images(
+                root_path=str(payload.get("root_path") or ""),
+                source_path=str(payload.get("source_path") or ""),
+                output_path=str(payload.get("output_path") or ""),
+                scope=str(payload.get("scope") or "all"),
+            )
+        elif action == "report.graphs":
+            scripts = payload.get("scripts") if isinstance(payload.get("scripts"), list) else None
+            raw = self.client.trigger_report_graphs(
+                root_path=str(payload.get("root_path") or "data/dock"),
+                source_path=str(payload.get("source_path") or ""),
+                output_path=str(payload.get("output_path") or ""),
+                linked_path=str(payload.get("linked_path") or ""),
+                scripts=[str(item) for item in scripts] if scripts is not None else None,
+            )
+        elif action == "report.render":
+            render_payload = dict(payload)
+            if "dpi" in render_payload and "render_dpi" not in render_payload:
+                render_payload["render_dpi"] = render_payload["dpi"]
+            raw = self.client.trigger_report_render(**render_payload)
+        elif action == "report.render.stop":
+            raw = self.client.stop_report_render()
+        elif action == "report.compile":
+            raw = self.client.compile_report(**payload)
+        elif action == "report.status":
+            raw = self.client.get_report_status()
+        else:
+            raise ValueError(f"Unsupported dockup_report action: {action}")
+        return self._compact_report(action, raw, response=response)
+
+    def _compact_report(self, action: str, raw: dict[str, Any], *, response: str = "summary") -> dict[str, Any]:
+        data = self._data(raw)
+        facts: dict[str, Any] = {}
+        for key in ["status", "task", "progress", "total", "root_path", "source_path", "output_path", "doc_path"]:
+            value = data.get(key, raw.get(key))
+            if value not in (None, "", []):
+                facts[key] = value
+        for key in ["results", "averages", "folders", "render_images", "plot_images", "images", "source_folders"]:
+            value = data.get(key, raw.get(key))
+            if isinstance(value, list):
+                facts[f"{key}_count"] = len(value)
+                facts[key] = value[:10]
+        for key in ["errors", "warnings"]:
+            value = data.get(key, raw.get(key))
+            if isinstance(value, list) and value:
+                facts[key] = value[:10]
+        out = self._compact_envelope(action, raw, facts, response=response)
+        if "warnings" in facts:
+            out["warnings"] = facts["warnings"]
+        return out
 
     def _validate(self, args: dict[str, Any]) -> dict[str, Any]:
         scope = str(args.get("scope") or "all")
@@ -456,25 +703,6 @@ class DockUPMCPServer:
             out["state"] = state
         return out
 
-    def _dispatch_control(self, args: dict[str, Any]) -> dict[str, Any]:
-        action = str(args.get("action") or "").strip()
-        payload = args.get("payload") if isinstance(args.get("payload"), dict) else {}
-        if action == "assets.inspect":
-            return self.client.inspect_assets()
-        if action == "ligand.list":
-            return self.client.list_ligands()
-        if action == "ligand.active.set":
-            names = payload.get("names") if isinstance(payload.get("names"), list) else []
-            return self.client.set_active_ligands([str(item) for item in names], replace=bool(payload.get("replace", True)))
-        if action == "gridbox.set_many":
-            grid_data = payload.get("grid_data") if isinstance(payload.get("grid_data"), dict) else payload
-            return self.client.set_gridboxes(grid_data)
-        if action == "queue.list":
-            return self.client.list_queue()
-        if action == "queue.build":
-            return self.client.build_queue(replace_queue=bool(payload.get("replace_queue", True)))
-        raise ValueError(f"Unsupported dockup_control action: {action}")
-
     @staticmethod
     def _result(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
@@ -529,8 +757,8 @@ def _write_message(stdout: Any, payload: dict[str, Any], *, framing: str = "head
     stdout.buffer.flush()
 
 
-def serve_stdio(*, base_url: str = DEFAULT_BASE_URL, timeout: float = 60.0) -> None:
-    server = DockUPMCPServer(base_url=base_url, timeout=timeout)
+def serve_stdio(*, base_url: str = DEFAULT_BASE_URL, timeout: float = 60.0, auto_start: bool = True) -> None:
+    server = DockUPMCPServer(base_url=base_url, timeout=timeout, auto_start=auto_start)
     while True:
         try:
             message = _read_message(sys.stdin)
@@ -552,8 +780,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="DockUP MCP stdio server")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--no-auto-start", action="store_true", help="Do not auto-start the local DockUP backend")
     args = parser.parse_args(argv)
-    serve_stdio(base_url=args.base_url, timeout=args.timeout)
+    serve_stdio(base_url=args.base_url, timeout=args.timeout, auto_start=not args.no_auto_start)
     return 0
 
 
