@@ -100,7 +100,7 @@ def _normalise_grid_data(raw: Any) -> dict[str, dict[str, float]]:
 
 def _config_document_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     selection_source = payload.get("selection_map") if "selection_map" in payload else STATE.get("selection_map", {})
-    grid_source = payload.get("grid_data") if "grid_data" in payload else {}
+    grid_source = payload.get("grid_data") if "grid_data" in payload else STATE.get("agent_grid_data", {})
     return {
         "schema": CONFIG_SCHEMA,
         "mode": str(payload.get("mode") or STATE.get("mode") or "Docking"),
@@ -149,6 +149,9 @@ def _apply_config_document(config: dict[str, Any]) -> dict[str, Any]:
     STATE["out_root_path"] = str(config.get("out_root_path") or STATE.get("out_root_path") or "data/dock")
     STATE["out_root_name"] = str(config.get("out_root_name") or STATE.get("out_root_name") or "")
     STATE["selection_map"].update(selection_map)
+    if grid_data:
+        current_grid = STATE.get("agent_grid_data") if isinstance(STATE.get("agent_grid_data"), dict) else {}
+        STATE["agent_grid_data"] = {**current_grid, **grid_data}
     STATE["docking_config"] = loaded_docking_config
     save_state_cache()
 
@@ -293,6 +296,9 @@ def load_config(file: UploadFile = File(...)) -> JSONResponse:
             
             # Update server state
             STATE["selection_map"].update(selection_map)
+            if grid_data:
+                current_grid = STATE.get("agent_grid_data") if isinstance(STATE.get("agent_grid_data"), dict) else {}
+                STATE["agent_grid_data"] = {**current_grid, **grid_data}
             
             # Optionally restore global settings from first row
             if not df.empty:

@@ -107,6 +107,7 @@ def test_config_load_accepts_json_and_updates_state() -> None:
         assert data["selection_map"]["1ABC"]["chain"] == "B"
         assert data["selection_map"]["1ABC"]["ligand_resname"] == "dopamine.sdf"
         assert data["grid_data"]["1ABC"]["cx"] == 4.0
+        assert STATE["agent_grid_data"]["1ABC"]["cx"] == 4.0
         assert data["docking_config"]["vina_exhaustiveness"] == 9
     finally:
         STATE.clear()
@@ -160,7 +161,33 @@ def test_config_load_still_accepts_xlsx() -> None:
         assert data["ok"] is True
         assert data["selection_map"]["1ABC"]["ligand_resname"] == "ligand.sdf"
         assert data["grid_data"]["1ABC"]["sx"] == 20.0
+        assert STATE["agent_grid_data"]["1ABC"]["sx"] == 20.0
         assert data["run_count"] == 2
+    finally:
+        STATE.clear()
+        STATE.update(snapshot)
+
+
+def test_config_save_uses_persisted_grid_data_when_payload_omits_grid_data() -> None:
+    snapshot = copy.deepcopy(STATE)
+    try:
+        STATE["mode"] = "Docking"
+        STATE["runs"] = 1
+        STATE["grid_pad"] = 0.0
+        STATE["out_root_path"] = "data/dock"
+        STATE["out_root_name"] = ""
+        STATE["docking_config"] = {}
+        STATE["selection_map"] = {
+            "1ABC": {"chain": "A", "ligand_resname": "ligand.sdf", "ligand_resnames": ["ligand.sdf"], "flex_residues": []}
+        }
+        STATE["agent_grid_data"] = {"1ABC": {"cx": 1, "cy": 2, "cz": 3, "sx": 20, "sy": 21, "sz": 22}}
+        client = TestClient(create_app())
+
+        response = client.post("/api/config/save", json={"format": "json"})
+        data = response.json()
+
+        assert response.status_code == 200
+        assert data["grid_data"]["1ABC"] == {"cx": 1.0, "cy": 2.0, "cz": 3.0, "sx": 20.0, "sy": 21.0, "sz": 22.0}
     finally:
         STATE.clear()
         STATE.update(snapshot)

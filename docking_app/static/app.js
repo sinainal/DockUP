@@ -6655,14 +6655,6 @@ async function refreshLigands() {
     activeLigands = activeList.filter((name) => ligands.includes(name));
     appState.activeLigands = [...activeLigands];
 
-    const ligandInventoryChanged = prevLigands.size !== ligands.length
-      || ligands.some((name) => !prevLigands.has(name));
-
-    if (ligandInventoryInitialized && ligandInventoryChanged) {
-      // Ligand inventory changed after initial load; drop stale gridboxes.
-      resetGridboxState({ clearAllStored: true });
-    }
-
     // Remove stale selection_map ligand choices no longer in dock-ready pool.
     const activeSet = new Set(activeLigands);
     Object.keys(appState.selectionMap || {}).forEach((pdbId) => {

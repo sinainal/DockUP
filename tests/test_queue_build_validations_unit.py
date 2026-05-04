@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from docking_app.config import DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR
+from docking_app.routes import core
 from docking_app.services import _build_queue
 from docking_app.state import STATE
 
@@ -265,6 +266,50 @@ def test_build_queue_empty_selection_does_not_create_output_dirs():
 
     assert entries == []
     assert not out_root.exists()
+
+
+def test_queue_build_partial_batch_preserves_other_receptor_selection():
+    ligand_name = _first_ligand_name()
+    out_root = (DOCK_DIR / "pytest_queue_validation").resolve()
+    receptor_path = RECEPTOR_DIR / "6CM4.pdb"
+    STATE["receptor_meta"] = [
+        {"pdb_id": "6CM4", "pdb_file": str(receptor_path)},
+        {"pdb_id": "8IRV", "pdb_file": str(receptor_path)},
+    ]
+    STATE["selected_receptor"] = "6CM4"
+    STATE["selected_chain"] = "A"
+    STATE["selected_ligand"] = ligand_name
+    STATE["active_ligands"] = [ligand_name]
+    STATE["queue"] = []
+    STATE["out_root"] = str(out_root)
+    STATE["out_root_path"] = "data/dock"
+    STATE["out_root_name"] = "pytest_queue_validation"
+    STATE["selection_map"] = {
+        "6CM4": {"chain": "A", "ligand_resname": ligand_name, "ligand_resnames": [ligand_name], "flex_residues": []},
+        "8IRV": {"chain": "all", "ligand_resname": "", "ligand_resnames": [], "flex_residues": []},
+    }
+    grid = {"cx": 0.0, "cy": 1.0, "cz": 2.0, "sx": 20.0, "sy": 20.0, "sz": 20.0}
+
+    response = core.queue_build(
+        {
+            "selection_map": {
+                "8IRV": {"chain": "all", "ligand_resname": ligand_name, "ligand_resnames": [ligand_name]}
+            },
+            "grid_data": {"8IRV": grid},
+            "run_count": 1,
+            "padding": 0.0,
+            "mode": "Docking",
+            "docking_config": {},
+            "replace_queue": False,
+        }
+    )
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["queue_count"] == 1
+    assert STATE["selection_map"]["6CM4"]["ligand_resname"] == ligand_name
+    assert STATE["selection_map"]["8IRV"]["ligand_resname"] == ligand_name
+    assert STATE["agent_grid_data"]["8IRV"] == grid
 
 
 def test_build_queue_multi_ligand_requires_exactly_two_ligands():

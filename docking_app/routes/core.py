@@ -266,6 +266,45 @@ def _normalize_active_ligands_state() -> list[str]:
     return cleaned
 
 
+def _clean_grid_number(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_grid_data_map(raw: Any) -> dict[str, dict[str, float]]:
+    source = raw if isinstance(raw, dict) else {}
+    normalized: dict[str, dict[str, float]] = {}
+    for raw_pdb_id, raw_grid in source.items():
+        pdb_id = _normalize_receptor_id(raw_pdb_id)
+        grid = raw_grid if isinstance(raw_grid, dict) else {}
+        values = {
+            "cx": _clean_grid_number(grid.get("cx")),
+            "cy": _clean_grid_number(grid.get("cy")),
+            "cz": _clean_grid_number(grid.get("cz")),
+            "sx": _clean_grid_number(grid.get("sx")),
+            "sy": _clean_grid_number(grid.get("sy")),
+            "sz": _clean_grid_number(grid.get("sz")),
+        }
+        if pdb_id and all(value is not None for value in values.values()):
+            normalized[pdb_id] = {key: float(value) for key, value in values.items() if value is not None}
+    return normalized
+
+
+def _merge_agent_grid_data(raw_grid_data: Any) -> dict[str, dict[str, float]]:
+    incoming = _normalize_grid_data_map(raw_grid_data)
+    current = STATE.get("agent_grid_data") if isinstance(STATE.get("agent_grid_data"), dict) else {}
+    merged = {
+        _normalize_receptor_id(pdb_id): dict(grid)
+        for pdb_id, grid in current.items()
+        if _normalize_receptor_id(pdb_id) and isinstance(grid, dict)
+    }
+    merged.update(incoming)
+    STATE["agent_grid_data"] = merged
+    return incoming
+
+
 def _add_receptors_to_active(requested_ids: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
     existing_ids = {_normalize_receptor_id(r.get("pdb_id")) for r in STATE["receptor_meta"]}
     to_add = [rid for rid in requested_ids if rid and rid not in existing_ids]
@@ -819,13 +858,15 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
                     sel.get("flex_residues") or sel.get("flex_residue_spec") or []
                 ),
             }
-        STATE["selection_map"] = normalized_incoming
+        current_selection = STATE.get("selection_map") if isinstance(STATE.get("selection_map"), dict) else {}
+        STATE["selection_map"] = {**current_selection, **normalized_incoming}
         selected = _normalize_receptor_id(STATE.get("selected_receptor", ""))
         if selected and selected in STATE["selection_map"]:
             STATE["selected_chain"] = STATE["selection_map"][selected].get("chain", "all")
             STATE["selected_ligand"] = STATE["selection_map"][selected].get("ligand_resname", "")
 
     new_jobs = _build_queue(payload)
+    _merge_agent_grid_data(payload.get("grid_data"))
     update_batch_id = payload.get("update_batch_id")
     replace_queue = bool(payload.get("replace_queue", False))
     if update_batch_id is not None:
