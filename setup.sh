@@ -594,6 +594,9 @@ header "Step 2/6 — Creating virtual environment"
 if [ -d "$VENV_DIR" ] && [ "$FORCE" -eq 1 ]; then
   info "Removing existing .venv (--force)"
   rm -rf "$VENV_DIR"
+elif [ -d "$VENV_DIR" ] && [ ! -x "$VENV_DIR/bin/python" ]; then
+  warn "Existing .venv is incomplete — recreating it"
+  rm -rf "$VENV_DIR"
 fi
 
 if [ ! -d "$VENV_DIR" ]; then
