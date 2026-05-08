@@ -26,6 +26,7 @@ from ..agent.observe import observer_from_payload
 from ..agent.state_context import docking_state_context, state_system_prompt
 from ..agent.tools import CONTROL_TOOL_FUNCTIONS
 from ..config import BASE
+from .paths import extension_root, extension_state_path
 
 EXTENSION_ID = "ollama_agent"
 DEFAULT_BASE_URL = "http://localhost:11434"
@@ -46,8 +47,8 @@ WARMUP_TOKEN_CHOICES = (1, 2, 4, 8)
 THINK_MODE_CHOICES = ("auto", "think", "no_think")
 PREFERRED_MODEL_PATTERNS = ("qwen36-merged", "qwen36_merged", "merged", "qwen36", "qwen3.6", "35b", "iq3_xs", "iq3-xs")
 
-ROOT_DIR = BASE / ".venv" / "dockup_extensions" / EXTENSION_ID
-STATE_PATH = ROOT_DIR / "state.json"
+ROOT_DIR = extension_root(EXTENSION_ID)
+STATE_PATH = extension_state_path(EXTENSION_ID)
 
 _LOCK = threading.Lock()
 _SERVER_LOCK = threading.Lock()

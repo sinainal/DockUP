@@ -12,16 +12,17 @@ import httpx
 
 from ..agent.state_context import docking_state_context, state_system_prompt
 from ..config import BASE
+from .paths import extension_root, extension_state_path
 
 EXTENSION_ID = "gemini_agent"
-ROOT_DIR = BASE / ".venv" / "dockup_extensions" / EXTENSION_ID
-STATE_PATH = ROOT_DIR / "state.json"
+ROOT_DIR = extension_root(EXTENSION_ID)
+STATE_PATH = extension_state_path(EXTENSION_ID)
 DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 CLI_MODEL = "gemini-cli"
 CLI_MODEL_PREFIX = "gemini-cli:"
 DEFAULT_CLI_MODEL = f"{CLI_MODEL_PREFIX}{DEFAULT_MODEL}"
 API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-EXTERNAL_KEY_PATHS = (BASE.parent / "gemini_api", BASE.parent / "gemini api")
+EXTERNAL_KEY_PATHS: tuple[Path, ...] = ()
 
 GEMINI_MODELS: tuple[dict[str, str], ...] = (
     {"name": "gemini-2.5-pro", "label": "Gemini 2.5 Pro"},
@@ -122,7 +123,12 @@ def _seed_api_key() -> str:
     env_key = os.getenv("GEMINI_API_KEY", "").strip()
     if env_key:
         return env_key
-    for path in EXTERNAL_KEY_PATHS:
+    configured_paths = tuple(
+        Path(item).expanduser()
+        for item in os.getenv("DOCKUP_GEMINI_API_KEY_FILE", "").split(os.pathsep)
+        if item.strip()
+    )
+    for path in (*EXTERNAL_KEY_PATHS, *configured_paths):
         try:
             if path.exists():
                 return path.read_text(encoding="utf-8").strip()
@@ -334,15 +340,25 @@ def configure_cli_mcp(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(settings, dict):
         settings = {}
     servers = settings.get("mcpServers") if isinstance(settings.get("mcpServers"), dict) else {}
+    launcher = BASE / "scripts" / "dockup_mcp_server.sh"
     python_command = BASE / ".venv" / "bin" / "python"
-    servers["dockup-control"] = {
-        "command": str(python_command) if python_command.exists() else "python3",
-        "args": [
+    if launcher.exists():
+        command = str(launcher)
+        args = [
+            "--base-url",
+            str(raw.get("base_url") or "http://127.0.0.1:8000"),
+        ]
+    else:
+        command = str(python_command) if python_command.exists() else "python3"
+        args = [
             "-m",
             "docking_app.mcp_server",
             "--base-url",
             str(raw.get("base_url") or "http://127.0.0.1:8000"),
-        ],
+        ]
+    servers["dockup-control"] = {
+        "command": command,
+        "args": args,
         "cwd": str(BASE),
         "timeout": int(raw.get("timeout") or 10000),
     }

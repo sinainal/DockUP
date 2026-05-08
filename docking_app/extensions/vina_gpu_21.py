@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import BASE
+from .paths import extension_log_path, extension_root, extension_state_path, extensions_dir, venv_dir
 
 EXTENSION_ID = "vina_gpu_21"
 DISPLAY_NAME = "Vina-GPU 2.1"
@@ -23,16 +24,16 @@ BOOST_DIRNAME = "boost_1_84_0"
 BOOST_TARBALL_URL = "https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.gz"
 OPENCL_HEADERS_TARBALL_URL = "https://github.com/KhronosGroup/OpenCL-Headers/archive/refs/heads/main.tar.gz"
 
-VENV_DIR = BASE / ".venv"
-EXTENSIONS_DIR = VENV_DIR / "dockup_extensions"
-ROOT_DIR = EXTENSIONS_DIR / EXTENSION_ID
+VENV_DIR = venv_dir()
+EXTENSIONS_DIR = extensions_dir()
+ROOT_DIR = extension_root(EXTENSION_ID)
 DEPS_DIR = ROOT_DIR / "deps"
 OPENCL_HEADERS_DIR = DEPS_DIR / "OpenCL-Headers"
 SRC_DIR = ROOT_DIR / "src" / "AutoDock-Vina-GPU-2.1"
 BINARY_PATH = SRC_DIR / "AutoDock-Vina-GPU-2-1"
 LAUNCHER_PATH = VENV_DIR / "bin" / "vina-gpu-2.1"
-STATE_PATH = ROOT_DIR / "state.json"
-LOG_PATH = ROOT_DIR / "install.log"
+STATE_PATH = extension_state_path(EXTENSION_ID)
+LOG_PATH = extension_log_path(EXTENSION_ID)
 
 _LOCK = threading.Lock()
 _JOB: dict[str, Any] = {

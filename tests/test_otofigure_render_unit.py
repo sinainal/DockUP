@@ -63,7 +63,7 @@ def test_otofigure_pipeline_stages_case_layout_and_copies_final_png(
     def fake_find_python_with_modules(modules, *, env_var, extra_candidates=()):
         if modules == ["pymol"]:
             return "/usr/bin/python3"
-        return "/home/sina/anaconda3/bin/python3"
+        return "/opt/dockup/test-python/bin/python3"
 
     def fake_run_step(cmd: list[str], *, cwd: Path, env: dict[str, str], on_process_start=None, on_process_end=None) -> str:
         assert Path(cwd, "protein", "3pbl.pdb").exists()

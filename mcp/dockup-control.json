@@ -1,14 +1,12 @@
 {
   "mcpServers": {
     "dockup-control": {
-      "command": "/home/sina/Downloads/docking /DockUP/.venv/bin/python",
+      "command": "./scripts/dockup_mcp_server.sh",
       "args": [
-        "-m",
-        "docking_app.mcp_server",
         "--base-url",
         "http://127.0.0.1:8000"
       ],
-      "cwd": "/home/sina/Downloads/docking /DockUP",
+      "cwd": ".",
       "timeout": 10000
     }
   }

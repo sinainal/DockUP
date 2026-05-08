@@ -23,18 +23,18 @@ if [ "${NODE_MAJOR:-0}" -lt 20 ]; then
   exit 1
 fi
 
-# Set Gemini API key from file if not in environment
-if [ -z "${GEMINI_API_KEY:-}" ]; then
-  for KEY_FILE in "$DOCKUP_ROOT/../gemini_api" "$DOCKUP_ROOT/../gemini api"; do
-    if [ -f "$KEY_FILE" ]; then
-      export GEMINI_API_KEY="$(cat "$KEY_FILE" | tr -d '[:space:]')"
-      break
-    fi
-  done
+# Set Gemini API key from an explicit file if not in environment
+if [ -z "${GEMINI_API_KEY:-}" ] && [ -n "${DOCKUP_GEMINI_API_KEY_FILE:-}" ]; then
+  if [ -f "$DOCKUP_GEMINI_API_KEY_FILE" ]; then
+    export GEMINI_API_KEY="$(tr -d '[:space:]' < "$DOCKUP_GEMINI_API_KEY_FILE")"
+  else
+    echo "ERROR: DOCKUP_GEMINI_API_KEY_FILE does not exist: $DOCKUP_GEMINI_API_KEY_FILE"
+    exit 1
+  fi
 fi
 
 if [ -z "${GEMINI_API_KEY:-}" ]; then
-  echo "ERROR: GEMINI_API_KEY not set and no key file found"
+  echo "ERROR: GEMINI_API_KEY not set. Optionally set DOCKUP_GEMINI_API_KEY_FILE=/path/to/key"
   exit 1
 fi
 

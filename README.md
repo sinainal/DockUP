@@ -12,6 +12,16 @@ run tracking, report generation, and render pipelines.
 
 Then open `http://localhost:8000`.
 
+## MCP Server
+
+DockUP exposes a stdio MCP server through `scripts/dockup_mcp_server.sh`.
+The launcher resolves the repository root itself, prefers the local `.venv`, and
+falls back to `python3` with `PYTHONPATH` set to the checkout.
+
+Use `mcp/dockup-control.json` as a portable template. For clients that do not
+resolve relative paths from the config file, set `cwd` to the absolute DockUP
+checkout path or use the absolute path to `scripts/dockup_mcp_server.sh`.
+
 ## Notes
 
 - Core dependencies are listed in `requirements/core.txt`.
