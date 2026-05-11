@@ -90,16 +90,16 @@ def _patch_direct_tool_sequence(monkeypatch, ollama_agent, tool_calls: list[tupl
     return executed
 
 
-def test_ollama_status_lists_models_as_cards_payload(monkeypatch, tmp_path) -> None:
+def test_ollama_status_stays_disconnected_until_user_connects(monkeypatch, tmp_path) -> None:
     from docking_app.agent.ollama_client import OllamaModel
     from docking_app.extensions import ollama_agent
 
+    calls = {"probe": 0}
     monkeypatch.setattr(ollama_agent, "STATE_PATH", tmp_path / "state.json")
     monkeypatch.setattr(ollama_agent, "ROOT_DIR", tmp_path)
-    monkeypatch.setattr(
-        ollama_agent,
-        "probe_ollama",
-        lambda _base_url: (
+    def fake_probe(_base_url, timeout_seconds=4.0):
+        calls["probe"] += 1
+        return (
             True,
             "0.9.0",
             [
@@ -107,23 +107,21 @@ def test_ollama_status_lists_models_as_cards_payload(monkeypatch, tmp_path) -> N
                 OllamaModel(name="qwen36-35b-iq2-emotion:latest", size=11),
             ],
             None,
-        ),
-    )
+        )
+
+    monkeypatch.setattr(ollama_agent, "probe_ollama", fake_probe)
 
     response = TestClient(create_app()).get("/api/extensions/ollama/status")
     payload = response.json()
 
     assert response.status_code == 200
-    assert payload["connected"] is True
+    assert calls["probe"] == 0
+    assert payload["connected"] is False
     assert payload["settings"]["num_ctx"] == 4096
     assert payload["settings"]["num_batch"] == 128
     assert payload["settings"]["keep_alive"] == -1
     assert payload["think_mode"] == "auto"
-    assert payload["model"] == "qwen36-35b-iq2-emotion:latest"
-    assert [row["name"] for row in payload["models"]] == [
-        "gemma4-26b-q3:latest",
-        "qwen36-35b-iq2-emotion:latest",
-    ]
+    assert payload["models"] == []
     assert payload["state_context"]["docking_config"]["docking_engine"] in {"vina", "vina_gpu_21"}
 
 
@@ -1050,6 +1048,7 @@ def test_ollama_connect_offloads_previous_model_and_ensures_server(monkeypatch, 
     assert calls["offload"] == ["gemma4-26b-q3:latest"]
     assert payload["model"] == "qwen36-35b-iq2-emotion:latest"
     assert payload["connected"] is True
+    assert payload["job"]["running"] is False
 
 
 def test_ollama_connect_without_model_starts_server_and_lists_models_without_warmup(monkeypatch, tmp_path) -> None:
@@ -1146,6 +1145,8 @@ def test_ollama_shutdown_route_offloads_and_stops_server(monkeypatch, tmp_path) 
 
     assert response.status_code == 200
     assert calls["cleanup"] == [("http://localhost:11434", True)]
+    assert payload["connected"] is False
+    assert payload["models"] == []
     assert payload["offloaded_model"] == "gemma4-26b-q3:latest"
 
 
@@ -1186,10 +1187,10 @@ def test_ensure_local_server_uses_user_ollama_with_models_dir(monkeypatch, tmp_p
     assert captured["env"]["OLLAMA_MODELS"] == "/usr/share/ollama/.ollama/models"
 
 
-def test_shutdown_local_server_only_stops_dockup_managed_process(monkeypatch, tmp_path) -> None:
+def test_shutdown_local_server_stops_managed_and_local_ollama_processes(monkeypatch, tmp_path) -> None:
     from docking_app.extensions import ollama_agent
 
-    calls = {"terminate": 0, "wait": 0, "wait_unreachable": 0}
+    calls = {"terminate": [], "wait": 0, "wait_unreachable": 0}
     monkeypatch.setattr(ollama_agent, "STATE_PATH", tmp_path / "state.json")
     monkeypatch.setattr(ollama_agent, "ROOT_DIR", tmp_path)
 
@@ -1209,8 +1210,8 @@ def test_shutdown_local_server_only_stops_dockup_managed_process(monkeypatch, tm
     monkeypatch.setattr(ollama_agent, "_SERVER_PROC", proc)
     monkeypatch.setattr(ollama_agent, "_SERVER_BASE_URL", "http://localhost:11434")
 
-    def fake_terminate(_pid, *, sig):
-        calls["terminate"] += 1
+    def fake_terminate(pid, *, sig):
+        calls["terminate"].append((pid, sig.name))
 
     def fake_wait_unreachable(_base_url, timeout_seconds=8.0):
         calls["wait_unreachable"] += 1
@@ -1218,9 +1219,15 @@ def test_shutdown_local_server_only_stops_dockup_managed_process(monkeypatch, tm
 
     monkeypatch.setattr(ollama_agent, "_terminate_process_group", fake_terminate)
     monkeypatch.setattr(ollama_agent, "_wait_until_unreachable", fake_wait_unreachable)
+    monkeypatch.setattr(ollama_agent, "_local_ollama_serve_pids", lambda: [12345, 23456])
+    monkeypatch.setattr(ollama_agent.os, "kill", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()))
 
     assert ollama_agent._shutdown_local_server("http://localhost:11434") == ""
-    assert calls == {"terminate": 1, "wait": 1, "wait_unreachable": 1}
+    assert calls == {
+        "terminate": [(12345, "SIGTERM"), (23456, "SIGTERM")],
+        "wait": 1,
+        "wait_unreachable": 1,
+    }
 
 
 def test_app_shutdown_calls_ollama_shutdown(monkeypatch, tmp_path) -> None:

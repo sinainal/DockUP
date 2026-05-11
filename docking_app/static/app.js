@@ -1286,6 +1286,12 @@ function renderOllamaStatus(data) {
         : "Not connected";
     els.ollamaStatusPill.className = `extension-status-pill ${ollamaState.connected ? "is-ready" : "is-missing"}`;
   }
+  if (els.connectOllamaBtn) {
+    els.connectOllamaBtn.textContent = ollamaState.connected ? "Disconnect" : "Connect";
+    els.connectOllamaBtn.classList.toggle("secondary", ollamaState.connected);
+    els.connectOllamaBtn.classList.toggle("danger-soft", ollamaState.connected);
+    els.connectOllamaBtn.classList.toggle("primary", !ollamaState.connected);
+  }
   if (els.ollamaModelSummary) {
     const count = ollamaState.models.length;
     const version = ollamaState.version ? `Ollama ${ollamaState.version}` : "Ollama";
@@ -1619,6 +1625,24 @@ async function connectOllama({ model = "", openAgent = true } = {}) {
     renderOllamaStatus(data);
     if (data?.job?.running) startOllamaStatusPolling();
     if (data.connected && openAgent && explicitModel) setDockupAgentOpen(true);
+  } finally {
+    if (els.connectOllamaBtn) els.connectOllamaBtn.disabled = false;
+  }
+}
+
+async function disconnectOllama() {
+  if (els.connectOllamaBtn) els.connectOllamaBtn.disabled = true;
+  try {
+    const data = await offloadOllamaModel({
+      baseUrl: ollamaState.baseUrl,
+      model: ollamaState.model,
+      shutdownServer: true,
+    });
+    if (ollamaStatusPoll) {
+      clearInterval(ollamaStatusPoll);
+      ollamaStatusPoll = null;
+    }
+    return data;
   } finally {
     if (els.connectOllamaBtn) els.connectOllamaBtn.disabled = false;
   }
@@ -7880,7 +7904,11 @@ function bindEvents() {
   }
   if (els.connectOllamaBtn) {
     els.connectOllamaBtn.addEventListener("click", async () => {
-      await connectOllama({ openAgent: true });
+      if (ollamaState.connected) {
+        await disconnectOllama();
+      } else {
+        await connectOllama({ openAgent: true });
+      }
     });
   }
   if (els.ollamaModelGrid) {

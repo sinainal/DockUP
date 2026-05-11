@@ -347,9 +347,55 @@ def _snapshot(
     }
 
 
+def _offline_snapshot(saved: dict[str, Any] | None = None) -> dict[str, Any]:
+    saved = saved or _read_state()
+    target_base_url = normalize_base_url(saved.get("base_url"), DEFAULT_BASE_URL)
+    settings = _normalize_settings(saved.get("settings"))
+    think_mode = _normalize_think_mode(saved.get("think_mode"), DEFAULT_THINK_MODE)
+    state = {
+        "base_url": target_base_url,
+        "model": str(saved.get("model") or "").strip(),
+        "settings": settings,
+        "think_mode": think_mode,
+        "selected_models": [str(item or "").strip() for item in (saved.get("selected_models") or []) if str(item or "").strip()],
+        "connected": False,
+        "auto_start": False,
+        "last_error": str(saved.get("last_error") or "").strip(),
+    }
+    _write_state(state)
+    with _LOCK:
+        job = dict(_WARMUP_JOB)
+    return {
+        "ok": False,
+        "connected": False,
+        "base_url": target_base_url,
+        "version": None,
+        "model": state["model"],
+        "num_ctx": settings["num_ctx"],
+        "agent_num_predict": _agent_num_predict(settings["num_ctx"]),
+        "settings": settings,
+        "think_mode": think_mode,
+        "selected_models": [],
+        "think_mode_choices": list(THINK_MODE_CHOICES),
+        "num_ctx_choices": list(NUM_CTX_CHOICES),
+        "num_ctx_min": NUM_CTX_MIN,
+        "num_ctx_max": NUM_CTX_MAX,
+        "num_batch_choices": list(NUM_BATCH_CHOICES),
+        "keep_alive_choices": list(KEEP_ALIVE_CHOICES),
+        "num_gpu_choices": list(NUM_GPU_CHOICES),
+        "warmup_token_choices": list(WARMUP_TOKEN_CHOICES),
+        "models": [],
+        "error": state["last_error"],
+        "job": job,
+        "state_context": docking_state_context(),
+    }
+
+
 def status() -> dict[str, Any]:
     saved = _read_state()
-    return _snapshot(ensure_server=bool(saved.get("auto_start")))
+    if not bool(saved.get("auto_start")):
+        return _offline_snapshot(saved)
+    return _snapshot(ensure_server=True)
 
 
 def _is_local_base_url(base_url: str) -> bool:
@@ -649,11 +695,29 @@ def _shutdown_local_server(base_url: str | None = None) -> str:
             _SERVER_PROC = None
             _SERVER_BASE_URL = ""
 
-    if not managed_proc:
-        return "; ".join(errors)
+    stopped_pids: set[int] = set()
+    if managed_proc:
+        stopped_pids.add(managed_proc.pid)
+
+    for pid in _local_ollama_serve_pids():
+        if pid in stopped_pids:
+            continue
+        _terminate_process_group(pid, sig=signal.SIGTERM)
+        stopped_pids.add(pid)
+        deadline = time.time() + 4.0
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            except Exception:
+                break
+            time.sleep(0.15)
+        else:
+            _terminate_process_group(pid, sig=signal.SIGKILL)
 
     if not _wait_until_unreachable(target_base_url, timeout_seconds=2.0):
-        errors.append("local ollama serve is still reachable after DockUP-managed shutdown")
+        errors.append("local ollama serve is still reachable after shutdown")
 
     return "; ".join(errors)
 
@@ -786,6 +850,19 @@ def connect(payload: dict[str, Any]) -> dict[str, Any]:
             with _LOCK:
                 _WARMUP_TOKEN += 1
                 token = _WARMUP_TOKEN
+                _WARMUP_JOB.update(
+                    {
+                        "running": True,
+                        "message": "Loading local model",
+                        "model": model,
+                        "think_mode": requested_think_mode,
+                        "settings": requested_settings,
+                        "num_ctx": requested_settings["num_ctx"],
+                        "error": "",
+                        "started_at": time.time(),
+                        "finished_at": None,
+                    }
+                )
             thread = threading.Thread(
                 target=_warmup_worker,
                 args=(base_url, model, requested_settings, requested_think_mode, token),
@@ -831,7 +908,15 @@ def shutdown(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     saved = _read_state()
     base_url = normalize_base_url(payload.get("base_url") or saved.get("base_url"), DEFAULT_BASE_URL)
     cleanup = _cleanup_managed_ollama(base_url, offload=_normalize_bool(payload.get("offload", True), True))
-    result = _snapshot(base_url, None, saved.get("selected_models") if isinstance(saved.get("selected_models"), list) else None)
+    state = {
+        **saved,
+        "base_url": base_url,
+        "connected": False,
+        "auto_start": False,
+        "last_error": "; ".join(filter(None, [cleanup.get("offload_error", ""), cleanup.get("shutdown_error", "")])),
+    }
+    _write_state(state)
+    result = _offline_snapshot(state)
     result["offloaded_model"] = str(saved.get("model") or "").strip() if not (cleanup.get("offload_error") or cleanup.get("shutdown_error")) else ""
     result["offload_error"] = cleanup.get("offload_error", "")
     result["shutdown_error"] = cleanup.get("shutdown_error", "")
