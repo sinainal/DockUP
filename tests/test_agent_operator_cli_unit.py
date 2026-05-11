@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 
 def _load_cli_module():
-    path = Path(__file__).resolve().parents[2] / "dockup_agent_cli.py"
+    path = Path(__file__).resolve().parents[1] / "dockup_agent_cli.py"
     spec = importlib.util.spec_from_file_location("dockup_agent_cli", path)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
