@@ -13,6 +13,7 @@ from docking_app.app import app
 from docking_app.config import DOCK_DIR
 from docking_app.helpers import to_display_path
 from docking_app.routes import core
+from docking_app.services import _scan_results
 from docking_app.state import STATE
 
 
@@ -46,6 +47,21 @@ def test_results_scan_absolute_path_returns_runs() -> None:
     payload = response.json()
     assert "runs" in payload
     assert isinstance(payload["runs"], list)
+
+
+def test_results_scan_adds_run_affinity_deviation_from_group_mean(tmp_path) -> None:
+    run1 = tmp_path / "3PBL" / "Styrene_trimer" / "run1"
+    run2 = tmp_path / "3PBL" / "Styrene_trimer" / "run2"
+    run1.mkdir(parents=True)
+    run2.mkdir(parents=True)
+    (run1 / "results.json").write_text('{"run1": {"best_affinity": -8.0, "rmsd": 0.1}}', encoding="utf-8")
+    (run2 / "results.json").write_text('{"run2": {"best_affinity": -10.0, "rmsd": 0.2}}', encoding="utf-8")
+
+    payload = _scan_results(str(tmp_path))
+
+    runs = payload["runs"]
+    assert [run["affinity_grid_mean"] for run in runs] == [-9.0, -9.0]
+    assert [run["affinity_dev_from_grid_mean"] for run in runs] == [1.0, -1.0]
 
 
 def test_prepare_resume_queue_normalizes_out_root_path_to_display_path(monkeypatch) -> None:

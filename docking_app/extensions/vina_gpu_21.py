@@ -427,6 +427,7 @@ def _build_and_install() -> None:
                 "OPENCL_LIB_PATH": opencl_root_safe,
                 "OPENCL_VERSION": "-DOPENCL_3_0",
                 "GPU_PLATFORM": "-DNVIDIA_PLATFORM",
+                "DOCKING_BOX_SIZE": "-DLARGE_BOX",
                 "LD_LIBRARY_PATH": f"{opencl_root_safe}/lib64:{boost_root_safe}/stage/lib:{env.get('LD_LIBRARY_PATH', '')}",
             }
         )
@@ -436,6 +437,7 @@ def _build_and_install() -> None:
             f"OPENCL_LIB_PATH={opencl_root_safe}",
             "OPENCL_VERSION=-DOPENCL_3_0",
             "GPU_PLATFORM=-DNVIDIA_PLATFORM",
+            "DOCKING_BOX_SIZE=-DLARGE_BOX",
         ]
         clean = _run(["make", "clean", *make_vars], cwd=build_src, env=env, timeout=120)
         if clean.stdout.strip():

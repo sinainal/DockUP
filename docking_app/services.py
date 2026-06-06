@@ -808,6 +808,13 @@ def _scan_results(root_path: str) -> dict[str, Any]:
                 "max_affinity": max(aff_vals) if aff_vals else None,
             }
         )
+        if avg_aff is not None:
+            for item in items:
+                best_affinity = item.get("best_affinity")
+                item["affinity_grid_mean"] = avg_aff
+                item["affinity_dev_from_grid_mean"] = (
+                    best_affinity - avg_aff if best_affinity is not None else None
+                )
 
     averages.sort(
         key=lambda r: (

@@ -108,6 +108,14 @@ def test_vina_gpu_extension_has_no_hardcoded_gpu_test_sandbox() -> None:
     assert "gpu_tests" not in source
 
 
+def test_vina_gpu_extension_builds_large_box_binary_by_default() -> None:
+    from docking_app.extensions import vina_gpu_21
+
+    source = inspect.getsource(vina_gpu_21)
+
+    assert "DOCKING_BOX_SIZE=-DLARGE_BOX" in source
+
+
 def test_vina_gpu_local_source_is_explicit_env_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from docking_app.extensions import vina_gpu_21
 

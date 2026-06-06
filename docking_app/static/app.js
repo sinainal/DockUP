@@ -18,6 +18,10 @@ const appState = {
   resultsRootPath: RESULTS_DOCK_ROOT,
   resultsView: "runs",
   resultsData: { runs: [], averages: [] },
+  resultsSort: {
+    runs: { key: "pdb_id", direction: "asc" },
+    average: { key: "pdb_id", direction: "asc" },
+  },
   selectedResultDir: "",
   dockingConfig: {},
   activeRunOutRoot: "",
@@ -2848,6 +2852,49 @@ function formatNumber(val, digits = 2) {
   return num.toFixed(digits);
 }
 
+function compareResultValues(a, b, direction = "asc") {
+  const dir = direction === "desc" ? -1 : 1;
+  const aMissing = a === null || a === undefined || a === "";
+  const bMissing = b === null || b === undefined || b === "";
+  if (aMissing && bMissing) return 0;
+  if (aMissing) return 1;
+  if (bMissing) return -1;
+  const aNum = Number(a);
+  const bNum = Number(b);
+  if (!Number.isNaN(aNum) && !Number.isNaN(bNum)) {
+    return (aNum - bNum) * dir;
+  }
+  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" }) * dir;
+}
+
+function getResultSortValue(row, key) {
+  if (key === "ligand") return row.ligand_display_name || row.ligand_resname || "";
+  if (key === "interactions") return row.interaction_count ?? row.residue_count ?? "";
+  return row[key];
+}
+
+function sortResultRows(rows, view) {
+  const sort = appState.resultsSort?.[view] || {};
+  const key = sort.key || "pdb_id";
+  const direction = sort.direction || "asc";
+  return [...rows].sort((a, b) => {
+    const primary = compareResultValues(getResultSortValue(a, key), getResultSortValue(b, key), direction);
+    if (primary !== 0) return primary;
+    const pdb = compareResultValues(a.pdb_id, b.pdb_id, "asc");
+    if (pdb !== 0) return pdb;
+    const ligand = compareResultValues(getResultSortValue(a, "ligand"), getResultSortValue(b, "ligand"), "asc");
+    if (ligand !== 0) return ligand;
+    return compareResultValues(a.run_id || 0, b.run_id || 0, "asc");
+  });
+}
+
+function resultSortHeader(label, key, view) {
+  const sort = appState.resultsSort?.[view] || {};
+  const active = sort.key === key;
+  const marker = active ? (sort.direction === "desc" ? " ↓" : " ↑") : "";
+  return `<button type="button" class="table-sort-button" data-results-sort-key="${escapeHtml(key)}">${escapeHtml(label)}${marker}</button>`;
+}
+
 function normalizeChainValue(value) {
   const chain = String(value || "").trim();
   return chain && chain.toLowerCase() !== "all" ? chain : "all";
@@ -5149,7 +5196,8 @@ async function scanResults() {
 function renderResultsTable() {
   if (!els.resultsTable) return;
   const isAverage = appState.resultsView === "average";
-  const rows = isAverage ? (appState.resultsData.averages || []) : (appState.resultsData.runs || []);
+  const view = isAverage ? "average" : "runs";
+  const rows = sortResultRows(isAverage ? (appState.resultsData.averages || []) : (appState.resultsData.runs || []), view);
   if (els.resultsCount) {
     els.resultsCount.textContent = `${rows.length} ${isAverage ? "targets" : "results"}`;
   }
@@ -5163,11 +5211,40 @@ function renderResultsTable() {
   header.className = "table-row header";
   if (isAverage) {
     header.style.gridTemplateColumns = "1fr 0.8fr 0.5fr 0.6fr 0.6fr 0.6fr 0.6fr";
-    header.innerHTML = "<div>PDB</div><div>Ligand</div><div>Runs</div><div>Avg Affinity</div><div>Std</div><div>Avg RMSD</div><div>Std</div>";
+    header.innerHTML = `
+      <div>${resultSortHeader("PDB", "pdb_id", view)}</div>
+      <div>${resultSortHeader("Ligand", "ligand", view)}</div>
+      <div>${resultSortHeader("Runs", "run_count", view)}</div>
+      <div>${resultSortHeader("Avg Affinity", "avg_affinity", view)}</div>
+      <div>${resultSortHeader("Std", "std_affinity", view)}</div>
+      <div>${resultSortHeader("Avg RMSD", "avg_rmsd", view)}</div>
+      <div>${resultSortHeader("Std", "std_rmsd", view)}</div>
+    `;
   } else {
-    header.style.gridTemplateColumns = "0.8fr 0.5fr 0.8fr 0.6fr 0.6fr 0.6fr";
-    header.innerHTML = "<div>PDB</div><div>Run</div><div>Ligand</div><div>Affinity</div><div>RMSD</div><div>Interactions</div>";
+    header.style.gridTemplateColumns = "0.75fr 0.45fr 0.95fr 0.55fr 0.65fr 0.55fr 0.55fr";
+    header.innerHTML = `
+      <div>${resultSortHeader("PDB", "pdb_id", view)}</div>
+      <div>${resultSortHeader("Run", "run_id", view)}</div>
+      <div>${resultSortHeader("Ligand", "ligand", view)}</div>
+      <div>${resultSortHeader("Affinity", "best_affinity", view)}</div>
+      <div>${resultSortHeader("Dev from Mean", "affinity_dev_from_grid_mean", view)}</div>
+      <div>${resultSortHeader("RMSD", "rmsd", view)}</div>
+      <div>${resultSortHeader("Interactions", "interactions", view)}</div>
+    `;
   }
+  header.querySelectorAll("[data-results-sort-key]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.resultsSortKey || "pdb_id";
+      const current = appState.resultsSort?.[view] || { key: "pdb_id", direction: "asc" };
+      const nextDirection = current.key === key && current.direction === "asc" ? "desc" : "asc";
+      appState.resultsSort = {
+        ...(appState.resultsSort || {}),
+        [view]: { key, direction: nextDirection },
+      };
+      scheduleUIStateSave();
+      renderResultsTable();
+    });
+  });
   els.resultsTable.appendChild(header);
 
   rows.forEach((row) => {
@@ -5196,12 +5273,13 @@ function renderResultsTable() {
         updateRepresentations();
       });
     } else {
-      item.style.gridTemplateColumns = "0.8fr 0.5fr 0.8fr 0.6fr 0.6fr 0.6fr";
+      item.style.gridTemplateColumns = "0.75fr 0.45fr 0.95fr 0.55fr 0.65fr 0.55fr 0.55fr";
       item.innerHTML = `
         <div>${row.pdb_id || "-"}</div>
         <div>${row.run_id || "-"}</div>
         <div>${row.ligand_display_name || row.ligand_resname || "-"}</div>
         <div>${formatNumber(row.best_affinity)}</div>
+        <div>${formatNumber(row.affinity_dev_from_grid_mean)}</div>
         <div>${formatNumber(row.rmsd)}</div>
         <div>${row.interaction_count ?? row.residue_count ?? "-"}</div>
       `;
@@ -6159,6 +6237,7 @@ function saveUIState() {
     const payload = {
       mode: appState.mode,
       resultsView: appState.resultsView,
+      resultsSort: appState.resultsSort,
       dockingConfig: normalizeDockingConfig(appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
       ui: {
         selectedQueueBatchId: String(appState.selectedQueueBatchId || ""),
@@ -6244,6 +6323,12 @@ async function restoreUIState() {
   const savedResultsView = String(saved.resultsView || "").trim();
   if (savedResultsView) {
     appState.resultsView = savedResultsView;
+  }
+  if (saved.resultsSort && typeof saved.resultsSort === "object") {
+    appState.resultsSort = {
+      ...appState.resultsSort,
+      ...saved.resultsSort,
+    };
   }
 
   appState.dockingConfig = normalizeDockingConfig({

@@ -404,6 +404,62 @@ if [ -n "$LIG_SPEC" ]; then
   fi
 fi
 
+# Receptor-input cache hits skip the chain/ligand split above. Redocking still
+# needs a per-run native ligand SDF, so regenerate it from the source PDB when
+# no external ligand spec was provided.
+if [ -z "$LIG_SPEC" ] && [ ! -f "${PDB}_ligand.sdf" ]; then
+  "$DOCKUP_PYTHON" - "$PDB" "$CHAIN" "$LIGAND_RESNAME" "${PDB_FILE:-}" <<'PY'
+import sys
+from pathlib import Path
+
+pid = sys.argv[1]
+chain = sys.argv[2]
+lig_label = (sys.argv[3] or "").strip()
+pdb_path = (sys.argv[4] or "").strip()
+lig_resname = lig_label.split()[0] if lig_label else ""
+use_chain = chain.lower() != "all"
+water_res = {"HOH", "WAT", "DOD"}
+
+if not pdb_path:
+    raise SystemExit("Error: cannot regenerate native ligand SDF without --pdb_file.")
+path = Path(pdb_path)
+if not path.is_file():
+    raise SystemExit(f"Error: provided PDB file not found: {path}")
+
+selected_lines = []
+for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    if not raw.startswith("HETATM"):
+        continue
+    atom_chain = (raw[21].strip() or "_") if len(raw) > 21 else "_"
+    if use_chain and atom_chain != chain:
+        continue
+    resname = raw[17:20].strip() if len(raw) >= 20 else ""
+    if resname in water_res:
+        continue
+    if lig_resname and resname != lig_resname:
+        continue
+    selected_lines.append(raw)
+
+if not selected_lines:
+    raise SystemExit(f"Error: native ligand extraction failed for {pid} {chain} {lig_label}.")
+
+ligand_pdb = Path(f"{pid}_ligand_from_pdb.pdb")
+ligand_pdb.write_text("\n".join(selected_lines) + "\nEND\n", encoding="utf-8")
+
+try:
+    from rdkit import Chem
+
+    mol = Chem.MolFromPDBFile(str(ligand_pdb), removeHs=False, sanitize=False)
+    if mol is None:
+        raise RuntimeError("RDKit could not parse extracted ligand PDB block.")
+    Chem.MolToMolFile(mol, f"{pid}_ligand.sdf")
+except Exception as exc:
+    raise SystemExit(f"Error: native ligand SDF regeneration failed: {exc}")
+
+print(f"Regenerated native ligand SDF: {pid}_ligand.sdf")
+PY
+fi
+
 #──────────────── 2. Receptor → PQR (pdb2pqr) ───────────────────────
 if [ "$DOCKUP_PREPARED_INPUT_ENABLED" = "1" ] && [ "$DOCKUP_PREPARED_INPUT_PQR_HIT" = "1" ]; then
   link_or_copy "$DOCKUP_PREPARED_INPUT_PQR" "${PDB}_rec.pqr"

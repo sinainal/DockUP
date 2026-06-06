@@ -1494,6 +1494,25 @@ input[type="number"]::-webkit-outer-spin-button {
   min-width: 0;
 }
 
+.table-sort-button {
+  display: inline;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  text-align: left;
+  cursor: pointer;
+  white-space: normal;
+}
+
+.table-sort-button:hover {
+  color: #0f766e;
+}
+
 .modern-row-dropdown {
   position: relative;
   width: 100%;
