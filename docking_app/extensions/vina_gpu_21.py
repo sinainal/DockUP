@@ -410,9 +410,17 @@ def _build_and_install() -> None:
     with tempfile.TemporaryDirectory(prefix="dockup_vina_gpu_build_") as tmp_name:
         tmp = Path(tmp_name)
         build_src = _copy_source_to_build(tmp, hints)
+        kernel2_path = build_src / "OpenCL" / "inc" / "kernel2.h"
+        if kernel2_path.exists():
+            kernel2_text = kernel2_path.read_text(encoding="utf-8", errors="ignore")
+            kernel2_text = kernel2_text.replace(
+                "#define MAX_NUM_OF_ATOM_RELATION_COUNT 1024",
+                "#define MAX_NUM_OF_ATOM_RELATION_COUNT 4096",
+            )
+            kernel2_path.write_text(kernel2_text, encoding="utf-8")
         source_size = sum(p.stat().st_size for p in build_src.rglob("*") if p.is_file())
         _append_log(f"Source prepared ({_human_bytes(source_size)})")
-        _set_job(progress=35, message=f"Building Vina-GPU 2.1 ({_human_bytes(source_size)})")
+        _set_job(progress=35, message=f"Building Vina-GPU 2.1 medium box profile ({_human_bytes(source_size)})")
 
         env = os.environ.copy()
         _set_job(progress=42, message="Preparing Boost build dependency")
@@ -427,7 +435,7 @@ def _build_and_install() -> None:
                 "OPENCL_LIB_PATH": opencl_root_safe,
                 "OPENCL_VERSION": "-DOPENCL_3_0",
                 "GPU_PLATFORM": "-DNVIDIA_PLATFORM",
-                "DOCKING_BOX_SIZE": "-DLARGE_BOX",
+                "DOCKING_BOX_SIZE": "-DSMALL_BOX",
                 "LD_LIBRARY_PATH": f"{opencl_root_safe}/lib64:{boost_root_safe}/stage/lib:{env.get('LD_LIBRARY_PATH', '')}",
             }
         )
@@ -437,7 +445,7 @@ def _build_and_install() -> None:
             f"OPENCL_LIB_PATH={opencl_root_safe}",
             "OPENCL_VERSION=-DOPENCL_3_0",
             "GPU_PLATFORM=-DNVIDIA_PLATFORM",
-            "DOCKING_BOX_SIZE=-DLARGE_BOX",
+            "DOCKING_BOX_SIZE=-DSMALL_BOX",
         ]
         clean = _run(["make", "clean", *make_vars], cwd=build_src, env=env, timeout=120)
         if clean.stdout.strip():

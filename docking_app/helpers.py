@@ -287,6 +287,8 @@ def normalize_docking_config(raw: Any) -> dict[str, Any]:
         "vina_energy_range": None,
         "vina_cpu": None,
         "vina_seed": None,
+        "vina_gpu_threads": defaults.get("vina_gpu_threads", 1000),
+        "vina_gpu_box_profile": "medium",
     }
     ph_val = to_optional_float(source.get("pdb2pqr_ph"), 0.0, 14.0)
     if ph_val is not None:
@@ -298,6 +300,11 @@ def normalize_docking_config(raw: Any) -> dict[str, Any]:
     cfg["vina_energy_range"] = to_optional_float(source.get("vina_energy_range"), 0.0, 1000.0)
     cfg["vina_cpu"] = to_optional_int(source.get("vina_cpu"), 1, 512)
     cfg["vina_seed"] = to_optional_int(source.get("vina_seed"), 0, None)
+    threads_val = to_optional_int(source.get("vina_gpu_threads"), 1000, 100000)
+    if threads_val is not None:
+        cfg["vina_gpu_threads"] = threads_val
+    profile = str(source.get("vina_gpu_box_profile", defaults.get("vina_gpu_box_profile", "medium")) or "medium").strip().lower()
+    cfg["vina_gpu_box_profile"] = profile if profile in {"small", "medium", "large"} else "medium"
     return cfg
 
 

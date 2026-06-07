@@ -1024,16 +1024,30 @@
       </div>
       <div class="field-grid" style="margin-bottom: 10px;">
         <div class="field" style="margin-bottom: 0;">
+          <label class="field-label">Vina-GPU Threads</label>
+          <input type="number" id="dockCfgVinaGpuThreads" min="1000" max="100000" step="100" value="1000" list="dockCfgGpuThreadPresets">
+        </div>
+        <div class="field" style="margin-bottom: 0;">
+          <label class="field-label">Vina-GPU Box Profile</label>
+          <select id="dockCfgVinaGpuBoxProfile">
+            <option value="medium">Medium</option>
+            <option value="small">Small</option>
+            <option value="large">Large</option>
+          </select>
+        </div>
+        <div class="field" style="margin-bottom: 0;">
+          <label class="field-label">Vina Seed (optional)</label>
+          <input type="number" id="dockCfgVinaSeed" min="0" step="1" placeholder="random">
+        </div>
+      </div>
+      <div class="field-grid" style="margin-bottom: 10px;">
+        <div class="field" style="margin-bottom: 0;">
           <label class="field-label">Vina Num Modes (optional)</label>
           <input type="number" id="dockCfgVinaNumModes" min="1" max="50" step="1" placeholder="default" list="dockCfgNumModesPresets">
         </div>
         <div class="field" style="margin-bottom: 0;">
           <label class="field-label">Vina Energy Range (optional)</label>
           <input type="number" id="dockCfgVinaEnergyRange" min="0" max="100" step="0.5" placeholder="default" list="dockCfgEnergyRangePresets">
-        </div>
-        <div class="field" style="margin-bottom: 0;">
-          <label class="field-label">Vina Seed (optional)</label>
-          <input type="number" id="dockCfgVinaSeed" min="0" step="1" placeholder="random">
         </div>
       </div>
       <datalist id="dockCfgPhPresets">
@@ -1059,6 +1073,12 @@
         <option value="8"></option>
         <option value="16"></option>
         <option value="32"></option>
+      </datalist>
+      <datalist id="dockCfgGpuThreadPresets">
+        <option value="1000"></option>
+        <option value="2000"></option>
+        <option value="4000"></option>
+        <option value="8000"></option>
       </datalist>
       <datalist id="dockCfgNumModesPresets">
         <option value="9"></option>
@@ -1274,9 +1294,24 @@
 
             <div class="field-grid" style="margin-bottom: 10px;">
               <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Vina-GPU Threads</label>
+                <input type="number" id="queueBatchVinaGpuThreads" min="1000" max="100000" step="100" list="dockCfgGpuThreadPresets">
+              </div>
+              <div class="field" style="margin-bottom: 0;">
+                <label class="field-label">Vina-GPU Box Profile</label>
+                <select id="queueBatchVinaGpuBoxProfile">
+                  <option value="medium">Medium</option>
+                  <option value="small">Small</option>
+                  <option value="large">Large</option>
+                </select>
+              </div>
+              <div class="field" style="margin-bottom: 0;">
                 <label class="field-label">Vina Seed</label>
                 <input type="number" id="queueBatchVinaSeed" min="0" step="1" placeholder="random">
               </div>
+            </div>
+
+            <div class="field-grid" style="margin-bottom: 10px;">
               <label class="field queue-batch-checkbox" style="margin-bottom: 0;">
                 <span class="field-label">Use --nodebump</span>
                 <input type="checkbox" id="queueBatchPdb2pqrNodebump" checked>

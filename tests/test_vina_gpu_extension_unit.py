@@ -30,7 +30,12 @@ def test_manifest_roundtrip_preserves_vina_gpu_engine(tmp_path: Path) -> None:
                 "pdb_id": "6CM4",
                 "chain": "all",
                 "ligand": "LigandA",
-                "docking_config": {"docking_engine": "vina_gpu_21", "vina_exhaustiveness": 8},
+                "docking_config": {
+                    "docking_engine": "vina_gpu_21",
+                    "vina_exhaustiveness": 8,
+                    "vina_gpu_threads": 1200,
+                    "vina_gpu_box_profile": "medium",
+                },
                 "job_type": "Docking",
             }
         ],
@@ -40,6 +45,8 @@ def test_manifest_roundtrip_preserves_vina_gpu_engine(tmp_path: Path) -> None:
     rows = parse_manifest_rows(manifest)
 
     assert rows[0]["docking_config"]["docking_engine"] == "vina_gpu_21"
+    assert rows[0]["docking_config"]["vina_gpu_threads"] == 1200
+    assert rows[0]["docking_config"]["vina_gpu_box_profile"] == "medium"
     assert rows[0]["job_type"] == "Docking"
 
 
@@ -85,6 +92,8 @@ def test_preview_args_include_docking_engine() -> None:
 
     assert "--docking_engine" in args
     assert args[args.index("--docking_engine") + 1] == "vina_gpu_21"
+    assert args[args.index("--vina_gpu_threads") + 1] == "1000"
+    assert args[args.index("--vina_gpu_box_profile") + 1] == "medium"
 
 
 def test_extension_status_route_available_in_app() -> None:
@@ -108,12 +117,13 @@ def test_vina_gpu_extension_has_no_hardcoded_gpu_test_sandbox() -> None:
     assert "gpu_tests" not in source
 
 
-def test_vina_gpu_extension_builds_large_box_binary_by_default() -> None:
+def test_vina_gpu_extension_builds_medium_box_binary_by_default() -> None:
     from docking_app.extensions import vina_gpu_21
 
     source = inspect.getsource(vina_gpu_21)
 
-    assert "DOCKING_BOX_SIZE=-DLARGE_BOX" in source
+    assert "DOCKING_BOX_SIZE=-DSMALL_BOX" in source
+    assert "#define MAX_NUM_OF_ATOM_RELATION_COUNT 4096" in source
 
 
 def test_vina_gpu_local_source_is_explicit_env_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

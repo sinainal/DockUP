@@ -54,6 +54,8 @@ def config_to_manifest_values(cfg: dict[str, Any]) -> list[str]:
         "" if normalized.get("vina_energy_range") is None else str(normalized.get("vina_energy_range")),
         "" if normalized.get("vina_cpu") is None else str(normalized.get("vina_cpu")),
         "" if normalized.get("vina_seed") is None else str(normalized.get("vina_seed")),
+        str(normalized.get("vina_gpu_threads", 1000)),
+        str(normalized.get("vina_gpu_box_profile", "medium")),
     ]
 
 
@@ -75,6 +77,8 @@ def manifest_values_to_config(cols: list[str]) -> dict[str, Any]:
             "vina_energy_range": restore_manifest_value(cols[20] if len(cols) > 20 else ""),
             "vina_cpu": restore_manifest_value(cols[21] if len(cols) > 21 else ""),
             "vina_seed": restore_manifest_value(cols[22] if len(cols) > 22 else ""),
+            "vina_gpu_threads": restore_manifest_value(cols[23] if len(cols) > 23 else ""),
+            "vina_gpu_box_profile": restore_manifest_value(cols[24] if len(cols) > 24 else ""),
         }
     )
 
@@ -104,6 +108,8 @@ def append_docking_config_args(args: list[str], cfg_raw: Any) -> None:
     vina_seed = cfg.get("vina_seed")
     if vina_seed is not None:
         args.extend(["--vina_seed", str(vina_seed)])
+    args.extend(["--vina_gpu_threads", str(cfg.get("vina_gpu_threads", 1000))])
+    args.extend(["--vina_gpu_box_profile", str(cfg.get("vina_gpu_box_profile", "medium"))])
 
 
 # ---------------------------------------------------------------------------
@@ -125,11 +131,18 @@ def parse_manifest_rows(manifest_path: Path) -> list[dict[str, str]]:
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         cols = line.split("\t")
-        is_new_schema = len(cols) >= 24
-        cols += [""] * max(0, 24 - len(cols))
-        cfg_cols = cols if is_new_schema else cols[:9] + [""] + cols[9:22]
+        col_count = len(cols)
+        if col_count >= 26:
+            cfg_cols = cols[:25]
+            job_type_idx = 25
+        elif col_count >= 24:
+            cfg_cols = cols[:23] + ["", ""]
+            job_type_idx = 23
+        else:
+            cfg_cols = cols[:9] + [""] + cols[9:22] + ["", ""]
+            job_type_idx = 22
+        cols += [""] * max(0, job_type_idx + 1 - len(cols))
         cfg = manifest_values_to_config(cfg_cols)
-        job_type_idx = 23 if is_new_schema else 22
         rows.append(
             {
                 "pdb_id": restore_manifest_value(cols[0]),

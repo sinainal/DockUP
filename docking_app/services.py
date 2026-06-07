@@ -1193,6 +1193,8 @@ def _start_run(
             "    ! is_empty \"$vina_energy_range\" && args+=(--vina_energy_range \"$vina_energy_range\")\n"
             "    ! is_empty \"$vina_cpu\" && args+=(--vina_cpu \"$vina_cpu\")\n"
             "    ! is_empty \"$vina_seed\" && args+=(--vina_seed \"$vina_seed\")\n"
+            "    ! is_empty \"$vina_gpu_threads\" && args+=(--vina_gpu_threads \"$vina_gpu_threads\")\n"
+            "    ! is_empty \"$vina_gpu_box_profile\" && args+=(--vina_gpu_box_profile \"$vina_gpu_box_profile\")\n"
             "    ! is_empty \"$OUT_ROOT\" && args+=(--out_root \"$OUT_ROOT\")\n"
             "    ! is_empty \"$OUT_ROOT\" && args+=(--prepared_root \"$OUT_ROOT/_prepared\")\n"
             "    runner=\"$SCRIPT_DIR/run1.sh\"\n"
@@ -1237,8 +1239,9 @@ def _start_run(
         "run_idx=0",
         "batch_start_epoch=$(date +%s)",
         "echo \"[$(ts)] Batch start | jobs=$job_total runs=$RUNS total_runs=$run_total\"",
-        "while IFS=$'\\t' read -r pdb chain ligand lig_spec pdb_file grid_pad grid_file force_run_id flex_residue_spec docking_engine pdb2pqr_ph pdb2pqr_ff pdb2pqr_ffout pdb2pqr_nodebump pdb2pqr_keep_chain mkrec_allow_bad_res mkrec_default_altloc docking_mode vina_exhaustiveness vina_num_modes vina_energy_range vina_cpu vina_seed job_type; do",
+        "while IFS=$'\\t' read -r pdb chain ligand lig_spec pdb_file grid_pad grid_file force_run_id flex_residue_spec docking_engine pdb2pqr_ph pdb2pqr_ff pdb2pqr_ffout pdb2pqr_nodebump pdb2pqr_keep_chain mkrec_allow_bad_res mkrec_default_altloc docking_mode vina_exhaustiveness vina_num_modes vina_energy_range vina_cpu vina_seed vina_gpu_threads vina_gpu_box_profile job_type; do",
         "  [[ -z \"$pdb\" || \"$pdb\" =~ ^# ]] && continue",
+        "  if [[ -z \"$job_type\" && -z \"$vina_gpu_box_profile\" && \"$vina_gpu_threads\" != \"__EMPTY__\" && ! \"$vina_gpu_threads\" =~ ^[0-9]+$ ]]; then job_type=\"$vina_gpu_threads\"; vina_gpu_threads=\"\"; fi",
         "  if [[ \"$docking_engine\" != \"vina\" && \"$docking_engine\" != \"vina_gpu_21\" && \"$docking_engine\" != \"__EMPTY__\" && ( -z \"$job_type\" || \"$job_type\" == \"__EMPTY__\" ) ]]; then job_type=\"$docking_engine\"; docking_engine=\"vina\"; fi",
         "  if is_empty \"$docking_engine\"; then docking_engine=\"vina\"; fi",
         "  if is_empty \"$job_type\"; then job_type=\"Docking\"; fi",

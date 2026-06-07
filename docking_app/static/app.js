@@ -47,6 +47,8 @@ const DEFAULT_DOCKING_CONFIG = {
   vina_energy_range: null,
   vina_cpu: null,
   vina_seed: null,
+  vina_gpu_threads: 1000,
+  vina_gpu_box_profile: "medium",
 };
 
 const OTOFIGURE_STYLE_PRESETS = {
@@ -387,6 +389,8 @@ function initElements() {
   els.queueBatchVinaEnergyRange = document.getElementById("queueBatchVinaEnergyRange");
   els.queueBatchVinaCpu = document.getElementById("queueBatchVinaCpu");
   els.queueBatchVinaSeed = document.getElementById("queueBatchVinaSeed");
+  els.queueBatchVinaGpuThreads = document.getElementById("queueBatchVinaGpuThreads");
+  els.queueBatchVinaGpuBoxProfile = document.getElementById("queueBatchVinaGpuBoxProfile");
   els.queueBatchPdb2pqrNodebump = document.getElementById("queueBatchPdb2pqrNodebump");
   els.queueBatchPdb2pqrKeepChain = document.getElementById("queueBatchPdb2pqrKeepChain");
   els.queueBatchMkrecAllowBadRes = document.getElementById("queueBatchMkrecAllowBadRes");
@@ -415,6 +419,8 @@ function initElements() {
   els.dockCfgVinaEnergyRange = document.getElementById("dockCfgVinaEnergyRange");
   els.dockCfgVinaCpu = document.getElementById("dockCfgVinaCpu");
   els.dockCfgVinaSeed = document.getElementById("dockCfgVinaSeed");
+  els.dockCfgVinaGpuThreads = document.getElementById("dockCfgVinaGpuThreads");
+  els.dockCfgVinaGpuBoxProfile = document.getElementById("dockCfgVinaGpuBoxProfile");
   els.dockCfgFlexInfo = document.getElementById("dockCfgFlexInfo");
   els.dockCfgFlexModeBlock = document.getElementById("dockCfgFlexModeBlock");
   els.dockCfgFlexTargetField = document.getElementById("dockCfgFlexTargetField");
@@ -3407,6 +3413,10 @@ function normalizeDockingConfig(rawConfig) {
   normalized.vina_energy_range = asFloat(source.vina_energy_range, 0, 1000, true);
   normalized.vina_cpu = asInt(source.vina_cpu, 1, 512, true);
   normalized.vina_seed = asInt(source.vina_seed, 0, null, true);
+  const gpuThreads = asInt(source.vina_gpu_threads, 1000, 100000, false);
+  if (gpuThreads !== null) normalized.vina_gpu_threads = gpuThreads;
+  const gpuProfile = String(source.vina_gpu_box_profile ?? normalized.vina_gpu_box_profile).trim().toLowerCase();
+  normalized.vina_gpu_box_profile = ["small", "medium", "large"].includes(gpuProfile) ? gpuProfile : "medium";
 
   return normalized;
 }
@@ -3447,6 +3457,8 @@ function readAdvancedDockingConfigFromModal() {
     vina_energy_range: els.dockCfgVinaEnergyRange?.value,
     vina_cpu: els.dockCfgVinaCpu?.value,
     vina_seed: els.dockCfgVinaSeed?.value,
+    vina_gpu_threads: els.dockCfgVinaGpuThreads?.value,
+    vina_gpu_box_profile: els.dockCfgVinaGpuBoxProfile?.value,
   });
 }
 
@@ -3495,6 +3507,8 @@ function applyAdvancedDockingConfigToModal(config) {
   if (els.dockCfgVinaEnergyRange) els.dockCfgVinaEnergyRange.value = cfg.vina_energy_range === null ? "" : String(cfg.vina_energy_range);
   if (els.dockCfgVinaCpu) els.dockCfgVinaCpu.value = cfg.vina_cpu === null ? "" : String(cfg.vina_cpu);
   if (els.dockCfgVinaSeed) els.dockCfgVinaSeed.value = cfg.vina_seed === null ? "" : String(cfg.vina_seed);
+  if (els.dockCfgVinaGpuThreads) els.dockCfgVinaGpuThreads.value = String(cfg.vina_gpu_threads || 1000);
+  setSelectValue(els.dockCfgVinaGpuBoxProfile, cfg.vina_gpu_box_profile || "medium", "medium");
   syncDockingModeUI();
 }
 
@@ -3507,7 +3521,10 @@ function renderDockingConfigSummary() {
       ? "multi-ligand"
       : "single";
     const engineLabel = cfg.docking_engine === "vina_gpu_21" ? "Vina-GPU 2.1" : "AutoDock Vina";
-    els.openDockingConfigModal.title = `${engineLabel} | ${ligandWorkflowLabel} | ${cfg.docking_mode} | pH ${cfg.pdb2pqr_ph} | Exhaustiveness ${cfg.vina_exhaustiveness}${flexSuffix}`;
+    const gpuSuffix = cfg.docking_engine === "vina_gpu_21"
+      ? ` | GPU ${cfg.vina_gpu_threads || 1000} ${cfg.vina_gpu_box_profile || "medium"}`
+      : "";
+    els.openDockingConfigModal.title = `${engineLabel} | ${ligandWorkflowLabel} | ${cfg.docking_mode} | pH ${cfg.pdb2pqr_ph} | Exhaustiveness ${cfg.vina_exhaustiveness}${gpuSuffix}${flexSuffix}`;
   }
 }
 
@@ -7152,6 +7169,8 @@ function applyQueueBatchDockingConfigToInputs(config) {
   if (els.queueBatchVinaEnergyRange) els.queueBatchVinaEnergyRange.value = cfg.vina_energy_range === null ? "" : String(cfg.vina_energy_range);
   if (els.queueBatchVinaCpu) els.queueBatchVinaCpu.value = cfg.vina_cpu === null ? "" : String(cfg.vina_cpu);
   if (els.queueBatchVinaSeed) els.queueBatchVinaSeed.value = cfg.vina_seed === null ? "" : String(cfg.vina_seed);
+  if (els.queueBatchVinaGpuThreads) els.queueBatchVinaGpuThreads.value = String(cfg.vina_gpu_threads || 1000);
+  setSelectValue(els.queueBatchVinaGpuBoxProfile, cfg.vina_gpu_box_profile || "medium", "medium");
 }
 
 function readQueueBatchDockingConfigFromInputs() {
@@ -7170,6 +7189,8 @@ function readQueueBatchDockingConfigFromInputs() {
     vina_energy_range: els.queueBatchVinaEnergyRange?.value,
     vina_cpu: els.queueBatchVinaCpu?.value,
     vina_seed: els.queueBatchVinaSeed?.value,
+    vina_gpu_threads: els.queueBatchVinaGpuThreads?.value,
+    vina_gpu_box_profile: els.queueBatchVinaGpuBoxProfile?.value,
   });
 }
 

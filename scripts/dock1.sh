@@ -38,7 +38,7 @@ else
   VINA_BIN=""
 fi
 
-[ $# -ge 3 ] || { echo "Usage: $0 <PDBID> <CHAIN> <LIGAND_RESNAME> [--lig_spec path_to_sdf] [--pdb_file path_to_receptor.pdb] [--grid_pad value|x,y,z] [--grid_file path] [--flexres A:114[,A:118]] [--prepared_root path] [--docking_engine vina|vina_gpu_21] [--pdb2pqr_ph value] [--pdb2pqr_ff name] [--pdb2pqr_ffout name] [--pdb2pqr_nodebump 1|0] [--pdb2pqr_keep_chain 1|0] [--mkrec_allow_bad_res 1|0] [--mkrec_default_altloc A] [--vina_exhaustiveness N] [--vina_num_modes N] [--vina_energy_range E] [--vina_cpu N] [--vina_seed N]"; exit 1; }
+[ $# -ge 3 ] || { echo "Usage: $0 <PDBID> <CHAIN> <LIGAND_RESNAME> [--lig_spec path_to_sdf] [--pdb_file path_to_receptor.pdb] [--grid_pad value|x,y,z] [--grid_file path] [--flexres A:114[,A:118]] [--prepared_root path] [--docking_engine vina|vina_gpu_21] [--pdb2pqr_ph value] [--pdb2pqr_ff name] [--pdb2pqr_ffout name] [--pdb2pqr_nodebump 1|0] [--pdb2pqr_keep_chain 1|0] [--mkrec_allow_bad_res 1|0] [--mkrec_default_altloc A] [--vina_exhaustiveness N] [--vina_num_modes N] [--vina_energy_range E] [--vina_cpu N] [--vina_seed N] [--vina_gpu_threads N] [--vina_gpu_box_profile small|medium|large]"; exit 1; }
 PDB=$1
 CHAIN=$2
 LIGAND_RESNAME=$3
@@ -61,6 +61,8 @@ VINA_NUM_MODES=""
 VINA_ENERGY_RANGE=""
 VINA_CPU=""
 VINA_SEED=""
+VINA_GPU_THREADS=""
+VINA_GPU_BOX_PROFILE="medium"
 FLEXRES=""
 PREPARED_ROOT="${DOCKUP_PREPARED_ROOT:-}"
 if [ "$#" -gt 3 ]; then
@@ -110,6 +112,10 @@ if [ "$#" -gt 3 ]; then
         VINA_CPU="$2"; shift 2;;
       --vina_seed)
         VINA_SEED="$2"; shift 2;;
+      --vina_gpu_threads)
+        VINA_GPU_THREADS="$2"; shift 2;;
+      --vina_gpu_box_profile)
+        VINA_GPU_BOX_PROFILE="$2"; shift 2;;
       *) echo "Warning: unknown argument $1"; shift;;
     esac
   done
@@ -162,6 +168,18 @@ if [ -n "$VINA_SEED" ] && ! [[ "$VINA_SEED" =~ ^[0-9]+$ ]]; then
   echo "Error: --vina_seed must be an integer >= 0" >&2
   exit 2
 fi
+if [ -n "$VINA_GPU_THREADS" ] && { ! [[ "$VINA_GPU_THREADS" =~ ^[0-9]+$ ]] || [ "$VINA_GPU_THREADS" -lt 1000 ]; }; then
+  echo "Error: --vina_gpu_threads must be an integer >= 1000" >&2
+  exit 2
+fi
+VINA_GPU_BOX_PROFILE=$(echo "${VINA_GPU_BOX_PROFILE:-medium}" | tr '[:upper:]' '[:lower:]')
+case "$VINA_GPU_BOX_PROFILE" in
+  small|medium|large) ;;
+  *)
+    echo "Error: --vina_gpu_box_profile must be small, medium, or large" >&2
+    exit 2
+    ;;
+esac
 
 normalize_optional_path() {
   local path="$1"
@@ -805,6 +823,9 @@ if [ "$DOCKING_ENGINE" = "vina_gpu_21" ]; then
     exit 2
   fi
   run_dir_abs=$(pwd)
+  vina_gpu_threads="${VINA_GPU_THREADS:-${DOCKUP_VINA_GPU_21_THREADS:-1000}}"
+  echo "Vina-GPU profile: $VINA_GPU_BOX_PROFILE"
+  echo "Vina-GPU threads: $vina_gpu_threads"
   vina_cmd=(
     "$VINA_GPU_BIN"
     --receptor "$run_dir_abs/${RIGID_RECEPTOR_PDBQT}"
@@ -816,7 +837,7 @@ if [ "$DOCKING_ENGINE" = "vina_gpu_21" ]; then
     --size_x "$SX"
     --size_y "$SY"
     --size_z "$SZ"
-    --thread "${DOCKUP_VINA_GPU_21_THREADS:-8000}"
+    --thread "$vina_gpu_threads"
     --out "$run_dir_abs/${PDB}_out_vina.pdbqt"
     --log "$run_dir_abs/${PDB}_vina_gpu.log"
   )

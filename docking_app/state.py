@@ -52,6 +52,8 @@ DOCKING_CONFIG_DEFAULTS: dict[str, Any] = {
     "vina_energy_range": None,
     "vina_cpu": None,
     "vina_seed": None,
+    "vina_gpu_threads": 1000,
+    "vina_gpu_box_profile": "medium",
 }
 
 STATE: dict[str, Any] = {
