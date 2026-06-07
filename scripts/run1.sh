@@ -320,7 +320,28 @@ if not atoms:
 
 def element_from_line(line: str) -> str:
     elem = line[76:78].strip()
-    if elem:
+    atom_type = elem or line[66:79].strip()
+    atom_type = atom_type.upper()
+    autodock_elements = {
+        "A": "C",
+        "C": "C",
+        "HD": "H",
+        "H": "H",
+        "N": "N",
+        "NA": "N",
+        "OA": "O",
+        "O": "O",
+        "S": "S",
+        "SA": "S",
+        "P": "P",
+        "F": "F",
+        "CL": "Cl",
+        "BR": "Br",
+        "I": "I",
+    }
+    if atom_type in autodock_elements:
+        return autodock_elements[atom_type]
+    if elem and elem.upper() not in {"A"}:
         return elem
     name = line[12:16].strip()
     return (name[0] if name else "C").upper()
@@ -471,9 +492,24 @@ PY
     cp -a "$script_dir/CalcLigRMSD.py" "$rmsd_dir/" 2>/dev/null || true
     pushd "$rmsd_dir" >/dev/null
     rmsd_val=""
-    # ensure ligand.pdb and docked.pdb exist
     if [ -f ligand.pdb ] && [ -f docked.pdb ]; then
-      "$DOCKUP_PYTHON" rmsd_rdkit.py >/dev/null 2>&1 || true
+      "$DOCKUP_PYTHON" rmsd_rdkit.py >rmsd_stdout.log 2>rmsd_stderr.log || true
+      if [ ! -s rmsd_results.txt ]; then
+        "$DOCKUP_PYTHON" - <<'PY' >rmsd_fallback_stdout.log 2>rmsd_fallback_stderr.log || true
+from pathlib import Path
+
+from rdkit import Chem
+
+from CalcLigRMSD import CalcLigRMSD
+
+ligand = Chem.MolFromPDBFile("ligand.pdb", removeHs=False)
+docked = Chem.MolFromPDBFile("docked.pdb", removeHs=False)
+if ligand is None or docked is None:
+    raise SystemExit("RDKit could not read ligand.pdb or docked.pdb")
+rmsd = CalcLigRMSD(docked, ligand, rename_lig2=False)
+Path("rmsd_results.txt").write_text(f"Result Name\tRMSD\nfallback\t{rmsd:.2f}\n", encoding="utf-8")
+PY
+      fi
     fi
     # read rmsd_results.txt
     if [ -f rmsd_results.txt ]; then
