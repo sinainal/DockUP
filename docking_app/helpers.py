@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .config import BASE, DATA_DIR, DOCK_DIR, WORKSPACE_DIR
+from .config import BASE, DATA_DIR, DOCK_DIR, LOCAL_DOCS_EXP_RESULTS_DIR, WORKSPACE_DIR
 from .state import DOCKING_CONFIG_DEFAULTS
 
 logger = logging.getLogger(__name__)
@@ -23,6 +23,7 @@ LIGAND_DUPLICATE_SUFFIX_RE = re.compile(r"^(?P<base>.+?)_(?P<index>\d+)$")
 BASE_RESOLVED = BASE.resolve()
 DATA_DIR_RESOLVED = DATA_DIR.resolve()
 DOCK_DIR_RESOLVED = DOCK_DIR.resolve()
+LOCAL_DOCS_EXP_RESULTS_RESOLVED = LOCAL_DOCS_EXP_RESULTS_DIR.resolve()
 WORKSPACE_RESOLVED = WORKSPACE_DIR.resolve()
 
 
@@ -356,7 +357,7 @@ def resolve_dock_directory(
     default: Path,
     allow_create: bool,
 ) -> Path:
-    """Resolve a user-provided path so that it stays inside DOCK_DIR."""
+    """Resolve a user-provided path so that it stays inside DOCK_DIR or local_docs/dopamine/exp_results."""
     from fastapi import HTTPException
 
     def _rebase_to_dock(raw_text: str) -> Path | None:
@@ -391,12 +392,13 @@ def resolve_dock_directory(
             candidate = (BASE / candidate).resolve()
     else:
         candidate = candidate.resolve()
-    if candidate != DOCK_DIR_RESOLVED and DOCK_DIR_RESOLVED not in candidate.parents:
+    allowed_roots = (DOCK_DIR_RESOLVED, LOCAL_DOCS_EXP_RESULTS_RESOLVED)
+    if not any(candidate == root or root in candidate.parents for root in allowed_roots):
         rebased = _rebase_to_dock(raw)
         if rebased is not None:
             candidate = rebased
-        if candidate != DOCK_DIR_RESOLVED and DOCK_DIR_RESOLVED not in candidate.parents:
-            raise HTTPException(status_code=400, detail="Path must be inside data/dock.")
+        if not any(candidate == root or root in candidate.parents for root in allowed_roots):
+            raise HTTPException(status_code=400, detail="Path must be inside data/dock or local_docs/dopamine/exp_results.")
     if candidate.exists():
         if not candidate.is_dir():
             raise HTTPException(status_code=400, detail="Path is not a directory.")

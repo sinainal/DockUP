@@ -21,7 +21,7 @@ import requests
 from fastapi import HTTPException, UploadFile
 
 from . import state
-from .config import BASE, DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR, WORKSPACE_DIR
+from .config import BASE, DOCK_DIR, LIGAND_DIR, LOCAL_DOCS_EXP_RESULTS_DIR, RECEPTOR_DIR, WORKSPACE_DIR
 from .helpers import (
     build_flex_residue_spec,
     normalize_docking_config,
@@ -880,9 +880,9 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 candidate = (WORKSPACE_DIR / candidate).resolve()
             else:
                 candidate = candidate.resolve()
-        dock_root = DOCK_DIR.resolve()
-        if candidate != dock_root and dock_root not in candidate.parents:
-            return dock_root
+        allowed_roots = (DOCK_DIR.resolve(), LOCAL_DOCS_EXP_RESULTS_DIR.resolve())
+        if not any(candidate == root or root in candidate.parents for root in allowed_roots):
+            return DOCK_DIR.resolve()
         return candidate
 
     def _grid_signature(pdb_id: str, grid: dict[str, Any]) -> str:
@@ -1133,9 +1133,9 @@ def _start_run(
                 out_root_path = (WORKSPACE_DIR / rel).resolve()
             except StopIteration:
                 pass  # Can't fix, will fail later with a clear error
-    dock_root = DOCK_DIR.resolve()
-    if out_root_path != dock_root and dock_root not in out_root_path.parents:
-        raise HTTPException(status_code=400, detail="out_root must stay inside data/dock.")
+    allowed_roots = (DOCK_DIR.resolve(), LOCAL_DOCS_EXP_RESULTS_DIR.resolve())
+    if not any(out_root_path == root or root in out_root_path.parents for root in allowed_roots):
+        raise HTTPException(status_code=400, detail="out_root must stay inside data/dock or local_docs/dopamine/exp_results.")
     out_root_path = out_root_path.resolve()
     out_root_path.mkdir(parents=True, exist_ok=True)
     run_meta_dir = out_root_path / RUN_META_DIR_NAME
