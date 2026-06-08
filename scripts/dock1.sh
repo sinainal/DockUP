@@ -308,7 +308,10 @@ with pymol2.PyMOL() as pm:
         else:
             pm.cmd.select('lig', 'organic')
     pm.cmd.save(f'{pid}_ligand.sdf', 'lig')
-    pm.cmd.remove('lig')
+    # Keep the docking receptor clean: after the target/native ligand is saved,
+    # remove every organic hetero molecule so cofactors/other ligands do not
+    # become part of the receptor PDBQT or confuse PLIP.
+    pm.cmd.remove('organic')
     pm.cmd.save(f'{pid}_rec_raw.pdb', 'all')
 PY
 then
