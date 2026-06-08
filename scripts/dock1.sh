@@ -841,6 +841,7 @@ if [ "$DOCKING_ENGINE" = "vina_gpu_21" ]; then
     --size_y "$SY"
     --size_z "$SZ"
     --thread "$vina_gpu_threads"
+    --search_depth "$VINA_EXHAUSTIVENESS"
     --out "$run_dir_abs/${PDB}_out_vina.pdbqt"
     --log "$run_dir_abs/${PDB}_vina_gpu.log"
   )
