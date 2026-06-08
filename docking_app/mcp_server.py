@@ -99,6 +99,27 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "dockup_run",
+        "description": "Start, stop, or inspect DockUP live docking runs through the Control API.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["status", "start", "stop"]},
+                "payload": {
+                    "type": "object",
+                    "properties": {
+                        "test_mode": {"type": "boolean"},
+                        "batch_id": {"type": ["integer", "null"]},
+                    },
+                    "additionalProperties": True,
+                },
+                "response": {"type": "string", "enum": ["summary", "full"]},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "dockup_validate",
         "description": "Validate current DockUP state/assets/queue against caller-provided expectations.",
         "inputSchema": {
@@ -166,6 +187,7 @@ GUIDE_URI = "dockup://guide/control"
 GUIDE_TEXT = """DockUP MCP guide:
 - Use MCP/Control API tools only; do not mutate STATE or files directly.
 - For queue prep: read state/assets, ensure receptors/ligands/grid/config, prepare queue, validate.
+- For runs: use dockup_run status/start/stop, then check status until done/error/stopped.
 - Docking uses dock-ready SDF ligands; Redocking uses receptor-native ligands.
 - In Docking, all_set expands to active SDF ligands.
 - If localhost backend is down, use dockup_backend start/status; it starts only the web app via the repo venv.
@@ -240,6 +262,8 @@ class DockUPMCPServer:
             payload = self._mutate(args)
         elif name == "dockup_queue":
             payload = self._queue(args)
+        elif name == "dockup_run":
+            payload = self._run(args)
         elif name == "dockup_validate":
             payload = self._validate(args)
         elif name == "dockup_backend":
@@ -538,6 +562,40 @@ class DockUPMCPServer:
         if response == "full":
             facts["queue"] = rows
         return self._compact_envelope(f"queue.{action}", raw, facts, response=response)
+
+    def _run(self, args: dict[str, Any]) -> dict[str, Any]:
+        action = str(args.get("action") or "status").strip()
+        payload = args.get("payload") if isinstance(args.get("payload"), dict) else {}
+        response = str(args.get("response") or "summary")
+        if action == "status":
+            raw = self.client.get_run_status()
+        elif action == "start":
+            batch_id_raw = payload.get("batch_id")
+            batch_id = int(batch_id_raw) if batch_id_raw not in (None, "", "null") else None
+            raw = self.client.start_run(
+                test_mode=self._as_bool(payload.get("test_mode"), False),
+                batch_id=batch_id,
+            )
+        elif action == "stop":
+            raw = self.client.stop_run()
+        else:
+            raise ValueError(f"Unsupported dockup_run action: {action}")
+        data = self._data(raw)
+        facts = {
+            key: data.get(key)
+            for key in [
+                "status",
+                "returncode",
+                "command",
+                "out_root",
+                "batch_log_path",
+                "total_runs",
+                "completed_runs",
+                "elapsed_seconds",
+            ]
+            if key in data
+        }
+        return self._compact_envelope(f"run.{action}", raw, facts, response=response)
 
     def _report(self, args: dict[str, Any]) -> dict[str, Any]:
         action = str(args.get("action") or "").strip()

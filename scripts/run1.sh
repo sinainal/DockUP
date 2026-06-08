@@ -455,7 +455,33 @@ PY
 
   # Prefer exported pose PDB when available; otherwise convert first Vina model.
   if [ -f "$pose_pdb" ]; then
-    cp -f "$pose_pdb" "$rmsd_dir/docked.pdb"
+    "$DOCKUP_PYTHON" - "$pose_pdb" "$rmsd_dir/docked.pdb" <<'PY' >"$rmsd_dir/pose_normalize_stdout.log" 2>"$rmsd_dir/pose_normalize_stderr.log" || cp -f "$pose_pdb" "$rmsd_dir/docked.pdb"
+import re
+import sys
+from pathlib import Path
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+
+def guess_element(line: str) -> str:
+    raw = line[76:78].strip() if len(line) >= 78 else ""
+    if raw:
+        return raw[:2].title()
+    name = line[12:16].strip()
+    name = re.sub(r"^[0-9]+", "", name)
+    if len(name) >= 2 and name[:2].upper() in {"CL", "BR", "NA", "MG", "ZN", "FE", "CA", "MN", "CO", "NI", "CU"}:
+        return name[:2].title()
+    return (name[:1] or "C").upper()
+
+out = []
+for raw in src.read_text(encoding="utf-8", errors="ignore").splitlines():
+    if raw.startswith(("ATOM", "HETATM")):
+        line = raw[:66].ljust(76) + guess_element(raw).rjust(2)
+        out.append(line)
+    elif raw.startswith(("CONECT", "TER", "END")):
+        out.append(raw)
+dst.write_text("\n".join(out) + "\n", encoding="utf-8")
+PY
   elif [ -n "$vina_out" ] && [ -f "$vina_out" ]; then
     "$DOCKUP_PYTHON" - "$vina_out" "$rmsd_dir/docked.pdb" <<'PY' >/dev/null 2>&1 || true
 import sys
@@ -518,7 +544,11 @@ PY
     popd >/dev/null
     if [ -n "$rmsd_val" ]; then
       RMSD_VAL="$rmsd_val"
+    else
+      echo "RMSD calculation did not produce a value; debug kept at $OUTDIR/rmsd_debug" >&2
     fi
+  else
+    echo "RMSD input missing; debug kept at $OUTDIR/rmsd_debug" >&2
   fi
   # create PyMOL scene with receptor, reference ligand, and docked pose
   if [ -f "$plip_receptor_pdb" ] && [ -f "$rmsd_dir/ligand.pdb" ] && [ -f "$rmsd_dir/docked.pdb" ]; then
@@ -568,6 +598,8 @@ PY
       echo "Saved PyMOL scene: $pse_dir/${PDB}_poses.pse"
     fi
   fi
+  rm -rf "$OUTDIR/rmsd_debug"
+  cp -a "$rmsd_dir" "$OUTDIR/rmsd_debug" 2>/dev/null || true
   rm -rf "$rmsd_dir"
 fi
 
