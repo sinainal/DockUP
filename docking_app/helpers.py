@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .config import BASE, DATA_DIR, DOCK_DIR, LOCAL_DOCS_EXP_RESULTS_DIR, WORKSPACE_DIR
+from .config import BASE, DATA_DIR, DOCK_DIR, LOCAL_DOCS_DIR, LOCAL_DOCS_EXP_RESULTS_DIR, WORKSPACE_DIR
 from .state import DOCKING_CONFIG_DEFAULTS
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,7 @@ BASE_RESOLVED = BASE.resolve()
 DATA_DIR_RESOLVED = DATA_DIR.resolve()
 DOCK_DIR_RESOLVED = DOCK_DIR.resolve()
 LOCAL_DOCS_EXP_RESULTS_RESOLVED = LOCAL_DOCS_EXP_RESULTS_DIR.resolve()
+LOCAL_DOCS_RESOLVED = LOCAL_DOCS_DIR.resolve()
 WORKSPACE_RESOLVED = WORKSPACE_DIR.resolve()
 
 
@@ -357,7 +358,7 @@ def resolve_dock_directory(
     default: Path,
     allow_create: bool,
 ) -> Path:
-    """Resolve a user-provided path so that it stays inside DOCK_DIR or local_docs/dopamine/exp_results."""
+    """Resolve a user-provided results path inside data/dock or local_docs."""
     from fastapi import HTTPException
 
     def _rebase_to_dock(raw_text: str) -> Path | None:
@@ -392,13 +393,13 @@ def resolve_dock_directory(
             candidate = (BASE / candidate).resolve()
     else:
         candidate = candidate.resolve()
-    allowed_roots = (DOCK_DIR_RESOLVED, LOCAL_DOCS_EXP_RESULTS_RESOLVED)
+    allowed_roots = (DOCK_DIR_RESOLVED, LOCAL_DOCS_RESOLVED)
     if not any(candidate == root or root in candidate.parents for root in allowed_roots):
         rebased = _rebase_to_dock(raw)
         if rebased is not None:
             candidate = rebased
         if not any(candidate == root or root in candidate.parents for root in allowed_roots):
-            raise HTTPException(status_code=400, detail="Path must be inside data/dock or local_docs/dopamine/exp_results.")
+            raise HTTPException(status_code=400, detail="Path must be inside data/dock or local_docs.")
     if candidate.exists():
         if not candidate.is_dir():
             raise HTTPException(status_code=400, detail="Path is not a directory.")

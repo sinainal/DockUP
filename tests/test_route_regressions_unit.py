@@ -10,9 +10,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from docking_app.app import app
-from docking_app.config import DOCK_DIR
+from docking_app.config import DOCK_DIR, LOCAL_DOCS_DIR
 from docking_app.helpers import to_display_path
 from docking_app.routes import core
+from docking_app.routes import results as result_routes
 from docking_app.services import _scan_results
 from docking_app.state import STATE
 
@@ -47,6 +48,82 @@ def test_results_scan_absolute_path_returns_runs() -> None:
     payload = response.json()
     assert "runs" in payload
     assert isinstance(payload["runs"], list)
+
+
+def test_results_folders_lists_children_of_selected_root(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "results"
+    (root / "batch_a").mkdir(parents=True)
+    (root / "batch_b").mkdir()
+    (root / "_internal").mkdir()
+    monkeypatch.setattr(result_routes, "resolve_dock_directory", lambda *args, **kwargs: root)
+
+    payload = result_routes.results_dock_folders(str(root)).body
+    data = __import__("json").loads(payload)
+
+    assert [row["name"] for row in data["folders"]] == [
+        "All results in this folder",
+        "batch_a",
+        "batch_b",
+    ]
+
+
+def test_results_path_picker_resolves_local_docs_root() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/paths/resolve",
+        json={"scope": "results", "relative_path": "local_docs/dopamine/placeholder.txt"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["path"] == to_display_path(LOCAL_DOCS_DIR)
+
+
+def test_results_path_picker_never_falls_back_to_data_dock() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/paths/resolve",
+        json={"scope": "results", "relative_path": "folder_that_does_not_exist/result.json"},
+    )
+
+    assert response.status_code == 400
+    assert "not replaced with data/dock" in response.json()["detail"]
+
+
+def test_run_start_continues_with_following_batches(monkeypatch, tmp_path) -> None:
+    previous_queue = list(STATE.get("queue", []))
+    previous_run_state = dict(core.RUN_STATE)
+    launches: list[str] = []
+    callbacks = []
+    STATE["queue"] = [
+        {"batch_id": 10, "out_root": str(tmp_path / "one")},
+        {"batch_id": 20, "out_root": str(tmp_path / "two")},
+    ]
+
+    monkeypatch.setattr(core, "resolve_out_root_path", lambda value: Path(value))
+    monkeypatch.setattr(core, "materialize_queue_runs", lambda rows, root: rows)
+    monkeypatch.setattr(core, "write_manifest", lambda rows, path: tmp_path / "manifest.tsv")
+    monkeypatch.setattr(core, "build_preview_command", lambda rows, root: "preview")
+    monkeypatch.setattr(core, "register_run_session", lambda *args, **kwargs: {"id": "session"})
+    monkeypatch.setattr(core, "persist_root_run_meta", lambda **kwargs: None)
+
+    def fake_start(_manifest, _runs, out_root, _total, _command, _test_mode, on_success=None):
+        launches.append(str(out_root))
+        callbacks.append(on_success)
+        core.RUN_STATE["status"] = "running"
+
+    monkeypatch.setattr(core, "_start_run", fake_start)
+    try:
+        response = core.run_start(core.RunStartPayload(batch_id=10, is_test_mode=True))
+        assert response.status_code == 200
+        assert launches == [str(tmp_path / "one")]
+        callbacks.pop(0)()
+        assert launches == [str(tmp_path / "one"), str(tmp_path / "two")]
+    finally:
+        STATE["queue"] = previous_queue
+        core.RUN_STATE.clear()
+        core.RUN_STATE.update(previous_run_state)
 
 
 def test_results_scan_adds_run_affinity_deviation_from_group_mean(tmp_path) -> None:

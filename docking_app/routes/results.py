@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
-from ..config import BASE, DATA_DIR, DOCK_DIR, RECEPTOR_DIR
+from ..config import BASE, DATA_DIR, DOCK_DIR, LOCAL_DOCS_DIR, RECEPTOR_DIR
 from ..config import WORKSPACE_DIR
 from ..helpers import resolve_dock_directory, to_display_path
 from ..services import _load_multi_ligand_sites, _parse_plip_report, _parse_results_folder, _scan_results
@@ -29,15 +29,17 @@ def scan_results(payload: dict[str, Any]) -> JSONResponse:
 
 
 @router.get("/api/results/dock-folders")
-def results_dock_folders() -> JSONResponse:
-    rows: list[dict[str, str]] = [{"name": "All dock folders", "path": "data/dock"}]
-    for child in sorted(DOCK_DIR_RESOLVED.iterdir(), key=lambda p: p.name.lower()):
+def results_dock_folders(root_path: str = "data/dock") -> JSONResponse:
+    root = resolve_dock_directory(root_path, default=DOCK_DIR_RESOLVED, allow_create=False)
+    root_display = to_display_path(root)
+    rows: list[dict[str, str]] = [{"name": "All results in this folder", "path": root_display}]
+    for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
         if not child.is_dir():
             continue
         if child.name.startswith(".") or child.name.startswith("_"):
             continue
         rows.append({"name": child.name, "path": to_display_path(child)})
-    return JSONResponse({"root_path": "data/dock", "folders": rows})
+    return JSONResponse({"root_path": root_display, "folders": rows})
 
 
 @router.post("/api/results/detail")
@@ -198,8 +200,11 @@ def resolve_path(payload: dict[str, Any]) -> JSONResponse:
         raise HTTPException(status_code=400, detail="Invalid relative_path.")
 
     def _is_safe(path: Path) -> bool:
-        resolved = path.resolve()
-        return resolved == BASE_RESOLVED or BASE_RESOLVED in resolved.parents
+        try:
+            resolve_dock_directory(str(path.resolve()), default=DOCK_DIR_RESOLVED, allow_create=False)
+            return True
+        except HTTPException:
+            return False
 
     def _existing_safe_dir(path: Path) -> Path | None:
         resolved = path.resolve()
@@ -220,8 +225,7 @@ def resolve_path(payload: dict[str, Any]) -> JSONResponse:
         def _pick_results_under_dock(tail: list[str]) -> Path | None:
             if not tail:
                 return _existing_safe_dir(DOCK_DIR_RESOLVED)
-            # Results root should stay at the dock source level, not a deep run folder.
-            direct = _existing_safe_dir(DOCK_DIR_RESOLVED / tail[0])
+            direct = _existing_safe_dir(DOCK_DIR_RESOLVED.joinpath(*tail))
             if direct is not None:
                 return direct
             return _existing_safe_dir(DOCK_DIR_RESOLVED)
@@ -232,16 +236,25 @@ def resolve_path(payload: dict[str, Any]) -> JSONResponse:
                 if chosen is not None:
                     break
 
+        if chosen is None and "local_docs" in lowered:
+            chosen = _existing_safe_dir(LOCAL_DOCS_DIR)
+
         if chosen is None and lowered and lowered[0] == "dock":
             chosen = _pick_results_under_dock(parts[1:])
 
         if chosen is None:
-            chosen = _existing_safe_dir(DOCK_DIR_RESOLVED / first)
+            chosen = _existing_safe_dir(LOCAL_DOCS_DIR / first)
 
         if chosen is None:
-            chosen = _existing_safe_dir(DOCK_DIR_RESOLVED)
+            chosen = _existing_safe_dir(Path("/").joinpath(*parts))
 
-        return JSONResponse({"path": _to_display_path(chosen or DOCK_DIR_RESOLVED)})
+        if chosen is None:
+            chosen = _existing_safe_dir(DOCK_DIR_RESOLVED.joinpath(*parts))
+
+        if chosen is None:
+            raise HTTPException(status_code=400, detail="Selected results folder could not be resolved. It was not replaced with data/dock.")
+
+        return JSONResponse({"path": _to_display_path(chosen)})
 
     if scope == "report":
         lowered = [part.lower() for part in parts]

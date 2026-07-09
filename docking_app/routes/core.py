@@ -992,52 +992,64 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
 
 @router.post("/api/run/start")
 def run_start(payload: RunStartPayload = RunStartPayload()) -> JSONResponse:
-    with RUN_LOCK:
-        if RUN_STATE["status"] in {"running", "stopping"}:
-            return JSONResponse({"error": "Run already in progress."}, status_code=409)
-        if not STATE["queue"]:
-            return JSONResponse({"error": "Queue is empty."}, status_code=400)
-        queue_rows = list(STATE["queue"])
-        if payload.batch_id is not None:
-            queue_rows = [row for row in queue_rows if str(row.get("batch_id")) == str(payload.batch_id)]
-            if not queue_rows:
-                return JSONResponse({"error": "Selected queue batch was not found."}, status_code=404)
+    def _batch_groups(rows: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+        groups: list[list[dict[str, Any]]] = []
+        indexes: dict[str, int] = {}
+        for row in rows:
+            key = str(row.get("batch_id") or "unbatched")
+            if key not in indexes:
+                indexes[key] = len(groups)
+                groups.append([])
+            groups[indexes[key]].append(row)
+        return groups
 
-        resolved_out_roots: list[str] = []
-        for row in queue_rows:
-            resolved_out_roots.append(
-                str(resolve_out_root_path(str(row.get("out_root") or STATE.get("out_root") or "")))
-            )
-        unique_out_roots = sorted({root for root in resolved_out_roots if root})
-        if len(unique_out_roots) > 1:
-            return JSONResponse(
-                {"error": "Selected queue batch has mixed output folders. Rebuild that batch first."},
-                status_code=400,
-            )
-        queue_out_root = unique_out_roots[0] if unique_out_roots else str(resolve_out_root_path(str(STATE.get("out_root") or "")))
-
+    def _launch(groups: list[list[dict[str, Any]]]) -> None:
+        queue_rows = groups[0]
+        resolved_out_roots = {
+            str(resolve_out_root_path(str(row.get("out_root") or STATE.get("out_root") or "")))
+            for row in queue_rows
+        }
+        if len(resolved_out_roots) != 1:
+            raise HTTPException(status_code=400, detail="Selected queue batch has mixed output folders. Rebuild that batch first.")
+        queue_out_root = next(iter(resolved_out_roots))
         execution_rows = materialize_queue_runs(queue_rows, queue_out_root)
         manifest_path = write_manifest(execution_rows, DOCK_DIR / "manifest.tsv")
         total_runs = len(execution_rows)
-        queue_runs = 1
         preview_cmd = build_preview_command(execution_rows, queue_out_root)
-
-        session = register_run_session(
-            queue_out_root,
-            queue_runs,
-            manifest_path,
-            planned_total=total_runs,
-        )
+        session = register_run_session(queue_out_root, 1, manifest_path, planned_total=total_runs)
         persist_root_run_meta(
             out_root=queue_out_root,
             manifest_path=manifest_path,
             mode="fresh",
             planned_total_runs=total_runs,
             queue_count=len(queue_rows),
-            runs=queue_runs,
+            runs=1,
             session_id=str(session.get("id") or ""),
         )
-        _start_run(manifest_path, queue_runs, queue_out_root, total_runs, preview_cmd, payload.is_test_mode)
+
+        def _continue() -> None:
+            if len(groups) < 2:
+                return
+            with RUN_LOCK:
+                _launch(groups[1:])
+
+        _start_run(manifest_path, 1, queue_out_root, total_runs, preview_cmd, payload.is_test_mode, on_success=_continue)
+
+    with RUN_LOCK:
+        if RUN_STATE["status"] in {"running", "stopping"}:
+            return JSONResponse({"error": "Run already in progress."}, status_code=409)
+        if not STATE["queue"]:
+            return JSONResponse({"error": "Queue is empty."}, status_code=400)
+        groups = _batch_groups(list(STATE["queue"]))
+        if payload.batch_id is not None:
+            selected_index = next(
+                (idx for idx, rows in enumerate(groups) if str(rows[0].get("batch_id")) == str(payload.batch_id)),
+                None,
+            )
+            if selected_index is None:
+                return JSONResponse({"error": "Selected queue batch was not found."}, status_code=404)
+            groups = groups[selected_index:]
+        _launch(groups)
     return JSONResponse(
         {
             "status": RUN_STATE["status"],

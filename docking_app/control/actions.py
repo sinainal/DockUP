@@ -936,9 +936,9 @@ def run_status() -> dict[str, Any]:
     )
 
 
-def results_folders() -> dict[str, Any]:
+def results_folders(root_path: str = "data/dock") -> dict[str, Any]:
     before = _state_snapshot()
-    data, status = _call_route(result_routes.results_dock_folders)
+    data, status = _call_route(result_routes.results_dock_folders, root_path)
     folders = data.get("folders") if isinstance(data.get("folders"), list) else []
     return _envelope(
         "results.folders",

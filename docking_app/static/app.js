@@ -15,6 +15,7 @@ const appState = {
   runStatus: "idle",
   selectionMap: {},
   activeLigands: [],
+  resultsFolderRoot: RESULTS_DOCK_ROOT,
   resultsRootPath: RESULTS_DOCK_ROOT,
   resultsView: "runs",
   resultsData: { runs: [], averages: [] },
@@ -2254,7 +2255,7 @@ async function applyControlEvent(event = {}) {
       await refreshRunPanelFromBackend({ startPolling: true });
     }
     if (refresh.has("results")) {
-      await refreshResultsDockFolders(appState.resultsRootPath || els.resultsRootPath?.value || RESULTS_DOCK_ROOT);
+      await refreshResultsDockFolders(appState.resultsRootPath, appState.resultsFolderRoot);
       if (appState.mode === "Results") await scanResults();
     }
     if (refresh.has("report") || action.startsWith("report.")) {
@@ -2784,6 +2785,7 @@ async function syncLatestDockingRootSelection({ forceSelection = false, refreshV
     lastAutoDockingRootKey = nextKey;
 
     appState.resultsRootPath = outRoot;
+    appState.resultsFolderRoot = outRoot;
     if (els.resultsRootPath) {
       els.resultsRootPath.value = outRoot;
     }
@@ -2811,7 +2813,7 @@ async function syncLatestDockingRootSelection({ forceSelection = false, refreshV
   }
 
   if (appState.mode === "Results") {
-    await refreshResultsDockFolders(outRoot);
+    await refreshResultsDockFolders(outRoot, outRoot);
     await scanResults();
   } else if (appState.mode === "Report") {
     applyReportSourceSelection(outRoot);
@@ -5160,27 +5162,24 @@ function renderResultsDockFolderOptions(selectedPath = "") {
     select.value = String(rows[0].path || RESULTS_DOCK_ROOT);
   }
 
-  if (els.resultsRootPath) {
-    els.resultsRootPath.value = select.value || RESULTS_DOCK_ROOT;
-  }
-  appState.resultsRootPath = select.value || RESULTS_DOCK_ROOT;
 }
 
-async function refreshResultsDockFolders(selectedPath = "") {
+async function refreshResultsDockFolders(selectedPath = "", folderRoot = "") {
+  const sourceRoot = String(folderRoot || appState.resultsFolderRoot || els.resultsRootPath?.value || RESULTS_DOCK_ROOT).trim() || RESULTS_DOCK_ROOT;
+  const desired = String(selectedPath || appState.resultsRootPath || sourceRoot).trim();
   try {
-    const data = await fetchJSON("/api/results/dock-folders");
+    const data = await fetchJSON(`/api/results/dock-folders?root_path=${encodeURIComponent(sourceRoot)}`);
     resultsDockFolders = Array.isArray(data.folders) ? data.folders : [];
   } catch (err) {
     console.error("Failed to load dock folders:", err);
     resultsDockFolders = [{ name: "All dock folders", path: RESULTS_DOCK_ROOT }];
   }
-  const desired = String(selectedPath || els.resultsRootPath?.value || appState.resultsRootPath || RESULTS_DOCK_ROOT).trim();
   renderResultsDockFolderOptions(desired || RESULTS_DOCK_ROOT);
 }
 
-async function scanResults() {
+async function scanResults(rootOverride = "") {
   const prevRoot = normalizePathForCompare(appState.resultsRootPath);
-  const rootPath = els.resultsRootPath?.value || RESULTS_DOCK_ROOT;
+  const rootPath = String(rootOverride || els.resultsDockFolderSelect?.value || appState.resultsRootPath || appState.resultsFolderRoot || RESULTS_DOCK_ROOT).trim();
   const data = await fetchJSON("/api/results/scan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -5188,11 +5187,8 @@ async function scanResults() {
   });
   const resolvedRoot = data.root_path || rootPath;
   appState.resultsRootPath = resolvedRoot;
-  if (els.resultsRootPath) {
-    els.resultsRootPath.value = resolvedRoot;
-  }
   renderResultsDockFolderOptions(resolvedRoot);
-  await refreshResultsDockFolders(resolvedRoot);
+  await refreshResultsDockFolders(resolvedRoot, appState.resultsFolderRoot);
   appState.resultsData = data || { runs: [], averages: [] };
   appState.selectedResultDir = "";
   currentResultPdbKey = "";
@@ -6263,6 +6259,7 @@ function saveUIState() {
         outRootPath: String(els.outRootPath?.value || ""),
         outRootName: String(els.outRootName?.value || ""),
         resultsRootPath: String(els.resultsRootPath?.value || ""),
+        resultsFolderRoot: String(appState.resultsFolderRoot || els.resultsRootPath?.value || ""),
         reportRootPath: String(els.reportRootPath?.value || ""),
         reportOutputPath: String(els.reportOutputPath?.value || ""),
         reportDocRootPath: String(els.reportDocRootPath?.value || ""),
@@ -6363,9 +6360,10 @@ async function restoreUIState() {
   if (els.outRootPath && ui.outRootPath !== undefined) els.outRootPath.value = String(ui.outRootPath);
   if (els.outRootName && ui.outRootName !== undefined) els.outRootName.value = String(ui.outRootName);
   if (els.resultsRootPath) {
-    const restoredResultsRoot = String(ui.resultsRootPath || appState.resultsRootPath || RESULTS_DOCK_ROOT).trim() || RESULTS_DOCK_ROOT;
-    els.resultsRootPath.value = restoredResultsRoot;
-    appState.resultsRootPath = restoredResultsRoot;
+    const restoredFolderRoot = String(ui.resultsFolderRoot || ui.resultsRootPath || RESULTS_DOCK_ROOT).trim() || RESULTS_DOCK_ROOT;
+    els.resultsRootPath.value = restoredFolderRoot;
+    appState.resultsFolderRoot = restoredFolderRoot;
+    appState.resultsRootPath = String(ui.resultsRootPath || restoredFolderRoot).trim() || restoredFolderRoot;
   }
   if (els.reportRootPath && ui.reportRootPath !== undefined) els.reportRootPath.value = String(ui.reportRootPath);
   if (els.reportOutputPath && ui.reportOutputPath !== undefined) els.reportOutputPath.value = String(ui.reportOutputPath);
@@ -8190,7 +8188,7 @@ function bindEvents() {
 
       if (goingToResults) {
         try {
-          await refreshResultsDockFolders(els.resultsRootPath?.value || RESULTS_DOCK_ROOT);
+          await refreshResultsDockFolders(appState.resultsRootPath, appState.resultsFolderRoot);
           await scanResults();
         } catch (err) {
           console.error(err);
@@ -8600,7 +8598,7 @@ function bindEvents() {
     els.resultsDockFolderSelect.addEventListener("change", async (event) => {
       const selected = String(event.target.value || RESULTS_DOCK_ROOT).trim() || RESULTS_DOCK_ROOT;
       if (els.resultsRootPath) {
-        els.resultsRootPath.value = selected;
+        els.resultsRootPath.value = appState.resultsFolderRoot || RESULTS_DOCK_ROOT;
       }
       appState.resultsRootPath = selected;
       scheduleUIStateSave();
@@ -8764,10 +8762,11 @@ function bindEvents() {
         const path = await resolvePathFromPicker(event.target.files, "results", event.target);
         if (path && els.resultsRootPath) {
           els.resultsRootPath.value = path;
+          appState.resultsFolderRoot = path;
           appState.resultsRootPath = path;
-          renderResultsDockFolderOptions(path);
           scheduleUIStateSave();
-          await scanResults();
+          await refreshResultsDockFolders(path, path);
+          await scanResults(path);
         }
       } catch (err) {
         alert(err.message || "Failed to resolve folder.");
@@ -9209,7 +9208,7 @@ async function init() {
   await refreshLigands();
   await refreshReceptorSummary();
   await refreshViewer();
-  await refreshResultsDockFolders(appState.resultsRootPath || els.resultsRootPath?.value || RESULTS_DOCK_ROOT);
+  await refreshResultsDockFolders(appState.resultsRootPath, appState.resultsFolderRoot);
   if (appState.mode === "Results") {
     try {
       await scanResults();

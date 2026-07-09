@@ -351,8 +351,10 @@ class DockUPClient:
             "error": None,
         }
 
-    def list_result_folders(self) -> dict[str, Any]:
-        return self._request_with_fallback("GET", "/api/control/results/folders", "/api/results/dock-folders")
+    def list_result_folders(self, *, root_path: str = "data/dock") -> dict[str, Any]:
+        query = self._query_path("/api/control/results/folders", root_path=root_path)
+        fallback = self._query_path("/api/results/dock-folders", root_path=root_path)
+        return self._request_with_fallback("GET", query, fallback)
 
     def scan_results(self, *, root_path: str = "data/dock") -> dict[str, Any]:
         return self._request_with_fallback("POST", "/api/control/results/scan", "/api/results/scan", json_payload={"root_path": root_path})

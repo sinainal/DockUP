@@ -208,8 +208,8 @@ def control_events_latest(after_id: int = 0) -> JSONResponse:
 
 
 @router.get("/results/folders")
-def control_results_folders() -> JSONResponse:
-    return JSONResponse(actions.results_folders())
+def control_results_folders(root_path: str = "data/dock") -> JSONResponse:
+    return JSONResponse(actions.results_folders(root_path))
 
 
 @router.post("/results/scan")

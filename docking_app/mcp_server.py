@@ -603,7 +603,7 @@ class DockUPMCPServer:
         response = str(args.get("response") or "summary")
         raw: dict[str, Any]
         if action == "results.folders":
-            raw = self.client.list_result_folders()
+            raw = self.client.list_result_folders(root_path=str(payload.get("root_path") or "data/dock"))
         elif action == "results.scan":
             raw = self.client.scan_results(root_path=str(payload.get("root_path") or "data/dock"))
         elif action == "results.detail":

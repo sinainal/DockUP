@@ -516,7 +516,9 @@ def cmd_live_events_latest(args: argparse.Namespace) -> int:
 
 
 def cmd_live_results_folders(args: argparse.Namespace) -> int:
-    data = _live_client(args).list_result_folders()
+    client = _live_client(args)
+    root_path = str(args.root or "data/dock")
+    data = client.list_result_folders() if root_path == "data/dock" else client.list_result_folders(root_path=root_path)
     inner = _envelope_data(data) or data
     folders = inner.get("folders") if isinstance(inner.get("folders"), list) else []
     payload = _coerce_live_envelope("results.folders", data, message=f"result folders: {len(folders)}")
@@ -1050,6 +1052,7 @@ def run_agent_cli(argv: list[str]) -> int:
     live_results = live_sub.add_parser("results", help="Results-page live commands")
     live_results_sub = live_results.add_subparsers(dest="results_cmd", required=True)
     live_results_folders = live_results_sub.add_parser("folders", help="List dock result roots")
+    live_results_folders.add_argument("--root", default="data/dock", help="Parent results folder whose children should be listed")
     add_live_output_flags(live_results_folders, suppress_default=True)
     live_results_folders.set_defaults(func=cmd_live_results_folders)
     live_results_scan = live_results_sub.add_parser("scan", help="Scan result folders")

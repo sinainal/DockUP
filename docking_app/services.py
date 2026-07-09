@@ -15,13 +15,13 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 from fastapi import HTTPException, UploadFile
 
 from . import state
-from .config import BASE, DOCK_DIR, LIGAND_DIR, LOCAL_DOCS_EXP_RESULTS_DIR, RECEPTOR_DIR, WORKSPACE_DIR
+from .config import BASE, DOCK_DIR, LIGAND_DIR, LOCAL_DOCS_DIR, LOCAL_DOCS_EXP_RESULTS_DIR, RECEPTOR_DIR, WORKSPACE_DIR
 from .helpers import (
     build_flex_residue_spec,
     normalize_docking_config,
@@ -880,7 +880,7 @@ def _build_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 candidate = (WORKSPACE_DIR / candidate).resolve()
             else:
                 candidate = candidate.resolve()
-        allowed_roots = (DOCK_DIR.resolve(), LOCAL_DOCS_EXP_RESULTS_DIR.resolve())
+        allowed_roots = (DOCK_DIR.resolve(), LOCAL_DOCS_DIR.resolve())
         if not any(candidate == root or root in candidate.parents for root in allowed_roots):
             return DOCK_DIR.resolve()
         return candidate
@@ -1108,6 +1108,7 @@ def _start_run(
     total_runs: int,
     initial_command: str = "",
     is_test_mode: bool = False,
+    on_success: Callable[[], None] | None = None,
 ) -> None:
     script_dir = BASE / "scripts"
     batch_script = DOCK_DIR / "run_batch.sh"
@@ -1133,9 +1134,9 @@ def _start_run(
                 out_root_path = (WORKSPACE_DIR / rel).resolve()
             except StopIteration:
                 pass  # Can't fix, will fail later with a clear error
-    allowed_roots = (DOCK_DIR.resolve(), LOCAL_DOCS_EXP_RESULTS_DIR.resolve())
+    allowed_roots = (DOCK_DIR.resolve(), LOCAL_DOCS_DIR.resolve())
     if not any(out_root_path == root or root in out_root_path.parents for root in allowed_roots):
-        raise HTTPException(status_code=400, detail="out_root must stay inside data/dock or local_docs/dopamine/exp_results.")
+        raise HTTPException(status_code=400, detail="out_root must stay inside data/dock or local_docs.")
     out_root_path = out_root_path.resolve()
     out_root_path.mkdir(parents=True, exist_ok=True)
     run_meta_dir = out_root_path / RUN_META_DIR_NAME
@@ -1340,6 +1341,8 @@ def _start_run(
             RUN_STATE["status"] = "done" if proc.returncode == 0 else "error"
         state.RUN_PROC = None
         _write_runtime_status()
+        if RUN_STATE["status"] == "done" and on_success is not None:
+            on_success()
 
     RUN_STATE["status"] = "running"
     RUN_STATE["returncode"] = None
