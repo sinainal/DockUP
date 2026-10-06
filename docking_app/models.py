@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel,Field
 
 
 class ModePayload(BaseModel):
@@ -69,6 +69,7 @@ class GraphPayload(BaseModel):
     output_path: str = ""
     linked_path: str = ""
     scripts: list[str] = []
+    publication_options: dict = Field(default_factory=dict)
 
 
 class ReportCompilePayload(BaseModel):

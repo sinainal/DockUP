@@ -13,10 +13,11 @@
   <link rel="icon" type="image/png" href="/static/image.png?v=2">
   <link rel="shortcut icon" type="image/png" href="/static/image.png?v=2">
   <link rel="apple-touch-icon" href="/static/image.png?v=2">
-    <link rel="stylesheet" href="/static/styles.css?v=57">
+    <link rel="stylesheet" href="/static/styles.css?v=65">
   <link rel="stylesheet" href="/static/grid_selection_search.css?v=1">
   <link rel="stylesheet" href="/static/docking_flex_selection.css?v=1">
   <link rel="stylesheet" href="/static/pocket_finder.css?v=1">
+  <link rel="stylesheet" href="/static/modeling.css?v=2">
   <script src="/static/vendor/ngl.js?v=1"></script>
   <script>
     if (typeof window.NGL === "undefined") {
@@ -38,6 +39,7 @@
         </div>
       </div>
       <div class="topbar-actions">
+        <nav class="workbench-nav" aria-label="Workspace"><a class="workbench-link active" aria-current="page" href="/">Docking</a><a class="workbench-link" href="/quantum">xTB / DFT</a></nav>
         <button class="extensions-trigger" id="openExtensionsModal" type="button">Extensions</button>
         <div class="status-chip" id="runStatus">Idle</div>
       </div>
@@ -96,9 +98,12 @@
               <!-- Receptors Panel -->
               <div class="section" style="flex: 1; min-width: 250px; margin-bottom: 0; display: flex; flex-direction: column;">
                 <div>
-                  <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
-                    Receptors
-                    <button class="secondary" id="openReceptorAdvancedPopup" type="button" style="padding: 2px 8px; font-size: 11px; height: 22px; border-radius: 6px;">Advanced Receptor Fetch</button>
+                  <div class="section-title receptor-tools-heading">
+                    <span>Receptors</span>
+                    <div class="receptor-tools-actions">
+                      <button class="secondary" id="openHomologyPopup" type="button">Homology modeling</button>
+                      <button class="secondary" id="openReceptorAdvancedPopup" type="button">Advanced Receptor Fetch</button>
+                    </div>
                   </div>
                   <div class="field">
                     <label class="field-label">PDB IDs (line or space separated)</label>
@@ -297,6 +302,7 @@
             <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
               <button class="primary" id="runQueue">Run queue</button>
               <button class="secondary danger-soft" id="stopRunQueue" type="button">Stop queue</button>
+              <button class="secondary" id="openRunBatchModal" type="button">Batch Summary</button>
               <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
                 <input type="checkbox" id="testModeCheck">
                 <span style="font-size: 14px; font-weight: 500;">Test Mode (Blank Docking)</span>
@@ -315,6 +321,7 @@
                 <div class="run-progress-track">
                   <div class="run-progress-bar" id="runProgressBar"></div>
                 </div>
+                <div class="run-batch-progress" id="runBatchProgress" aria-live="polite"></div>
               </div>
               <div class="run-card log-panel" id="runLogPanel">
                 <div class="log-body" id="runLog"></div>
@@ -478,6 +485,20 @@
             </div>
 
             <div id="reportGraphsTab" class="report-tab-content" style="display:none;">
+              <details style="margin-bottom:12px;">
+                <summary>Publication layout — spacing, labels and receptor selection</summary>
+                <label for="publicationLayoutOptions">JSON options (publication plots only; docking data unchanged)</label>
+                <textarea id="publicationLayoutOptions" rows="9" style="width:100%;font-family:monospace;">{
+  "profile": "auto",
+  "width": 7.2,
+  "label_size": 6.5,
+  "table_size": 8,
+  "column_gap": 0.48,
+  "row_gap": 0.34,
+  "interaction_mode": "full"
+}</textarea>
+                <div class="helper">For serotonin set profile to serotonin (auto also recognizes the current human A/AB dataset). Use interaction_mode full for the complete A/B/C panel; counts, recurrence or common exports a single component. Optional keys: score_height, score_include_table (true/false), interaction_height, component_height, common_height, closeup_height, legend_size, receptors (exact IDs), receptor_labels (ID-to-label object), closeup_row_label_rotation (0 or 90), closeup_show_scores (true or false).</div>
+              </details>
               <div class="table simple" style="margin-bottom: 12px;">
                 <table>
                   <thead>
@@ -1657,10 +1678,24 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=68"></script>
+  <div id="runBatchModal" class="report-modal" role="dialog" aria-modal="true" aria-labelledby="runBatchModalTitle">
+    <div class="report-modal-card run-batch-modal-card">
+      <div class="report-modal-header">
+        <div>
+          <div class="section-title" id="runBatchModalTitle" style="margin-bottom: 2px;">Batch Summary</div>
+          <div class="helper" id="runBatchModalSubtitle">All queued batches are shown minimized. Open a row for details.</div>
+        </div>
+        <button class="secondary" id="closeRunBatchModal" type="button">Close</button>
+      </div>
+      <div class="run-batch-progress run-batch-modal-list" id="runBatchModalList"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=75"></script>
   <script src="/static/grid_selection_search.js?v=1"></script>
   <script src="/static/docking_flex_selection.js?v=1"></script>
   <script src="/static/pocket_finder.js?v=1"></script>
+  <script src="/static/homology.js?v=2"></script>
 </body>
 
 </html>

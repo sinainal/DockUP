@@ -12,6 +12,17 @@ run tracking, report generation, and render pipelines.
 
 Then open `http://localhost:8000`.
 
+## Molecular Workbench
+
+Open **xTB / DFT** in the top bar for the native polymer/small-molecule builder,
+surface poses, quantum calculations, experiment queue and NGL viewer. Homology
+modeling is a popup in **Docking → Receptors**. UI and CLI share the same API.
+
+See [setup, providers and CLI](docs/modeling_workbench.md) and the
+[original Studio feature inventory](docs/nanoplastic_studio_feature_inventory.md).
+Optional providers report unavailable until configured; basic homology geometry
+checks are not a claim of comprehensive structural validation.
+
 ## MCP Server
 
 DockUP exposes a stdio MCP server through `scripts/dockup_mcp_server.sh`.

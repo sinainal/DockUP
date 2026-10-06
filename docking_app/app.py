@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
@@ -22,7 +23,20 @@ def _render_main_index() -> str:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="DockUP")
+    @asynccontextmanager
+    async def lifespan(app):
+        from .modeling.store import recover, shutdown
+        recover()
+        try:
+            yield
+        finally:
+            shutdown()
+            try:
+                ollama_agent.shutdown({})
+            except Exception:
+                pass
+
+    app = FastAPI(title="DockUP", lifespan=lifespan)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     configure_templates(templates)
 
@@ -33,13 +47,6 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.mount("/ligand-3d", ligand3d_app)
     app.include_router(router)
-
-    @app.on_event("shutdown")
-    def _shutdown_extensions() -> None:
-        try:
-            ollama_agent.shutdown({})
-        except Exception:
-            pass
 
     return app
 

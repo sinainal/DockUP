@@ -61,6 +61,8 @@ def test_config_save_can_return_compact_json() -> None:
             "vina_energy_range": None,
             "vina_cpu": None,
             "vina_seed": None,
+            "vina_gpu_threads": 1000,
+            "vina_gpu_box_profile": "medium",
         },
         "selection_map": {
             "1ABC": {

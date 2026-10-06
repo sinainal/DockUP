@@ -1,0 +1,49 @@
+<dialog id="hmDialog" class="hm-dialog" aria-labelledby="hmTitle">
+  <header class="hm-header">
+    <div><p class="qm-eyebrow">DOCKUP · RECEPTOR MODELING</p><h2 id="hmTitle">Homology modeling</h2><p>Template, target chains, alignment and model preview</p></div>
+    <button id="hmClose" class="hm-close" type="button" aria-label="Close homology modeling" title="Close">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 6 12 12M6 18 18 6"/></svg>
+    </button>
+  </header>
+  <div class="hm-layout">
+    <form id="hmForm" class="hm-form">
+      <label>Model name<input id="hmName" value="Comparative receptor model" maxlength="120" required></label>
+      <div class="hm-upload">
+        <label>Experimental template (PDB / mmCIF)<input id="hmTemplate" type="file" accept=".pdb,.cif,.mmcif"></label>
+        <p id="hmTemplateInfo" class="hm-status">Upload a template to inspect chains and sequences.</p>
+      </div>
+      <h3>Target chains</h3>
+      <div id="hmTargets"></div>
+      <button id="hmAddChain" type="button" disabled>Add target chain</button>
+      <details><summary>Build settings</summary>
+        <div class="qm-grid"><label>CPU threads<input id="hmThreads" type="number" min="1" max="8" value="2"></label><label>Timeout (s)<input id="hmTimeout" type="number" min="10" max="1800" value="300"></label></div>
+        <label class="qm-check"><input id="hmRefine" type="checkbox" checked>Full ProMod3 reconstruction and minimization</label>
+      </details>
+      <p class="qm-note">Chain ID and subunit type are separate. Specify each chain's sequence in its template position and review the alignment before building.</p>
+      <details><summary>CLI equivalent</summary><div class="qm-cli"><code id="hmCLI">python -m docking_app.cli homology --help</code></div></details>
+    </form>
+    <section class="hm-right">
+      <div class="qm-viewer-toolbar">
+        <div><p class="qm-eyebrow">NGL · TEMPLATE / MODEL</p><h2 id="hmViewerTitle">Structure preview</h2></div>
+        <div class="qm-viewer-actions">
+          <div class="hm-view-tabs" aria-label="Structure preview"><button id="hmViewTemplate" type="button" class="active" disabled>Template</button><button id="hmViewModel" type="button" disabled>Model</button></div>
+          <button id="hmFit" type="button">Fit</button>
+        </div>
+      </div>
+      <div id="hmViewport" class="hm-viewport"></div>
+      <div class="hm-assessment">
+        <h3>Alignment & assessment</h3>
+        <pre id="hmAlignment" class="hm-alignment">Review an alignment to inspect the mapped target and template sequences.</pre>
+        <div id="hmAssessment" class="hm-notice">Basic sequence, peptide-link and inter-chain proximity checks are separate from full MolProbity/QMEAN validation.</div>
+        <details><summary>Worker diagnostics</summary><pre id="hmLog"></pre></details>
+      </div>
+    </section>
+  </div>
+  <footer class="hm-footer">
+    <div class="hm-footer-actions">
+      <div class="hm-actions"><button id="hmPreview" type="button" disabled>Review alignment</button><button id="hmBuild" type="submit" form="hmForm" class="qm-primary" disabled>Build model</button></div>
+      <div class="hm-actions"><button id="hmDownload" type="button" disabled>Download model</button><button id="hmPublish" type="button" class="qm-primary" disabled>Add to receptors</button></div>
+    </div>
+    <p id="hmStatus" class="hm-status" role="status" aria-live="polite">Upload a template to begin.</p>
+  </footer>
+</dialog>

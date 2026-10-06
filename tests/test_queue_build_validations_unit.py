@@ -484,3 +484,23 @@ def test_build_queue_multi_ligand_writes_ligand_set_manifest(tmp_path: Path):
         assert [item["name"] for item in payload["ligands"]] == [ligand_one, ligand_two]
     finally:
         ligand_two_path.unlink(missing_ok=True)
+
+
+def test_queue_build_direct_jobs_rejects_bad_grid_and_restores_state() -> None:
+    from fastapi.testclient import TestClient
+
+    from docking_app.app import create_app
+    from docking_app.state import STATE
+
+    client = TestClient(create_app())
+    runs_before = STATE.get("runs")
+    response = client.post(
+        "/api/queue/build",
+        json={
+            "update_batch_id": 1,
+            "run_count": 7,
+            "queue_jobs": [{"pdb_id": "1ABC", "ligand_name": "a.sdf", "grid_params": {"cx": "abc"}}],
+        },
+    )
+    assert response.status_code == 400
+    assert STATE.get("runs") == runs_before

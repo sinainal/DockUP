@@ -1687,6 +1687,37 @@ input[type="number"]::-webkit-outer-spin-button {
   font-size: 11px;
 }
 
+.queue-batch-status {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+}
+
+.queue-batch-status.running {
+  border-color: #fde68a;
+  background: #fff7cc;
+  color: #92400e;
+}
+
+.queue-batch-status.done {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.queue-batch-status.queued {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1e40af;
+}
+
 .queue-batch-modal-card {
   width: min(1100px, 97vw);
   padding: 16px 18px 18px;
@@ -2232,6 +2263,195 @@ input[type="number"]::-webkit-outer-spin-button {
   width: 0%;
   background: linear-gradient(90deg, #2563eb 0%, #22c55e 100%);
   transition: width 0.3s ease;
+}
+
+.run-batch-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.run-batch-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #ffffff;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.run-batch-toggle {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(230px, 0.38fr);
+  gap: 14px;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  padding: 6px 8px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.run-batch-item.running {
+  border-color: #facc15;
+}
+
+.run-batch-item.done {
+  border-color: #86efac;
+}
+
+.run-batch-item.queued {
+  border-color: #bfdbfe;
+}
+
+.run-batch-main,
+.run-batch-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.run-batch-side {
+  justify-content: flex-end;
+}
+
+.run-batch-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.run-batch-caret {
+  flex: 0 0 auto;
+  width: 12px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.run-batch-pill {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  min-width: 54px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+}
+
+.run-batch-item.running .run-batch-pill {
+  border-color: #fde68a;
+  color: #92400e;
+}
+
+.run-batch-item.done .run-batch-pill {
+  border-color: #bbf7d0;
+  color: #166534;
+}
+
+.run-batch-item.queued .run-batch-pill {
+  border-color: #bfdbfe;
+  color: #1e40af;
+}
+
+.run-batch-count,
+.run-batch-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.run-batch-count {
+  min-width: 72px;
+  text-align: right;
+}
+
+.run-batch-track {
+  display: inline-flex;
+  flex: 0 0 76px;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #e2e8f0;
+}
+
+.run-batch-bar {
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: #94a3b8;
+  transition: width 0.3s ease;
+}
+
+.run-batch-item.running .run-batch-bar {
+  background: linear-gradient(90deg, #f59e0b 0%, #22c55e 100%);
+}
+
+.run-batch-item.done .run-batch-bar {
+  background: #22c55e;
+}
+
+.run-batch-item.queued .run-batch-bar {
+  background: #60a5fa;
+}
+
+.run-batch-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  border-top: 1px solid #e2e8f0;
+  padding: 6px 8px;
+  background: #f8fafc;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.run-batch-detail[hidden] {
+  display: none;
+}
+
+.run-batch-detail span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.run-batch-modal-card {
+  width: min(980px, 94vw);
+  max-height: min(760px, 88vh);
+  display: flex;
+  flex-direction: column;
+}
+
+.run-batch-modal-list {
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+@media (max-width: 720px) {
+  .run-batch-toggle {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .run-batch-side {
+    justify-content: flex-start;
+  }
 }
 
 .log-panel {

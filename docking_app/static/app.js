@@ -26,11 +26,17 @@ const appState = {
   selectedResultDir: "",
   dockingConfig: {},
   activeRunOutRoot: "",
+  activeQueueBatchId: "",
+  plannedQueueBatchIds: [],
+  completedQueueBatchIds: [],
+  batchRunStatuses: [],
   runElapsedSeconds: 0,
   queueData: [],
   selectedQueueBatchId: null,
   queueEditorReceptorIds: [],
 };
+
+const expandedRunBatchIds = new Set();
 
 const DEFAULT_DOCKING_CONFIG = {
   docking_engine: "vina",
@@ -443,6 +449,11 @@ function initElements() {
   els.runElapsed = document.getElementById("runElapsed");
   els.runProgressBar = document.getElementById("runProgressBar");
   els.runProgressPanel = document.getElementById("runProgressPanel");
+  els.runBatchProgress = document.getElementById("runBatchProgress");
+  els.openRunBatchModal = document.getElementById("openRunBatchModal");
+  els.runBatchModal = document.getElementById("runBatchModal");
+  els.closeRunBatchModal = document.getElementById("closeRunBatchModal");
+  els.runBatchModalList = document.getElementById("runBatchModalList");
   els.refreshRecentDockings = document.getElementById("refreshRecentDockings");
   els.recentDockingsMeta = document.getElementById("recentDockingsMeta");
   els.recentDockingsTable = document.getElementById("recentDockingsTable");
@@ -3358,6 +3369,148 @@ function updateRunMetrics({ command = "", totalRuns = 0, completedRuns = 0, elap
   if (els.runProgressPanel) {
     els.runProgressPanel.classList.toggle("running", status === "running");
   }
+  updateRunBatchProgress({ totalRuns, completedRuns, status });
+}
+
+function getQueueBatchSummaries() {
+  if (Array.isArray(appState.batchRunStatuses) && appState.batchRunStatuses.length) {
+    return appState.batchRunStatuses.map((row, index) => {
+      const batchId = normalizeQueueBatchId(row?.batch_id) || `batch-${index + 1}`;
+      const totalRuns = Number(row?.total_runs || 0);
+      const completedRuns = Number(row?.completed_runs || 0);
+      const jobCount = Number(row?.job_count || 0);
+      const elapsedSeconds = Number(row?.elapsed_seconds || 0);
+      return {
+        batchId,
+        label: String(row?.label || row?.out_root || `Batch ${batchId}`).trim() || `Batch ${batchId}`,
+        outRoot: String(row?.out_root || "").trim(),
+        jobCount: Number.isFinite(jobCount) ? jobCount : 0,
+        totalRuns: Number.isFinite(totalRuns) ? Math.max(0, totalRuns) : 0,
+        completedRuns: Number.isFinite(completedRuns) ? Math.max(0, completedRuns) : 0,
+        elapsedSeconds: Number.isFinite(elapsedSeconds) ? Math.max(0, elapsedSeconds) : 0,
+        status: String(row?.status || "ready").trim().toLowerCase(),
+        batchLogPath: String(row?.batch_log_path || "").trim(),
+      };
+    }).sort((a, b) => String(a.batchId).localeCompare(String(b.batchId)));
+  }
+  const rows = Array.isArray(appState.queueData) ? appState.queueData : [];
+  const batches = new Map();
+  rows.forEach((row) => {
+    const batchId = normalizeQueueBatchId(row?.batch_id) || "unbatched";
+    if (!batches.has(batchId)) {
+      const label = String(row?.out_root_name || row?.out_root || `Batch ${batchId}`).trim() || `Batch ${batchId}`;
+      batches.set(batchId, {
+        batchId,
+        label,
+        outRoot: String(row?.out_root || "").trim(),
+        jobCount: 0,
+        totalRuns: 0,
+        completedRuns: 0,
+        elapsedSeconds: 0,
+        status: "ready",
+        batchLogPath: "",
+      });
+    }
+    const item = batches.get(batchId);
+    item.jobCount += 1;
+    const runs = Number(row?.run_count || 1);
+    item.totalRuns += Number.isFinite(runs) && runs > 0 ? runs : 1;
+  });
+  return [...batches.values()].sort((a, b) => String(a.batchId).localeCompare(String(b.batchId)));
+}
+
+function updateRunBatchProgress({ totalRuns = 0, completedRuns = 0, status = "idle" } = {}) {
+  const containers = [els.runBatchProgress, els.runBatchModalList].filter(Boolean);
+  if (!containers.length) return;
+  const summaries = getQueueBatchSummaries();
+  if (!summaries.length) {
+    containers.forEach((container) => {
+      container.innerHTML = "";
+    });
+    return;
+  }
+  const activeBatchId = normalizeQueueBatchId(appState.activeQueueBatchId);
+  const activeRootKey = normalizePathForCompare(appState.activeRunOutRoot);
+  const plannedIds = new Set((appState.plannedQueueBatchIds || []).map(normalizeQueueBatchId).filter(Boolean));
+  const completedIds = new Set((appState.completedQueueBatchIds || []).map(normalizeQueueBatchId).filter(Boolean));
+  const hasPlan = plannedIds.size > 0 || completedIds.size > 0 || !!activeBatchId;
+  const activeIndex = summaries.findIndex((item) => {
+    if (activeBatchId && normalizeQueueBatchId(item.batchId) === activeBatchId) return true;
+    return !!activeRootKey && normalizePathForCompare(item.outRoot) === activeRootKey;
+  });
+
+  const html = summaries.map((item, index) => {
+    const batchId = normalizeQueueBatchId(item.batchId);
+    let state = String(item.status || "idle").toLowerCase();
+    if (["done", "completed", "success"].includes(state)) {
+      state = "done";
+    } else if (["running", "stopping"].includes(state)) {
+      state = "running";
+    } else if (["queued", "pending"].includes(state)) {
+      state = "queued";
+    } else {
+      state = "idle";
+    }
+    if (state === "idle" && batchId && completedIds.has(batchId)) {
+      state = "done";
+    } else if (state === "idle" && batchId && activeBatchId && batchId === activeBatchId && isRunActiveStatus(status)) {
+      state = "running";
+    } else if (state === "idle" && !activeBatchId && activeIndex === index && isRunActiveStatus(status)) {
+      state = "running";
+    } else if (state === "idle" && batchId && plannedIds.has(batchId) && isRunActiveStatus(status)) {
+      state = "queued";
+    } else if (state === "idle" && !hasPlan && isRunActiveStatus(status) && activeIndex >= 0) {
+      state = index < activeIndex ? "done" : (index === activeIndex ? "running" : "queued");
+    }
+
+    const itemTotal = Math.max(0, Number(item.totalRuns || 0));
+    const isActiveItem = state === "running";
+    const itemDone = state === "done"
+      ? itemTotal
+      : Math.min(itemTotal, Math.max(0, Number(item.completedRuns || (isActiveItem ? completedRuns : 0) || 0)));
+    const pct = itemTotal > 0 ? Math.max(0, Math.min(100, (itemDone / itemTotal) * 100)) : 0;
+    const statusLabel = state === "done" ? "Done" : (state === "running" ? "Running" : (state === "queued" ? "Queued" : "Ready"));
+    const label = String(item.label || `Batch ${batchId || index + 1}`);
+    const expanded = expandedRunBatchIds.has(String(batchId || index));
+    const elapsedLabel = item.elapsedSeconds ? formatElapsed(item.elapsedSeconds) : "-";
+    const safeBatchId = escapeHtml(String(batchId || index));
+    return `
+      <div class="run-batch-item ${escapeHtml(state)} ${expanded ? "expanded" : ""}" data-batch-id="${safeBatchId}">
+        <button type="button" class="run-batch-toggle" data-batch-id="${safeBatchId}" aria-expanded="${expanded ? "true" : "false"}">
+          <span class="run-batch-main">
+            <span class="run-batch-caret">${expanded ? "▾" : "▸"}</span>
+            <span class="run-batch-pill">${escapeHtml(statusLabel)}</span>
+            <span class="run-batch-title" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
+            <span class="run-batch-count">${escapeHtml(String(itemDone))}/${escapeHtml(String(itemTotal))} runs</span>
+          </span>
+          <span class="run-batch-side">
+            <span class="run-batch-meta">${escapeHtml(String(item.jobCount))} jobs</span>
+            <span class="run-batch-meta">Elapsed ${escapeHtml(elapsedLabel)}</span>
+            <span class="run-batch-track"><span class="run-batch-bar" style="width:${pct.toFixed(1)}%"></span></span>
+          </span>
+        </button>
+        <div class="run-batch-detail" ${expanded ? "" : "hidden"}>
+          <span>Batch ${escapeHtml(String(batchId || "-"))}</span>
+          <span>${escapeHtml(statusLabel)}</span>
+          <span>${escapeHtml(String(itemDone))} of ${escapeHtml(String(itemTotal))} runs</span>
+          <span>${escapeHtml(String(item.jobCount))} jobs</span>
+          <span>${escapeHtml(item.batchLogPath || item.outRoot || "-")}</span>
+        </div>
+      </div>
+    `;
+  }).join("");
+  containers.forEach((container) => {
+    container.innerHTML = html;
+    container.querySelectorAll(".run-batch-toggle").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = String(btn.dataset.batchId || "");
+        if (!id) return;
+        if (expandedRunBatchIds.has(id)) expandedRunBatchIds.delete(id);
+        else expandedRunBatchIds.add(id);
+        updateRunBatchProgress({ totalRuns, completedRuns, status });
+      });
+    });
+  });
 }
 
 function normalizeDockingConfig(rawConfig) {
@@ -3783,6 +3936,10 @@ async function loadState() {
     appState.queueData = Array.isArray(data.queue) ? data.queue : [];
     appState.runStatus = data.run_status || "idle";
     appState.activeRunOutRoot = String(data.run_out_root || appState.activeRunOutRoot || "").trim();
+    appState.activeQueueBatchId = String(data.active_batch_id || appState.activeQueueBatchId || "").trim();
+    appState.plannedQueueBatchIds = Array.isArray(data.planned_batch_ids) ? data.planned_batch_ids.map(String) : [];
+    appState.completedQueueBatchIds = Array.isArray(data.completed_batch_ids) ? data.completed_batch_ids.map(String) : [];
+    appState.batchRunStatuses = Array.isArray(data.batch_statuses) ? data.batch_statuses : [];
     appState.dockingConfig = normalizeDockingConfig({
       ...(data.docking_config || appState.dockingConfig || DEFAULT_DOCKING_CONFIG),
       ligand_binding_mode: serverMode === "Multi-Ligand"
@@ -3833,6 +3990,26 @@ async function loadState() {
       elapsedSeconds: 0,
       command: "",
     });
+    try {
+      const runData = await fetchJSON("/api/run/status");
+      appState.runStatus = runData.status || appState.runStatus || "idle";
+      appState.activeRunOutRoot = String(runData.out_root || appState.activeRunOutRoot || "").trim();
+      appState.activeQueueBatchId = String(runData.active_batch_id || "").trim();
+      appState.plannedQueueBatchIds = Array.isArray(runData.planned_batch_ids) ? runData.planned_batch_ids.map(String) : [];
+      appState.completedQueueBatchIds = Array.isArray(runData.completed_batch_ids) ? runData.completed_batch_ids.map(String) : [];
+      appState.batchRunStatuses = Array.isArray(runData.batch_statuses) ? runData.batch_statuses : [];
+      appState.runElapsedSeconds = Number(runData.elapsed_seconds || 0);
+      setRunStatus(appState.runStatus);
+      updateRunMetrics({
+        status: appState.runStatus,
+        totalRuns: runData.total_runs || 0,
+        completedRuns: runData.completed_runs || 0,
+        elapsedSeconds: runData.elapsed_seconds || 0,
+        command: runData.command || "",
+      });
+    } catch (runErr) {
+      console.error("Failed to load run status:", runErr);
+    }
   } catch (e) {
     console.error("Failed to load state:", e);
   }
@@ -7372,6 +7549,16 @@ async function saveQueueBatchModal() {
     docking_config: cfg,
     selection_map: selectionMap,
     grid_data: gridData,
+    queue_jobs: (queueBatchModalDraft.jobs || []).map((job) => ({
+      job_type: queueBatchModalDraft.jobType || "Docking",
+      pdb_id: job.pdbId,
+      chain: normalizeChainValue(job.chain || "all"),
+      ligand_name: job.ligandName || job.ligandResname || "",
+      ligand_resname: job.ligandResname || job.ligandName || "",
+      ligand_resnames: normalizeLigandNameList(job.ligandNames || []),
+      grid_params: buildQueueGridPayload(job.grid, queueBatchModalDraft.padding),
+      flex_residues: normalizeFlexResidueList(job.flexResidues || []),
+    })),
     mode: queueBatchModalDraft.jobType || "Docking",
     out_root_path: queueBatchModalDraft.outRootPath || "data/dock",
     out_root_name: queueBatchModalDraft.outRootName || "",
@@ -7683,6 +7870,9 @@ function renderQueueTable(queue) {
   // Sort batches by ID (timestamp) descending? Or ascending?
   // Let's do descending to show newest first
   const batchIds = Object.keys(batches).sort().reverse();
+  const activeBatchId = normalizeQueueBatchId(appState.activeQueueBatchId);
+  const plannedBatchIds = new Set((appState.plannedQueueBatchIds || []).map(normalizeQueueBatchId).filter(Boolean));
+  const completedBatchIds = new Set((appState.completedQueueBatchIds || []).map(normalizeQueueBatchId).filter(Boolean));
 
   batchIds.forEach(bid => {
     const items = batches[bid];
@@ -7718,11 +7908,26 @@ function renderQueueTable(queue) {
 
     // Determine batch type (assume all items in batch have same type)
     const batchType = items[0]?.job_type || "Docking";
+    let batchStatusLabel = "";
+    let batchStatusClass = "";
+    if (normalizedBatchId && completedBatchIds.has(normalizedBatchId)) {
+      batchStatusLabel = "Done";
+      batchStatusClass = "done";
+    } else if (normalizedBatchId && activeBatchId && normalizedBatchId === activeBatchId && isRunActiveStatus(appState.runStatus)) {
+      batchStatusLabel = "Running";
+      batchStatusClass = "running";
+    } else if (normalizedBatchId && plannedBatchIds.has(normalizedBatchId) && isRunActiveStatus(appState.runStatus)) {
+      batchStatusLabel = "Queued";
+      batchStatusClass = "queued";
+    }
 
     const title = document.createElement("span");
     title.style.fontWeight = "600";
     title.style.fontSize = "13px";
-    title.innerHTML = `Batch #${bid} <span style="font-weight:normal; color:var(--muted); margin-left:8px;">[${batchType}]</span> (${items.length} jobs, ${totalRuns} total runs)`;
+    const statusBadge = batchStatusLabel
+      ? ` <span class="queue-batch-status ${batchStatusClass}">${escapeHtml(batchStatusLabel)}</span>`
+      : "";
+    title.innerHTML = `Batch #${bid}${statusBadge} <span style="font-weight:normal; color:var(--muted); margin-left:8px;">[${batchType}]</span> (${items.length} jobs, ${totalRuns} total runs)`;
 
     const titleWrap = document.createElement("div");
     const meta = document.createElement("div");
@@ -7915,6 +8120,10 @@ function pollRunStatus() {
       const nextStatus = data.status || "idle";
       appState.runStatus = data.status || "idle";
       appState.activeRunOutRoot = String(data.out_root || extractOutRootFromCommand(data.command || "") || appState.activeRunOutRoot || "").trim();
+      appState.activeQueueBatchId = String(data.active_batch_id || "").trim();
+      appState.plannedQueueBatchIds = Array.isArray(data.planned_batch_ids) ? data.planned_batch_ids.map(String) : [];
+      appState.completedQueueBatchIds = Array.isArray(data.completed_batch_ids) ? data.completed_batch_ids.map(String) : [];
+      appState.batchRunStatuses = Array.isArray(data.batch_statuses) ? data.batch_statuses : [];
       await syncLatestDockingRootSelection({ refreshVisible: false });
       appState.runElapsedSeconds = Number(data.elapsed_seconds || 0);
       if (els.runLog) els.runLog.textContent = data.log || "";
@@ -7926,6 +8135,7 @@ function pollRunStatus() {
         elapsedSeconds: data.elapsed_seconds || 0,
         status: nextStatus,
       });
+      renderQueueTable(appState.queueData || []);
       if (isRunActiveStatus(nextStatus)) {
         const now = Date.now();
         if (now - recentAutoRefreshTs >= 5000) {
@@ -7952,6 +8162,28 @@ function pollRunStatus() {
 // =====================================================
 
 function bindEvents() {
+  if (els.openRunBatchModal) {
+    els.openRunBatchModal.addEventListener("click", () => {
+      updateRunBatchProgress({
+        totalRuns: Number(appState.batchRunStatuses?.[0]?.total_runs || 0),
+        completedRuns: Number(appState.batchRunStatuses?.[0]?.completed_runs || 0),
+        status: appState.runStatus || "idle",
+      });
+      els.runBatchModal?.classList.add("active");
+    });
+  }
+  if (els.closeRunBatchModal) {
+    els.closeRunBatchModal.addEventListener("click", () => {
+      els.runBatchModal?.classList.remove("active");
+    });
+  }
+  if (els.runBatchModal) {
+    els.runBatchModal.addEventListener("click", (event) => {
+      if (event.target === els.runBatchModal) {
+        els.runBatchModal.classList.remove("active");
+      }
+    });
+  }
   if (els.openExtensionsModal) {
     els.openExtensionsModal.addEventListener("click", () => {
       openExtensionsModal();
@@ -9258,6 +9490,24 @@ async function init() {
 const REPORT_DOCK_ROOT = "data/dock";
 const REPORT_PREDEFINED_PLOTS = [
   {
+    id: "publication_scores",
+    title: "Publication: All-run Scores + Table",
+    description: "Every individual score, mean ± sample SD, vector exports and source CSV.",
+    defaultSelected: false,
+  },
+  {
+    id: "publication_interactions",
+    title: "Publication: Combined Interactions",
+    description: "Counts, run-frequency and common-residue panels; numeric residue order.",
+    defaultSelected: false,
+  },
+  {
+    id: "publication_closeups",
+    title: "Publication: Close-up Matrix",
+    description: "Fresh PyMOL close-ups using median-score runs; retains scenes and provenance.",
+    defaultSelected: false,
+  },
+  {
     id: "affinity_table_plus_boxplot",
     title: "Affinity Table + Boxplot",
     description: "Primary affinity figure (aligned with dimer report order).",
@@ -9298,7 +9548,7 @@ let reportSourceSearchQuery = "";
 let renderTimer = null;
 let plotTimer = null;
 let reportSelectedReceptors = new Set();
-let reportSelectedPlots = new Set(REPORT_PREDEFINED_PLOTS.map((item) => item.id));
+let reportSelectedPlots = new Set(REPORT_PREDEFINED_PLOTS.filter((item) => item.defaultSelected !== false).map((item) => item.id));
 let reportSelectedRuns = new Map();
 let reportSelectedLigands = new Map();
 let reportSelectedLinkedRoot = "";
@@ -11499,11 +11749,13 @@ async function initiateGraphs() {
     return;
   }
   try {
+    const publicationOptions=JSON.parse(document.getElementById("publicationLayoutOptions")?.value || "{}");
     const payload = {
       root_path: REPORT_DOCK_ROOT,
       source_path: ensureReportSourceValue(),
       output_path: ensureReportOutputValue(),
       scripts: selectedPlots,
+      publication_options: publicationOptions,
     };
     const res = await fetchJSON("/api/reports/graphs", {
       method: "POST",

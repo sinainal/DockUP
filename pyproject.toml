@@ -33,6 +33,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Optional native DFT provider. ORCA remains a separately licensed installation.
+quantum = [
+    "pyscf>=2.8,<3",
+    "pyscf-dispersion>=1.2",
+]
 # ── Docking pipeline tools ──────────────────────────────────────────────────
 docking = [
     "pdb2pqr>=3.6",

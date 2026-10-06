@@ -18,6 +18,7 @@ def test_mcp_lists_core_tools() -> None:
         "dockup_assets",
         "dockup_mutate",
         "dockup_queue",
+        "dockup_run",
         "dockup_validate",
         "dockup_backend",
         "dockup_report",

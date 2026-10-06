@@ -36,6 +36,21 @@ from ..state import REPORT_STATE
 router = APIRouter()
 
 REPORT_PREDEFINED_PLOTS: dict[str, dict[str, str]] = {
+    "publication_scores": {
+        "label": "Publication: all-run scores + table",
+        "module": "figure_scripts.final_plots.publication_scores",
+        "filename": "publication_scores.png",
+    },
+    "publication_interactions": {
+        "label": "Publication: combined interaction panels",
+        "module": "figure_scripts.final_plots.publication_interactions",
+        "filename": "publication_interactions.png",
+    },
+    "publication_closeups": {
+        "label": "Publication: ray-traced close-up matrix",
+        "module": "figure_scripts.final_plots.publication_closeups",
+        "filename": "publication_closeups.png",
+    },
     "affinity_table_plus_boxplot": {
         "label": "Affinity Table + Boxplot",
         "module": "figure_scripts.final_plots.affinity_variants",
@@ -2349,7 +2364,12 @@ def trigger_graphs(payload: GraphPayload, background_tasks: BackgroundTasks) -> 
             return JSONResponse({"error": "No receptor/ligand/run detected in selected source."}, status_code=400)
 
     requested = [script_id for script_id in payload.scripts if script_id in REPORT_PREDEFINED_PLOTS]
-    selected = requested or list(REPORT_PREDEFINED_PLOTS.keys())
+    selected = requested or [key for key in REPORT_PREDEFINED_PLOTS if not key.startswith("publication_")]
+    from figure_scripts.final_plots.publication_layout import validate_options
+    try:
+        publication_options=validate_options(payload.publication_options)
+    except ValueError as error:
+        return JSONResponse({'error':str(error)},status_code=400)
 
     REPORT_STATE["status"] = "running"
     REPORT_STATE["task"] = "plots"
@@ -2380,6 +2400,10 @@ def trigger_graphs(payload: GraphPayload, background_tasks: BackgroundTasks) -> 
                 "--out",
                 str(tmp_out),
             ]
+            if script_id.startswith('publication_'):
+                layout_path=tmp_out/'publication_options.json'
+                layout_path.write_text(json.dumps(publication_options,indent=2)+'\n')
+                cmd.extend(['--layout-options-json',str(layout_path)])
             proc = subprocess.run(
                 cmd,
                 cwd=str(BASE),
@@ -2398,6 +2422,15 @@ def trigger_graphs(payload: GraphPayload, background_tasks: BackgroundTasks) -> 
                 final_stem = f"{stem}_{started_stamp}_{idx:02d}"
                 final_path = _next_unique_png_path(out_dir, final_stem)
                 shutil.move(str(expected_file), str(final_path))
+                if script_id.startswith("publication_"):
+                    # Keep vector exports, source CSVs, provenance and PyMOL scenes.
+                    # Previously this temporary directory was discarded wholesale.
+                    for suffix in (".pdf", ".svg"):
+                        vector = tmp_out / (stem + suffix)
+                        if vector.exists():
+                            shutil.move(str(vector), str(final_path.with_suffix(suffix)))
+                    asset_dir = final_path.with_name(final_path.stem + "_assets")
+                    shutil.move(str(tmp_out), str(asset_dir))
                 logs.append(f"{script_id}: {final_path.name}")
             shutil.rmtree(tmp_out, ignore_errors=True)
             state["progress"] = idx

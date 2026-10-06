@@ -1205,6 +1205,10 @@ def run_agent_cli(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] in {"modeling", "xtb", "dft", "homology"}:
+        from docking_app.modeling.cli import main as modeling_main
+        command = sys.argv[2:] if sys.argv[1] == "modeling" else sys.argv[1:]
+        raise SystemExit(modeling_main(command))
     if len(sys.argv) > 1 and sys.argv[1] in {"agent-assets", "agent-workflow", "live"}:
         raise SystemExit(run_agent_cli(sys.argv[1:]))
 

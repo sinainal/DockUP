@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
+import hashlib
 import re
 import signal
 import shutil
@@ -16,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from .. import state as runtime_state
-from ..config import BASE, DATA_DIR, DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR
+from ..config import BASE, DATA_DIR, DOCK_DIR, LIGAND_DIR, RECEPTOR_DIR, WORKSPACE_DIR
 from ..helpers import (
     find_identical_file_by_bytes,
     next_available_ligand_path,
@@ -903,8 +905,99 @@ def queue_build(payload: dict[str, Any]) -> JSONResponse:
             STATE["selected_chain"] = STATE["selection_map"][selected].get("chain", "all")
             STATE["selected_ligand"] = STATE["selection_map"][selected].get("ligand_resname", "")
 
+    def _direct_queue_jobs() -> list[dict[str, Any]] | None:
+        raw_jobs = payload.get("queue_jobs")
+        if not isinstance(raw_jobs, list):
+            return None
+        raw_out_path = str(payload.get("out_root_path") or STATE.get("out_root_path") or "data/dock").strip()
+        raw_out_name = str(payload.get("out_root_name") or STATE.get("out_root_name") or "").strip()
+        base = Path(raw_out_path or str(DOCK_DIR)).expanduser()
+        if not base.is_absolute():
+            base = (BASE.parent / base).resolve() if raw_out_path.startswith("local_docs") else (WORKSPACE_DIR / base).resolve()
+        else:
+            base = base.resolve()
+        safe_name = Path(raw_out_name).name.strip()
+        if safe_name in {"", ".", ".."}:
+            safe_name = Path(str(previous_out_root or "")).name or f"docking_{time.strftime('%Y_%m_%d_%H%M%S')}"
+        out_root = resolve_out_root_path(str((base / safe_name).resolve()))
+        out_root.mkdir(parents=True, exist_ok=True)
+        grid_store_dir = out_root / "_grid"
+        grid_store_dir.mkdir(parents=True, exist_ok=True)
+        out_root_path_display = to_display_path(out_root.parent)
+        out_root_name = out_root.name
+        row_run_count = int(STATE.get("runs") or payload.get("run_count") or 1)
+        row_padding = float(payload.get("padding") or STATE.get("grid_pad") or 0.0)
+        row_config = normalize_docking_config(STATE.get("docking_config") or {})
+        ligand_files = {path.name: path for path in _existing_files(LIGAND_DIR, (".sdf",))}
+        receptor_files = {path.stem.upper(): path for path in _existing_files(RECEPTOR_DIR, (".pdb", ".ent"))}
+        rows: list[dict[str, Any]] = []
+        for raw in raw_jobs:
+            if not isinstance(raw, dict):
+                continue
+            pdb_id = _normalize_receptor_id(raw.get("pdb_id", ""))
+            ligand_name = str(raw.get("ligand_name") or raw.get("ligand_resname") or "").strip()
+            if not pdb_id or not ligand_name:
+                continue
+            grid = raw.get("grid_params") if isinstance(raw.get("grid_params"), dict) else {}
+            final_grid = {
+                "cx": float(grid.get("cx", 0.0)),
+                "cy": float(grid.get("cy", 0.0)),
+                "cz": float(grid.get("cz", 0.0)),
+                "sx": float(grid.get("sx", 0.0)) + (row_padding if row_padding > 0 else 0.0),
+                "sy": float(grid.get("sy", 0.0)) + (row_padding if row_padding > 0 else 0.0),
+                "sz": float(grid.get("sz", 0.0)) + (row_padding if row_padding > 0 else 0.0),
+            }
+            grid_sig_raw = json.dumps({"pdb_id": pdb_id, **final_grid}, sort_keys=True, separators=(",", ":"))
+            grid_file = grid_store_dir / f"{pdb_id}_{hashlib.sha1(grid_sig_raw.encode('utf-8')).hexdigest()[:12]}.txt"
+            if not grid_file.exists():
+                grid_file.write_text(
+                    "\n".join(
+                        [
+                            f"center_x = {final_grid['cx']}",
+                            f"center_y = {final_grid['cy']}",
+                            f"center_z = {final_grid['cz']}",
+                            f"size_x = {final_grid['sx']}",
+                            f"size_y = {final_grid['sy']}",
+                            f"size_z = {final_grid['sz']}",
+                        ]
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            ligand_path = ligand_files.get(ligand_name)
+            flex_residues = normalize_flex_residue_list(raw.get("flex_residues") or raw.get("flex_residue_spec") or [])
+            rows.append(
+                {
+                    "batch_id": int(payload.get("update_batch_id") or time.time() * 1000),
+                    "job_type": str(raw.get("job_type") or payload.get("mode") or "Docking"),
+                    "pdb_id": pdb_id,
+                    "chain": str(raw.get("chain") or "all"),
+                    "ligand_name": ligand_name,
+                    "ligand_resname": str(raw.get("ligand_resname") or ligand_name),
+                    "ligand_resnames": normalize_ligand_name_list(raw.get("ligand_resnames") or []),
+                    "lig_spec": str(ligand_path.resolve()) if ligand_path else str(raw.get("lig_spec") or ""),
+                    "pdb_file": str(receptor_files.get(pdb_id) or raw.get("pdb_file") or ""),
+                    "grid_params": final_grid,
+                    "grid_pad": row_padding,
+                    "grid_file": str(grid_file),
+                    "padding": row_padding,
+                    "run_count": row_run_count,
+                    "out_root": str(out_root),
+                    "out_root_path": out_root_path_display,
+                    "out_root_name": out_root_name,
+                    "docking_config": row_config,
+                    "docking_mode": row_config.get("docking_mode", "standard"),
+                    "flex_residues": flex_residues,
+                    "flex_residue_spec": ",".join(f"{item.get('chain')}:{item.get('resid')}" for item in flex_residues),
+                }
+            )
+        return rows
+
     try:
-        new_jobs = _build_queue(payload)
+        direct_jobs = _direct_queue_jobs() if payload.get("update_batch_id") is not None else None
+        new_jobs = direct_jobs if direct_jobs is not None else _build_queue(payload)
+    except ValueError as exc:
+        return JSONResponse({"error": f"Invalid queue job: {exc}"}, status_code=400)
     finally:
         STATE["docking_config"] = previous_config
         STATE["runs"] = previous_runs
@@ -1005,6 +1098,7 @@ def run_start(payload: RunStartPayload = RunStartPayload()) -> JSONResponse:
 
     def _launch(groups: list[list[dict[str, Any]]]) -> None:
         queue_rows = groups[0]
+        current_batch_id = str(queue_rows[0].get("batch_id") or "unbatched")
         resolved_out_roots = {
             str(resolve_out_root_path(str(row.get("out_root") or STATE.get("out_root") or "")))
             for row in queue_rows
@@ -1026,11 +1120,23 @@ def run_start(payload: RunStartPayload = RunStartPayload()) -> JSONResponse:
             runs=1,
             session_id=str(session.get("id") or ""),
         )
+        RUN_STATE["active_batch_id"] = current_batch_id
+        RUN_STATE["active_batch_out_root"] = queue_out_root
 
         def _continue() -> None:
-            if len(groups) < 2:
-                return
             with RUN_LOCK:
+                completed_ids = [str(item) for item in RUN_STATE.get("completed_batch_ids", [])]
+                completed_roots = [str(item) for item in RUN_STATE.get("completed_batch_out_roots", [])]
+                if current_batch_id not in completed_ids:
+                    completed_ids.append(current_batch_id)
+                if queue_out_root not in completed_roots:
+                    completed_roots.append(queue_out_root)
+                RUN_STATE["completed_batch_ids"] = completed_ids
+                RUN_STATE["completed_batch_out_roots"] = completed_roots
+                if len(groups) < 2:
+                    RUN_STATE["active_batch_id"] = ""
+                    RUN_STATE["active_batch_out_root"] = ""
+                    return
                 _launch(groups[1:])
 
         _start_run(manifest_path, 1, queue_out_root, total_runs, preview_cmd, payload.is_test_mode, on_success=_continue)
@@ -1049,6 +1155,14 @@ def run_start(payload: RunStartPayload = RunStartPayload()) -> JSONResponse:
             if selected_index is None:
                 return JSONResponse({"error": "Selected queue batch was not found."}, status_code=404)
             groups = groups[selected_index:]
+        RUN_STATE["planned_batch_ids"] = [str(rows[0].get("batch_id") or "unbatched") for rows in groups if rows]
+        RUN_STATE["planned_batch_out_roots"] = [
+            str(resolve_out_root_path(str(rows[0].get("out_root") or STATE.get("out_root") or "")))
+            for rows in groups
+            if rows
+        ]
+        RUN_STATE["completed_batch_ids"] = []
+        RUN_STATE["completed_batch_out_roots"] = []
         _launch(groups)
     return JSONResponse(
         {
@@ -1476,9 +1590,75 @@ def run_status() -> JSONResponse:
     elapsed = 0
     if RUN_STATE.get("start_time"):
         elapsed = max(0, int(time.time() - RUN_STATE["start_time"]))
+    run_status_value = str(RUN_STATE.get("status") or "idle")
+    active_out_root = str(RUN_STATE.get("out_root") or "")
+
+    def _batch_statuses() -> list[dict[str, Any]]:
+        groups: dict[str, dict[str, Any]] = {}
+        for row in STATE.get("queue", []):
+            if not isinstance(row, dict):
+                continue
+            batch_id = str(row.get("batch_id") or "unbatched")
+            item = groups.setdefault(
+                batch_id,
+                {
+                    "batch_id": batch_id,
+                    "label": str(row.get("out_root_name") or row.get("out_root") or f"Batch {batch_id}"),
+                    "out_root": str(row.get("out_root") or ""),
+                    "job_count": 0,
+                    "total_runs": 0,
+                    "completed_runs": 0,
+                    "elapsed_seconds": 0,
+                    "status": "ready",
+                },
+            )
+            item["job_count"] += 1
+            try:
+                runs = int(row.get("run_count") or 1)
+            except (TypeError, ValueError):
+                runs = 1
+            item["total_runs"] += max(1, runs)
+
+        completed_roots = {str(item) for item in RUN_STATE.get("completed_batch_out_roots", [])}
+        planned_roots = {str(item) for item in RUN_STATE.get("planned_batch_out_roots", [])}
+        for item in groups.values():
+            root = str(item.get("out_root") or "")
+            root_path = Path(root).expanduser()
+            meta_path = root_path / ".docking_meta" / "runtime_status.json" if root_path.is_absolute() else None
+            meta: dict[str, Any] = {}
+            if meta_path and meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                except Exception:
+                    meta = {}
+            if meta:
+                item["status"] = str(meta.get("status") or item["status"])
+                item["completed_runs"] = int(meta.get("completed_runs") or 0)
+                item["total_runs"] = int(meta.get("total_runs") or item["total_runs"] or 0)
+                start_ts = float(meta.get("start_time") or 0.0)
+                updated_ts = float(meta.get("updated_ts") or 0.0)
+                if start_ts and updated_ts:
+                    item["elapsed_seconds"] = max(0, int(updated_ts - start_ts))
+                item["batch_log_path"] = str(meta.get("batch_log_path") or "")
+            elif root and resolve_out_root_path(root) == resolve_out_root_path(active_out_root):
+                item["status"] = run_status_value
+                item["completed_runs"] = int(RUN_STATE.get("completed_runs") or 0)
+                item["total_runs"] = int(RUN_STATE.get("total_runs") or item.get("total_runs") or 0)
+                item["elapsed_seconds"] = elapsed
+                item["batch_log_path"] = str(RUN_STATE.get("batch_log_path") or "")
+            elif root in completed_roots:
+                item["status"] = "done"
+                item["completed_runs"] = int(item.get("total_runs") or 0)
+            elif root in planned_roots:
+                item["status"] = "queued" if run_status_value in {"running", "stopping"} else "ready"
+            if str(item.get("status")) == "done":
+                item["completed_runs"] = int(item.get("total_runs") or item.get("completed_runs") or 0)
+        return sorted(groups.values(), key=lambda item: str(item.get("batch_id") or ""))
+
+    is_active = run_status_value in {"running", "stopping"}
     return JSONResponse(
         {
-            "status": RUN_STATE["status"],
+            "status": run_status_value,
             "returncode": RUN_STATE["returncode"],
             "log": "\n".join(RUN_STATE["log_lines"]),
             "command": RUN_STATE.get("command", ""),
@@ -1487,5 +1667,12 @@ def run_status() -> JSONResponse:
             "total_runs": RUN_STATE.get("total_runs", 0),
             "completed_runs": RUN_STATE.get("completed_runs", 0),
             "elapsed_seconds": elapsed,
+            "active_batch_id": RUN_STATE.get("active_batch_id", "") if is_active else "",
+            "active_batch_out_root": RUN_STATE.get("active_batch_out_root", "") if is_active else "",
+            "planned_batch_ids": RUN_STATE.get("planned_batch_ids", []),
+            "planned_batch_out_roots": RUN_STATE.get("planned_batch_out_roots", []),
+            "completed_batch_ids": RUN_STATE.get("completed_batch_ids", []),
+            "completed_batch_out_roots": RUN_STATE.get("completed_batch_out_roots", []),
+            "batch_statuses": _batch_statuses(),
         }
     )

@@ -52,11 +52,11 @@ def _residue_label(restype: str, resid: str, chain: str) -> str:
     return f"{restype}{resid}{chain}"
 
 
-def _residue_sort_key(label: str) -> tuple[str, int, str]:
+def _residue_sort_key(label: str) -> tuple[int, str, str]:
     match = re.match(r"^([A-Za-z]+)(\d+)([A-Za-z_]*)$", label)
     if match:
-        return (match.group(1), int(match.group(2)), match.group(3))
-    return (label, 10**9, "")
+        return (int(match.group(2)), match.group(3), match.group(1))
+    return (10**9, "", label)
 
 
 def _parse_plip_types(report_xml: Path) -> dict[tuple[str, str, str], list[str]]:
